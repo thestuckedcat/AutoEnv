@@ -65,13 +65,33 @@ def ask_package_link_overrides(image_vars: Dict[str, str], image_specs: Dict[str
     print("\n请选择驱动包路径（直接回车将使用 config.json 默认路径）")
     for spec_name in spec_names:
         spec = image_specs[spec_name]
-        default_link = spec.link or "<自动 newest>"
-        user_input = input(f"- {spec_name} 路径 [默认: {default_link}]: ").strip()
-        if user_input:
+        has_link = bool(spec.link.strip())
+        has_base_link = bool(spec.base_link.strip())
+
+        if has_link:
+            print(f"- {spec_name} 已配置 link={spec.link}（直接回车保持现状）")
+            default_display = spec.link
+        elif has_base_link:
+            default_display = f"<自动 newest from base_link={spec.base_link}>"
+        else:
+            default_display = "<必填: link/base_link 均为空>"
+
+        while True:
+            user_input = input(f"- {spec_name} 路径 [默认: {default_display}]: ").strip()
+            if not user_input:
+                if has_link or has_base_link:
+                    break
+                print(
+                    f"❌ {spec_name} 的 link 与 base_link 都为空，无法自动下载。"
+                    "请在此处输入有效路径后继续。"
+                )
+                continue
+
             normalized = user_input.rstrip("/")
             if not normalized.startswith("/"):
                 normalized = "/" + normalized
             overrides[spec_name] = normalized
+            break
 
     return overrides
 
