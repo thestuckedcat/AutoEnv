@@ -50,6 +50,17 @@ COMPOSITE_ENV_REGISTRY: Dict[str, List[str]] = {
     "A_B_CHAIN_RUN": ["A_ENV_RUN", "B_ENV_RUN"],
 }
 
+# SSH 默认值，可按环境覆盖。
+SSH_DEFAULTS: Dict[str, str | int] = {
+    "username": "root",
+    "password": "root",
+    "port": 22,
+}
+
+ENV_SSH_DEFAULTS: Dict[str, Dict[str, str | int]] = {
+    # "A_ENV_RUN": {"username": "root", "password": "root", "port": 22},
+}
+
 
 def list_env_names() -> list[str]:
     return sorted(ENV_REGISTRY.keys())
@@ -65,3 +76,9 @@ def list_composite_env_names() -> list[str]:
 
 def get_composite_env(name: str) -> List[str]:
     return COMPOSITE_ENV_REGISTRY[name]
+
+
+def get_ssh_defaults(env_name: str) -> Dict[str, str | int]:
+    merged = dict(SSH_DEFAULTS)
+    merged.update(ENV_SSH_DEFAULTS.get(env_name, {}))
+    return merged

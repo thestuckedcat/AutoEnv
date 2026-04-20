@@ -1,3 +1,4 @@
+import getpass
 import os
 import shutil
 import time
@@ -5,7 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 from config_loader import load_image_specs
-from env_config import get_env, list_env_names
+from env_config import get_env, get_ssh_defaults, list_env_names
 from logger import setup_logger
 from models import DownloadedImage, ImageSpec
 from renderer import render_script
@@ -38,6 +39,22 @@ def choose_environment() -> str:
 def ask_target_host() -> str:
     host = input("请输入目标服务器 IP/域名 [默认:192.168.1.100]: ").strip()
     return host or "192.168.1.100"
+
+
+def ask_ssh_credentials(default_username: str, default_password: str, default_port: int) -> Tuple[str, str, int]:
+    username = input(f"请输入 SSH 用户名 [默认:{default_username}]: ").strip() or default_username
+    password = getpass.getpass("请输入 SSH 密码 [回车使用默认密码]: ").strip() or default_password
+
+    port_input = input(f"请输入 SSH 端口 [默认:{default_port}]: ").strip()
+    if not port_input:
+        port = default_port
+    elif port_input.isdigit():
+        port = int(port_input)
+    else:
+        print("⚠️ 端口输入非法，使用默认端口")
+        port = default_port
+
+    return username, password, port
 
 
 def ask_package_link_overrides(image_vars: Dict[str, str], image_specs: Dict[str, ImageSpec]) -> Dict[str, str]:
@@ -156,8 +173,21 @@ def main() -> None:
     logger.info("runtime 目录容量控制完成（上限 1GB）")
 
     host = ask_target_host()
-    logger.info("准备上传到: %s", host)
-    upload_files_via_scp(host=host, local_files=[*downloaded_local_files, script_path])
+    defaults = get_ssh_defaults(selected)
+    username, password, port = ask_ssh_credentials(
+        default_username=str(defaults["username"]),
+        default_password=str(defaults["password"]),
+        default_port=int(defaults["port"]),
+    )
+
+    logger.info("准备上传到: %s@%s:%s", username, host, port)
+    upload_files_via_scp(
+        host=host,
+        local_files=[*downloaded_local_files, script_path],
+        username=username,
+        password=password,
+        port=port,
+    )
     logger.info("上传完成，目标目录: /root/autoEnv")
 
     print("\n✅ 所有文件上传成功")

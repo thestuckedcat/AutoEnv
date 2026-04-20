@@ -58,3 +58,13 @@ run_composite_environments(["A_ENV_RUN", "B_ENV_RUN"])
 
 注意：组合执行时，每个子环境都会分别询问包路径（link）和目标服务器。
 - `env_config.py` 中提供了组合环境示例 `A_B_CHAIN_RUN = ["A_ENV_RUN", "B_ENV_RUN"]`。
+
+
+## SSH 默认值配置
+
+可在 `env_config.py` 配置全局或按环境的 SSH 默认值：
+
+- `SSH_DEFAULTS`：全局默认用户名/密码/端口
+- `ENV_SSH_DEFAULTS`：按环境覆盖默认值
+
+执行时在输入目标服务器后，会继续询问用户名、密码、端口；如果直接回车，就使用上述默认值。

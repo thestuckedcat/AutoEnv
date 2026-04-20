@@ -4,9 +4,15 @@ from datetime import datetime
 from typing import List, Sequence, Tuple
 
 from config_loader import load_image_specs
-from env_config import get_composite_env, get_env
+from env_config import get_composite_env, get_env, get_ssh_defaults
 from logger import setup_logger
-from main import RUNTIME_MAX_BYTES, ask_package_link_overrides, ask_target_host, enforce_runtime_size_limit
+from main import (
+    RUNTIME_MAX_BYTES,
+    ask_package_link_overrides,
+    ask_ssh_credentials,
+    ask_target_host,
+    enforce_runtime_size_limit,
+)
 from models import DownloadedImage
 from renderer import render_script
 from tools import HDFSClient, fetch_and_download_image, upload_files_via_scp
@@ -71,7 +77,19 @@ def run_one_environment(env_name: str) -> Tuple[str, str]:
 
     # 每个子环境都要求用户单独输入目标服务器
     target_host = ask_target_host()
-    upload_files_via_scp(host=target_host, local_files=[*downloaded_local_files, script_path])
+    defaults = get_ssh_defaults(env_name)
+    username, password, port = ask_ssh_credentials(
+        default_username=str(defaults["username"]),
+        default_password=str(defaults["password"]),
+        default_port=int(defaults["port"]),
+    )
+    upload_files_via_scp(
+        host=target_host,
+        local_files=[*downloaded_local_files, script_path],
+        username=username,
+        password=password,
+        port=port,
+    )
 
     logger.info("子环境执行完成: %s | run_dir=%s | script=%s", env_name, run_dir, script_name)
     return run_dir, script_name
