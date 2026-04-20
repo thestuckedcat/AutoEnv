@@ -1,5 +1,7 @@
 import os
+import shutil
 import time
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 from config_loader import load_image_specs
@@ -8,6 +10,8 @@ from logger import setup_logger
 from models import DownloadedImage, ImageSpec
 from renderer import render_script
 from tools import HDFSClient, fetch_and_download_image, upload_files_via_scp
+
+RUNTIME_MAX_BYTES = 1 * 1024 * 1024 * 1024  # 1GB
 
 
 def choose_environment() -> str:
@@ -55,6 +59,39 @@ def ask_package_link_overrides(image_vars: Dict[str, str], image_specs: Dict[str
     return overrides
 
 
+def get_directory_size(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for filename in files:
+            full_path = os.path.join(root, filename)
+            try:
+                total += os.path.getsize(full_path)
+            except OSError:
+                continue
+    return total
+
+
+def enforce_runtime_size_limit(runtime_root: str, max_bytes: int, protected_dir: str) -> None:
+    if not os.path.isdir(runtime_root):
+        return
+
+    while get_directory_size(runtime_root) > max_bytes:
+        candidates = []
+        for name in os.listdir(runtime_root):
+            full_path = os.path.join(runtime_root, name)
+            if not os.path.isdir(full_path):
+                continue
+            if os.path.abspath(full_path) == os.path.abspath(protected_dir):
+                continue
+            candidates.append(full_path)
+
+        if not candidates:
+            return
+
+        oldest = sorted(candidates, key=lambda p: os.path.getmtime(p))[0]
+        shutil.rmtree(oldest, ignore_errors=True)
+
+
 def main() -> None:
     logger = setup_logger()
     image_specs = load_image_specs("config.json")
@@ -70,8 +107,13 @@ def main() -> None:
     link_overrides = ask_package_link_overrides(env.image_vars, image_specs)
 
     client = HDFSClient(base_url="https://hdfs-ngx1.turing-ci.hisilicon.com", verify_ssl=False)
-    runtime_dir = os.path.join(os.getcwd(), "runtime")
-    os.makedirs(runtime_dir, exist_ok=True)
+
+    runtime_root = os.path.join(os.getcwd(), "runtime")
+    os.makedirs(runtime_root, exist_ok=True)
+    run_folder = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(runtime_root, run_folder)
+    os.makedirs(run_dir, exist_ok=True)
+    logger.info("本次执行目录: %s", run_dir)
 
     # 三元组结构：(var_name, spec_name, real_name)
     render_triples: List[Tuple[str, str, str]] = []
@@ -83,8 +125,8 @@ def main() -> None:
             spec.link = link_overrides[spec_name]
 
         logger.info("开始下载 %s -> name=%s", var_name, spec.name)
-        real_name = fetch_and_download_image(client, spec, runtime_dir)
-        local_path = os.path.join(runtime_dir, real_name)
+        real_name = fetch_and_download_image(client, spec, run_dir)
+        local_path = os.path.join(run_dir, real_name)
 
         image_ctx = DownloadedImage(
             var_name=var_name,
@@ -104,11 +146,14 @@ def main() -> None:
 
     rendered = render_script(env.script_template, render_triples)
     script_name = f"{env.env_name}_{int(time.time())}.sh"
-    script_path = os.path.join(runtime_dir, script_name)
+    script_path = os.path.join(run_dir, script_name)
     with open(script_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(rendered)
     os.chmod(script_path, 0o755)
     logger.info("脚本已生成: %s", script_path)
+
+    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir)
+    logger.info("runtime 目录容量控制完成（上限 1GB）")
 
     host = ask_target_host()
     logger.info("准备上传到: %s", host)

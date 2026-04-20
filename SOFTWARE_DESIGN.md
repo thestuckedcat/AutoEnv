@@ -45,7 +45,7 @@
 
 - `name`（必填，唯一）
 - `link`（可空；不为空时优先使用）
-- `base_link`（不可空；当 `link` 为空时，从该路径下自动查找最新日期/newest）
+- `base_link`（可空；当 `link` 为空时，从该路径下自动查找最新日期/newest）
 - `image_name`（必填，正则表达式）
 
 示例：
