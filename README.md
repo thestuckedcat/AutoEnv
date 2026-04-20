@@ -25,6 +25,7 @@ python3 main.py
 ## 目录结构
 
 - `main.py`：交互入口。
+- `composite_runner.py`：按数组顺序组合执行多个已注册环境。
 - `models.py`：核心数据结构。
 - `config_loader.py`：加载并校验 `config.json`。
 - `env_config.py`：用户注册环境脚本。
@@ -39,3 +40,20 @@ python3 main.py
 ```bash
 pip install requests urllib3 paramiko scp
 ```
+
+## 组合环境执行
+
+当你希望把多个已有环境按顺序串起来执行时，可使用 `composite_runner.py`：
+
+```bash
+python3 composite_runner.py
+```
+
+也可以在代码里直接调用：
+
+```python
+from composite_runner import run_composite_environments
+run_composite_environments(["A_ENV_RUN", "B_ENV_RUN"])
+```
+
+注意：组合执行时，每个子环境都会分别询问包路径（link）和目标服务器。
