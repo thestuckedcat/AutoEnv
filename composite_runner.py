@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Sequence, Tuple
 
 from config_loader import load_image_specs
-from env_config import get_env
+from env_config import get_composite_env, get_env
 from logger import setup_logger
 from main import RUNTIME_MAX_BYTES, ask_package_link_overrides, ask_target_host, enforce_runtime_size_limit
 from models import DownloadedImage
@@ -97,6 +97,4 @@ def run_composite_environments(env_sequence: Sequence[str]) -> None:
 if __name__ == "__main__":
     # 示例：按顺序组合执行多个环境。
     # 你可以按需改成自己的环境名数组。
-    run_composite_environments([
-        "A_ENV_RUN",
-    ])
+    run_composite_environments(get_composite_env("A_B_CHAIN_RUN"))

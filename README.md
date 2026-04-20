@@ -57,3 +57,4 @@ run_composite_environments(["A_ENV_RUN", "B_ENV_RUN"])
 ```
 
 注意：组合执行时，每个子环境都会分别询问包路径（link）和目标服务器。
+- `env_config.py` 中提供了组合环境示例 `A_B_CHAIN_RUN = ["A_ENV_RUN", "B_ENV_RUN"]`。
