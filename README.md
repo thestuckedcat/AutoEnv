@@ -83,7 +83,7 @@ run_composite_environments(["A_ENV_RUN", "B_ENV_RUN"])
 可在 `env_config.py` 配置全局或按环境的 SSH 默认值：
 
 - `SSH_DEFAULTS`：全局默认用户名/密码/端口
-- `ENV_SSH_DEFAULTS`：按环境覆盖默认值
+- `ENV_SSH_DEFAULTS`：按环境覆盖默认值（如用户名/密码）
 
 执行时在输入目标服务器后，会继续询问用户名、密码、端口；如果直接回车，就使用上述默认值。
 

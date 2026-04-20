@@ -58,7 +58,8 @@ SSH_DEFAULTS: Dict[str, str | int] = {
 }
 
 ENV_SSH_DEFAULTS: Dict[str, Dict[str, str | int]] = {
-    # "A_ENV_RUN": {"username": "root", "password": "root", "port": 22},
+    "A_ENV_RUN": {"username": "root", "password": "root"},
+    "B_ENV_RUN": {"username": "root", "password": "root"},
 }
 
 
