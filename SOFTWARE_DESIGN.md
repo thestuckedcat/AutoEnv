@@ -14,7 +14,7 @@
 模块分层：
 
 1. **配置层**
-   - `config.json`：镜像配置清单（name/link/image_name）。
+   - `config.json`：镜像配置清单（name/link/base_link/image_name）。
    - `env_config.py`：环境注册（env_name/image_vars/script_template）。
 
 2. **核心逻辑层**
@@ -44,7 +44,8 @@
 格式为数组，每项：
 
 - `name`（必填，唯一）
-- `link`（可空；为空时自动最新路径）
+- `link`（可空；不为空时优先使用）
+- `base_link`（不可空；当 `link` 为空时，从该路径下自动查找最新日期/newest）
 - `image_name`（必填，正则表达式）
 
 示例：

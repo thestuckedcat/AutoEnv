@@ -52,26 +52,37 @@ class HDFSClient:
             return None
         return sorted(only_dirs, key=lambda x: x.modification_time or datetime.min, reverse=True)[0]
 
-    def resolve_link(self, link: str) -> str:
-        """空 link 时自动回溯到 newest 目录。"""
+    def resolve_link(self, link: str, base_link: str = "") -> str:
+        """
+        目录解析策略：
+        1) link 非空：直接使用 link
+        2) link 为空：必须提供 base_link
+        """
         normalized = link.strip()
         if normalized:
             return normalized.rstrip("/")
 
-        # 缺省策略：从 CI_Version 下找最新日期 + newest 目录
-        root = "/compilepackage/CI_Version"
+        root = base_link.strip().rstrip("/")
+        if not root:
+            raise ValueError("link 和 base_link 不能同时为空")
+        return root
+
+    def list_newest_candidates(self, base_link: str) -> List[str]:
+        """在 base_link 下找到最新日期目录，并返回其中按时间倒序排列的 newest 候选路径。"""
+        root = self.resolve_link("", base_link)
         level1 = self.list_directory(root)
         latest_dir = self.choose_latest_directory(level1)
         if not latest_dir:
-            raise RuntimeError("无法在 CI_Version 下找到任何目录")
+            raise RuntimeError(f"无法在 {root} 下找到任何目录")
 
-        l1_path = f"{root}/{latest_dir.name}"
-        level2 = self.list_directory(l1_path)
-        newest = [f for f in level2 if f.is_directory and "newest" in f.name.lower()]
-        if newest:
-            newest = sorted(newest, key=lambda x: x.modification_time or datetime.min, reverse=True)
-            return f"{l1_path}/{newest[0].name}"
-        return l1_path
+        latest_date_dir = f"{root}/{latest_dir.name}"
+        level2 = self.list_directory(latest_date_dir)
+        newest_dirs = [f for f in level2 if f.is_directory and "newest" in f.name.lower()]
+        newest_dirs = sorted(newest_dirs, key=lambda x: x.modification_time or datetime.min, reverse=True)
+        if not newest_dirs:
+            raise RuntimeError(f"在 {latest_date_dir} 下未找到 newest 目录")
+
+        return [f"{latest_date_dir}/{item.name}" for item in newest_dirs]
 
     def find_image(self, remote_dir: str, pattern: str) -> FileEntry:
         regex = re.compile(pattern)
@@ -94,12 +105,31 @@ class HDFSClient:
 
 def fetch_and_download_image(client: HDFSClient, spec: ImageSpec, download_dir: str) -> str:
     os.makedirs(download_dir, exist_ok=True)
-    remote_dir = client.resolve_link(spec.link)
-    matched = client.find_image(remote_dir, spec.image_name)
-    remote_file = f"{remote_dir.rstrip('/')}/{matched.name}"
-    local_file = os.path.join(download_dir, matched.name)
-    client.download_file(remote_file, local_file)
-    return matched.name
+
+    # 显式 link：直接在指定目录内匹配下载
+    if spec.link.strip():
+        remote_dir = client.resolve_link(spec.link, spec.base_link)
+        matched = client.find_image(remote_dir, spec.image_name)
+        remote_file = f"{remote_dir.rstrip('/')}/{matched.name}"
+        local_file = os.path.join(download_dir, matched.name)
+        client.download_file(remote_file, local_file)
+        return matched.name
+
+    # 自动 newest：按 newest 时间倒序逐个尝试匹配，命中即下载
+    newest_candidates = client.list_newest_candidates(spec.base_link)
+    for candidate_dir in newest_candidates:
+        try:
+            matched = client.find_image(candidate_dir, spec.image_name)
+            remote_file = f"{candidate_dir.rstrip('/')}/{matched.name}"
+            local_file = os.path.join(download_dir, matched.name)
+            client.download_file(remote_file, local_file)
+            return matched.name
+        except FileNotFoundError:
+            continue
+
+    raise FileNotFoundError(
+        f"在 base_link={spec.base_link} 的 newest 候选目录中均未找到匹配 {spec.image_name} 的包"
+    )
 
 
 def upload_files_via_scp(

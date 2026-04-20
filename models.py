@@ -19,6 +19,7 @@ class ImageSpec:
     name: str
     link: str
     image_name: str
+    base_link: str = ""
 
 
 @dataclass

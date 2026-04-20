@@ -16,6 +16,7 @@ def load_image_specs(config_path: str = "config.json") -> Dict[str, ImageSpec]:
         name = str(item.get("name", "")).strip()
         link = str(item.get("link", "")).strip()
         image_name = str(item.get("image_name", "")).strip()
+        base_link = str(item.get("base_link", "")).strip()
 
         if not name:
             raise ValueError("存在配置缺少 name")
@@ -24,6 +25,6 @@ def load_image_specs(config_path: str = "config.json") -> Dict[str, ImageSpec]:
         if name in specs:
             raise ValueError(f"name 重复：{name}")
 
-        specs[name] = ImageSpec(name=name, link=link, image_name=image_name)
+        specs[name] = ImageSpec(name=name, link=link, image_name=image_name, base_link=base_link)
 
     return specs

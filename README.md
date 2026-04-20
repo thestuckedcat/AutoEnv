@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-1. 配置 `config.json` 中的镜像规则（name/link/image_name）。
+1. 配置 `config.json` 中的镜像规则（name/link/base_link/image_name）。
 2. 在 `env_config.py` 注册环境脚本模板与依赖镜像变量。
 3. 运行：
 
