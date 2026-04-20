@@ -22,6 +22,24 @@ python3 main.py
 - `runtime/` 总容量超过 1GB 时，会自动删除最早的历史执行目录（保留本次目录）；
 - `logs/autoenv_YYYYMMDD_HHMMSS.log` 与 `runtime/YYYYMMDD_HHMMSS/` 使用同一 run_id，便于一一对应排查；
 
+### link / base_link 优先级交互示例
+
+```text
+- A1 路径已配置 link=/a/b/c（直接回车保持现状）
+- A1 路径 [默认: /a/b/c]:
+# 直接回车 => 继续使用 link=/a/b/c（优先级最高）
+
+- A2 路径 [默认: <自动 newest from base_link=/x/y/z>]:
+# 直接回车 => 使用 base_link=/x/y/z，自动在 newest 目录内匹配包
+
+- A3 路径 [默认: <必填: link/base_link 均为空>]:
+# 直接回车 => 报错并阻止继续，必须手工输入路径
+```
+
+规则总结：
+- 手工输入路径 > `link` > `base_link(newest 自动解析)`；
+- 当 `link` 和 `base_link` 都为空时，程序会在输入阶段立即阻止继续。
+
 ## 目录结构
 
 - `main.py`：交互入口。
