@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Dict
+from typing import List, Tuple
 
 from config_loader import load_image_specs
 from env_config import get_env, list_env_names
@@ -48,8 +48,9 @@ def main() -> None:
     runtime_dir = os.path.join(os.getcwd(), "runtime")
     os.makedirs(runtime_dir, exist_ok=True)
 
-    variable_values: Dict[str, str] = {}
-    downloaded_local_files = []
+    # 三元组结构：(var_name, spec_name, real_name)
+    render_triples: List[Tuple[str, str, str]] = []
+    downloaded_local_files: List[str] = []
 
     for var_name, spec_name in env.image_vars.items():
         if spec_name not in image_specs:
@@ -58,13 +59,25 @@ def main() -> None:
         spec = image_specs[spec_name]
         logger.info("开始下载 %s -> name=%s", var_name, spec.name)
         real_name = fetch_and_download_image(client, spec, runtime_dir)
-        variable_values[var_name] = real_name
-        downloaded_local_files.append(os.path.join(runtime_dir, real_name))
+        local_path = os.path.join(runtime_dir, real_name)
 
-        _ = DownloadedImage(var_name=var_name, spec_name=spec_name, real_name=real_name)
-        logger.info("下载完成 %s = %s", var_name, real_name)
+        image_ctx = DownloadedImage(
+            var_name=var_name,
+            spec_name=spec_name,
+            real_name=real_name,
+            local_path=local_path,
+        )
+        render_triples.append((image_ctx.var_name, image_ctx.spec_name, image_ctx.real_name))
+        downloaded_local_files.append(image_ctx.local_path)
 
-    rendered = render_script(env.script_template, variable_values)
+        logger.info(
+            "映射三元组: (%s, %s, %s)",
+            image_ctx.var_name,
+            image_ctx.spec_name,
+            image_ctx.real_name,
+        )
+
+    rendered = render_script(env.script_template, render_triples)
     script_name = f"{env.env_name}_{int(time.time())}.sh"
     script_path = os.path.join(runtime_dir, script_name)
     with open(script_path, "w", encoding="utf-8", newline="\n") as f:
