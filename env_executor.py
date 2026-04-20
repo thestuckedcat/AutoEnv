@@ -1,40 +1,18 @@
 import getpass
-import logging
 import os
 import shutil
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from config_loader import load_image_specs
-from env_config import get_env, get_ssh_defaults, list_env_names
+from env_config import get_env, get_ssh_defaults
 from logger import setup_logger
 from models import DownloadedImage, ImageSpec
 from renderer import render_script
 from tools import HDFSClient, fetch_and_download_image, upload_files_via_scp
 
 RUNTIME_MAX_BYTES = 1 * 1024 * 1024 * 1024  # 1GB
-
-
-def choose_environment() -> str:
-    envs = list_env_names()
-    if not envs:
-        raise RuntimeError("没有已注册环境")
-
-    print("可选环境：")
-    for idx, name in enumerate(envs, start=1):
-        print(f"  {idx}. {name}")
-
-    while True:
-        value = input("请选择环境编号: ").strip()
-        if not value.isdigit():
-            print("请输入数字编号")
-            continue
-        i = int(value)
-        if i < 1 or i > len(envs):
-            print("编号超出范围")
-            continue
-        return envs[i - 1]
 
 
 def ask_target_host() -> str:
@@ -89,24 +67,9 @@ def get_directory_size(path: str) -> int:
     return total
 
 
-def enforce_runtime_size_limit(
-    runtime_root: str,
-    max_bytes: int,
-    protected_dir: str,
-    logger: Optional[logging.Logger] = None,
-) -> None:
+def enforce_runtime_size_limit(runtime_root: str, max_bytes: int, protected_dir: str) -> None:
     if not os.path.isdir(runtime_root):
         return
-
-    def log_info(msg: str, *args: object) -> None:
-        if logger:
-            logger.info(msg, *args)
-
-    def log_warning(msg: str, *args: object) -> None:
-        if logger:
-            logger.warning(msg, *args)
-        else:
-            print("⚠️ " + (msg % args if args else msg))
 
     while get_directory_size(runtime_root) > max_bytes:
         candidates = []
@@ -119,40 +82,21 @@ def enforce_runtime_size_limit(
             candidates.append(full_path)
 
         if not candidates:
-            break
+            return
 
         oldest = sorted(candidates, key=lambda p: os.path.getmtime(p))[0]
-        oldest_mtime = datetime.fromtimestamp(os.path.getmtime(oldest)).isoformat(timespec="seconds")
-        oldest_size = get_directory_size(oldest)
-        log_info(
-            "准备删除候选目录: path=%s, mtime=%s, size=%s bytes",
-            oldest,
-            oldest_mtime,
-            oldest_size,
-        )
-
-        try:
-            shutil.rmtree(oldest)
-        except Exception as exc:
-            log_warning("删除目录失败: path=%s, error=%r", oldest, exc)
-            break
-
-        current_total = get_directory_size(runtime_root)
-        log_info("目录删除完成，当前 runtime 总大小: %s bytes", current_total)
-
-    final_total = get_directory_size(runtime_root)
-    if final_total > max_bytes:
-        log_warning(
-            "runtime 目录仍超限: current=%s bytes, limit=%s bytes，请手动清理。",
-            final_total,
-            max_bytes,
-        )
+        shutil.rmtree(oldest, ignore_errors=True)
 
 
-def main() -> None:
-    selected = choose_environment()
-    env = get_env(selected)
-    logger.info("已选择环境: %s", selected)
+def execute_environment(env_name: str, *, runtime_suffix: str | None = None) -> Tuple[str, str]:
+    """执行一个已注册环境，返回 (run_dir, script_name)。"""
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_label = f"{run_id}_{runtime_suffix}" if runtime_suffix else run_id
+    logger = setup_logger(run_id=run_label)
+
+    image_specs = load_image_specs("config.json")
+    env = get_env(env_name)
+    logger.info("已选择环境: %s", env_name)
 
     for _var_name, spec_name in env.image_vars.items():
         if spec_name not in image_specs:
@@ -164,7 +108,8 @@ def main() -> None:
 
     runtime_root = os.path.join(os.getcwd(), "runtime")
     os.makedirs(runtime_root, exist_ok=True)
-    run_dir = os.path.join(runtime_root, run_id)
+    run_dir_name = run_label if runtime_suffix else run_id
+    run_dir = os.path.join(runtime_root, run_dir_name)
     os.makedirs(run_dir, exist_ok=True)
     logger.info("本次执行目录: %s", run_dir)
 
@@ -205,11 +150,11 @@ def main() -> None:
     os.chmod(script_path, 0o755)
     logger.info("脚本已生成: %s", script_path)
 
-    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir, logger=logger)
+    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir)
     logger.info("runtime 目录容量控制完成（上限 1GB）")
 
     host = ask_target_host()
-    defaults = get_ssh_defaults(selected)
+    defaults = get_ssh_defaults(env_name)
     username, password, port = ask_ssh_credentials(
         default_username=str(defaults["username"]),
         default_password=str(defaults["password"]),
@@ -228,7 +173,4 @@ def main() -> None:
 
     print("\n✅ 所有文件上传成功")
     print(f"请登录服务器执行: source /root/autoEnv/{script_name}")
-
-
-if __name__ == "__main__":
-    main()
+    return run_dir, script_name
