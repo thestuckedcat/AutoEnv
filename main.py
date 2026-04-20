@@ -1,9 +1,10 @@
 import getpass
+import logging
 import os
 import shutil
 import time
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from config_loader import load_image_specs
 from env_config import get_env, get_ssh_defaults, list_env_names
@@ -88,9 +89,24 @@ def get_directory_size(path: str) -> int:
     return total
 
 
-def enforce_runtime_size_limit(runtime_root: str, max_bytes: int, protected_dir: str) -> None:
+def enforce_runtime_size_limit(
+    runtime_root: str,
+    max_bytes: int,
+    protected_dir: str,
+    logger: Optional[logging.Logger] = None,
+) -> None:
     if not os.path.isdir(runtime_root):
         return
+
+    def log_info(msg: str, *args: object) -> None:
+        if logger:
+            logger.info(msg, *args)
+
+    def log_warning(msg: str, *args: object) -> None:
+        if logger:
+            logger.warning(msg, *args)
+        else:
+            print("⚠️ " + (msg % args if args else msg))
 
     while get_directory_size(runtime_root) > max_bytes:
         candidates = []
@@ -103,10 +119,34 @@ def enforce_runtime_size_limit(runtime_root: str, max_bytes: int, protected_dir:
             candidates.append(full_path)
 
         if not candidates:
-            return
+            break
 
         oldest = sorted(candidates, key=lambda p: os.path.getmtime(p))[0]
-        shutil.rmtree(oldest, ignore_errors=True)
+        oldest_mtime = datetime.fromtimestamp(os.path.getmtime(oldest)).isoformat(timespec="seconds")
+        oldest_size = get_directory_size(oldest)
+        log_info(
+            "准备删除候选目录: path=%s, mtime=%s, size=%s bytes",
+            oldest,
+            oldest_mtime,
+            oldest_size,
+        )
+
+        try:
+            shutil.rmtree(oldest)
+        except Exception as exc:
+            log_warning("删除目录失败: path=%s, error=%r", oldest, exc)
+            break
+
+        current_total = get_directory_size(runtime_root)
+        log_info("目录删除完成，当前 runtime 总大小: %s bytes", current_total)
+
+    final_total = get_directory_size(runtime_root)
+    if final_total > max_bytes:
+        log_warning(
+            "runtime 目录仍超限: current=%s bytes, limit=%s bytes，请手动清理。",
+            final_total,
+            max_bytes,
+        )
 
 
 def main() -> None:
@@ -169,7 +209,7 @@ def main() -> None:
     os.chmod(script_path, 0o755)
     logger.info("脚本已生成: %s", script_path)
 
-    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir)
+    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir, logger=logger)
     logger.info("runtime 目录容量控制完成（上限 1GB）")
 
     host = ask_target_host()
