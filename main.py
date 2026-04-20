@@ -44,6 +44,7 @@ def main() -> None:
     logger = setup_logger(run_id=run_id)
     image_specs = load_image_specs("config.json")
 
+def main() -> None:
     selected = choose_environment()
     env = get_env(selected)
     logger.info("已选择环境: %s", selected)
@@ -99,7 +100,7 @@ def main() -> None:
     os.chmod(script_path, 0o755)
     logger.info("脚本已生成: %s", script_path)
 
-    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir)
+    enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir, logger=logger)
     logger.info("runtime 目录容量控制完成（上限 1GB）")
 
     host = ask_target_host()

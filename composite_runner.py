@@ -1,7 +1,4 @@
-import os
-import time
-from datetime import datetime
-from typing import List, Sequence, Tuple
+from typing import Sequence
 
 from config_loader import load_image_specs
 from env_config import get_composite_env, get_env, get_ssh_defaults
@@ -96,17 +93,14 @@ def run_one_environment(env_name: str) -> Tuple[str, str]:
 
 
 def run_composite_environments(env_sequence: Sequence[str]) -> None:
-    """
-    组合执行：按数组顺序依次执行多个已注册环境。
-    每个子环境都会独立询问 link 覆盖和目标服务器。
-    """
+    """组合执行：按数组顺序依次执行多个已注册环境。"""
     if not env_sequence:
         raise ValueError("env_sequence 不能为空")
 
     print("=== 开始组合环境执行 ===")
     for index, env_name in enumerate(env_sequence, start=1):
         print(f"\n[{index}/{len(env_sequence)}] 执行子环境: {env_name}")
-        run_dir, script_name = run_one_environment(env_name)
+        run_dir, script_name = execute_environment(env_name, runtime_suffix=env_name)
         print(f"✅ 子环境 {env_name} 完成：{run_dir}/{script_name}")
 
     print("\n🎉 组合环境执行完成")
