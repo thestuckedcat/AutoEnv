@@ -1,0 +1,17 @@
+[
+  {
+    "name": "A1",
+    "link": "/compilepackage/CI_Version/torino/br_hisi_trunk_ai_PRE_COMPILE/202603/20260321_150554331_I46497ce/",
+    "image_name": "^HN922-driver-[\\w.-]+-rtos[\\w.-]+\\.aarch64-debug\\.run$"
+  },
+  {
+    "name": "A2",
+    "link": "",
+    "image_name": "^UBEngine-mgmt-driver-[\\w.-]+-rtos[\\w.-]+\\.aarch64\\.run$"
+  },
+  {
+    "name": "A3",
+    "link": "",
+    "image_name": "^UBEngine-testcase-[\\w.-]+-rtos[\\w.-]+\\.aarch64\\.tar\\.gz$"
+  }
+]
