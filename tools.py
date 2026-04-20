@@ -135,11 +135,16 @@ def fetch_and_download_image(client: HDFSClient, spec: ImageSpec, download_dir: 
 def upload_files_via_scp(
     host: str,
     local_files: Sequence[str],
+    username: str,
+    password: str,
     remote_path: str = "/root/autoEnv",
     port: int = 22,
-    username: str = "root",
-    password: str = "root",
 ) -> None:
+    """
+    通过 SCP 上传本地文件到目标服务器。
+
+    调用方必须显式传入 username 和 password，本接口不提供默认凭据。
+    """
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:

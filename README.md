@@ -86,3 +86,5 @@ run_composite_environments(["A_ENV_RUN", "B_ENV_RUN"])
 - `ENV_SSH_DEFAULTS`：按环境覆盖默认值
 
 执行时在输入目标服务器后，会继续询问用户名、密码、端口；如果直接回车，就使用上述默认值。
+
+> 说明：底层上传接口 `upload_files_via_scp` 无默认凭据，调用方必须显式传入 `username` 和 `password`，以避免凭据来源歧义。
