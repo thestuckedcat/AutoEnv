@@ -1,11 +1,11 @@
 import os
 import time
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from config_loader import load_image_specs
 from env_config import get_env, list_env_names
 from logger import setup_logger
-from models import DownloadedImage
+from models import DownloadedImage, ImageSpec
 from renderer import render_script
 from tools import HDFSClient, fetch_and_download_image, upload_files_via_scp
 
@@ -36,6 +36,25 @@ def ask_target_host() -> str:
     return host or "192.168.1.100"
 
 
+def ask_package_link_overrides(image_vars: Dict[str, str], image_specs: Dict[str, ImageSpec]) -> Dict[str, str]:
+    """按环境依赖的 spec_name 让用户可选覆盖下载路径。"""
+    spec_names = sorted(set(image_vars.values()))
+    overrides: Dict[str, str] = {}
+
+    print("\n请选择驱动包路径（直接回车将使用 config.json 默认路径）")
+    for spec_name in spec_names:
+        spec = image_specs[spec_name]
+        default_link = spec.link or "<自动 newest>"
+        user_input = input(f"- {spec_name} 路径 [默认: {default_link}]: ").strip()
+        if user_input:
+            normalized = user_input.rstrip("/")
+            if not normalized.startswith("/"):
+                normalized = "/" + normalized
+            overrides[spec_name] = normalized
+
+    return overrides
+
+
 def main() -> None:
     logger = setup_logger()
     image_specs = load_image_specs("config.json")
@@ -43,6 +62,12 @@ def main() -> None:
     selected = choose_environment()
     env = get_env(selected)
     logger.info("已选择环境: %s", selected)
+
+    for _var_name, spec_name in env.image_vars.items():
+        if spec_name not in image_specs:
+            raise KeyError(f"环境引用的镜像 name 不存在: {spec_name}")
+
+    link_overrides = ask_package_link_overrides(env.image_vars, image_specs)
 
     client = HDFSClient(base_url="https://hdfs-ngx1.turing-ci.hisilicon.com", verify_ssl=False)
     runtime_dir = os.path.join(os.getcwd(), "runtime")
@@ -53,10 +78,10 @@ def main() -> None:
     downloaded_local_files: List[str] = []
 
     for var_name, spec_name in env.image_vars.items():
-        if spec_name not in image_specs:
-            raise KeyError(f"环境引用的镜像 name 不存在: {spec_name}")
-
         spec = image_specs[spec_name]
+        if spec_name in link_overrides:
+            spec.link = link_overrides[spec_name]
+
         logger.info("开始下载 %s -> name=%s", var_name, spec.name)
         real_name = fetch_and_download_image(client, spec, runtime_dir)
         local_path = os.path.join(runtime_dir, real_name)
