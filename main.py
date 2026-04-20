@@ -93,7 +93,8 @@ def enforce_runtime_size_limit(runtime_root: str, max_bytes: int, protected_dir:
 
 
 def main() -> None:
-    logger = setup_logger()
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger = setup_logger(run_id=run_id)
     image_specs = load_image_specs("config.json")
 
     selected = choose_environment()
@@ -110,8 +111,7 @@ def main() -> None:
 
     runtime_root = os.path.join(os.getcwd(), "runtime")
     os.makedirs(runtime_root, exist_ok=True)
-    run_folder = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(runtime_root, run_folder)
+    run_dir = os.path.join(runtime_root, run_id)
     os.makedirs(run_dir, exist_ok=True)
     logger.info("本次执行目录: %s", run_dir)
 

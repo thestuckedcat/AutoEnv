@@ -20,6 +20,7 @@ python3 main.py
 - 生成并上传 `.sh` + 包到目标机器 `/root/autoEnv`。
 - 每次执行都会在 `runtime/YYYYMMDD_HHMMSS/` 下保存本次脚本和下载包；
 - `runtime/` 总容量超过 1GB 时，会自动删除最早的历史执行目录（保留本次目录）；
+- `logs/autoenv_YYYYMMDD_HHMMSS.log` 与 `runtime/YYYYMMDD_HHMMSS/` 使用同一 run_id，便于一一对应排查；
 
 ## 目录结构
 
