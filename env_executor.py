@@ -138,6 +138,7 @@ def execute_environment(env_name: str, *, runtime_suffix: str | None = None) -> 
         logger.info("开始下载 %s -> name=%s", var_name, spec.name)
         real_name = fetch_and_download_image(client, spec, run_dir)
         local_path = os.path.join(run_dir, real_name)
+        logger.info("下载完成 %s，本地真实路径: %s", var_name, local_path)
 
         image_ctx = DownloadedImage(
             var_name=var_name,
