@@ -15,9 +15,9 @@ from tools import HDFSClient, fetch_and_download_image, upload_files_via_scp
 RUNTIME_MAX_BYTES = 1 * 1024 * 1024 * 1024  # 1GB
 
 
-def ask_target_host() -> str:
-    host = input("请输入目标服务器 IP/域名 [默认:192.168.1.100]: ").strip()
-    return host or "192.168.1.100"
+def ask_target_host(default_host: str) -> str:
+    host = input(f"请输入目标服务器 IP/域名 [默认:{default_host}]: ").strip()
+    return host or default_host
 
 
 def ask_ssh_credentials(default_username: str, default_password: str, default_port: int) -> Tuple[str, str, int]:
@@ -167,8 +167,8 @@ def execute_environment(env_name: str, *, runtime_suffix: str | None = None) -> 
     enforce_runtime_size_limit(runtime_root, RUNTIME_MAX_BYTES, protected_dir=run_dir)
     logger.info("runtime 目录容量控制完成（上限 1GB）")
 
-    host = ask_target_host()
     defaults = get_ssh_defaults(env_name)
+    host = ask_target_host(default_host=str(defaults["host"]))
     username, password, port = ask_ssh_credentials(
         default_username=str(defaults["username"]),
         default_password=str(defaults["password"]),
