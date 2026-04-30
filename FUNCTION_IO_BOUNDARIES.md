@@ -64,15 +64,15 @@
 ### `get_ssh_defaults(env_name: str) -> Dict[str, str | int]`
 - **功能简述**：将全局 SSH 默认值与环境级覆盖合并后返回。
 - **输入边界**：任意字符串均可；未知环境将仅使用全局默认值。
-- **输出边界**：返回至少包含 `username`、`password`、`port` 的字典。
+- **输出边界**：返回至少包含 `host`、`username`、`password`、`port` 的字典。
 
 ---
 
 ## `env_executor.py`
 
-### `ask_target_host() -> str`
+### `ask_target_host(default_host: str) -> str`
 - **功能简述**：交互式读取目标主机地址，空输入时使用默认值。
-- **输入边界**：来自终端输入；空串回退为 `192.168.1.100`。
+- **输入边界**：`default_host` 为任意非空字符串；终端空输入时回退为 `default_host`。
 - **输出边界**：返回非空字符串。
 - **异常/副作用**：读取标准输入。
 
