@@ -3,7 +3,8 @@
     "name": "A1",
     "link": "/compilepackage/CI_Version/torino/br_hisi_trunk_ai_PRE_COMPILE/202603/20260321_150554331_I46497ce/",
     "base_link": "/compilepackage/CI_Version/torino/br_hisi_trunk_ai",
-    "image_name": "^HN922-driver-[\\w.-]+-rtos[\\w.-]+\\.aarch64-debug\\.run$"
+    "image_name": "^HN922-driver-[\\w.-]+-rtos[\\w.-]+\\.aarch64-debug\\.run$",
+    "target_file": []
   },
   {
     "name": "A2",
