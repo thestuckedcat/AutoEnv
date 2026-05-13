@@ -1,21 +1,20 @@
 import os
+import posixpath
 import re
 from datetime import datetime
+from ftplib import FTP
 from typing import List, Optional, Sequence
 from urllib.parse import unquote
 
-import paramiko
-import requests
-import urllib3
-from scp import SCPClient
-
 from models import FileEntry, ImageSpec
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class HDFSClient:
     def __init__(self, base_url: str, verify_ssl: bool = False):
+        import requests
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self.base_url = base_url.rstrip("/")
         self.verify_ssl = verify_ssl
         self.session = requests.Session()
@@ -145,6 +144,9 @@ def upload_files_via_scp(
 
     调用方必须显式传入 username 和 password，本接口不提供默认凭据。
     """
+    import paramiko
+    from scp import SCPClient
+
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
@@ -165,3 +167,99 @@ def upload_files_via_scp(
             scp.put(list(local_files), remote_path)
     finally:
         ssh.close()
+
+
+def _ftp_mkdir_p(ftp: FTP, remote_path: str) -> None:
+    normalized = remote_path.strip("/")
+    if not normalized:
+        return
+    current = ""
+    for part in normalized.split("/"):
+        current = f"{current}/{part}" if current else f"/{part}"
+        try:
+            ftp.mkd(current)
+        except Exception:
+            pass
+
+
+def upload_files_via_ftp(
+    host: str,
+    local_files: Sequence[str],
+    username: str,
+    password: str,
+    remote_path: str = "/root/autoEnv",
+    port: int = 21,
+    timeout: int = 30,
+) -> None:
+    """通过 FTP 上传本地文件到 Telnet 服务器可访问的目标目录。"""
+    with FTP() as ftp:
+        ftp.connect(host=host, port=port, timeout=timeout)
+        ftp.login(user=username, passwd=password)
+        _ftp_mkdir_p(ftp, remote_path)
+        ftp.cwd(remote_path)
+        for local_file in local_files:
+            remote_name = posixpath.basename(local_file)
+            with open(local_file, "rb") as f:
+                ftp.storbinary(f"STOR {remote_name}", f)
+
+
+def upload_file_via_ftp(
+    host: str,
+    local_file: str,
+    username: str,
+    password: str,
+    remote_file_path: str,
+    port: int = 21,
+    timeout: int = 30,
+) -> None:
+    """通过 FTP 上传单个文件到指定远端文件路径。"""
+    remote_dir = posixpath.dirname(remote_file_path) or "/"
+    remote_name = posixpath.basename(remote_file_path)
+    if not remote_name:
+        raise ValueError(f"remote_file_path 必须包含远端文件名: {remote_file_path}")
+
+    with FTP() as ftp:
+        ftp.connect(host=host, port=port, timeout=timeout)
+        ftp.login(user=username, passwd=password)
+        _ftp_mkdir_p(ftp, remote_dir)
+        ftp.cwd(remote_dir)
+        with open(local_file, "rb") as f:
+            ftp.storbinary(f"STOR {remote_name}", f)
+
+
+def run_ssh_commands(
+    host: str,
+    commands: Sequence[str],
+    username: str,
+    password: str,
+    port: int = 22,
+    timeout: int = 30,
+) -> List[str]:
+    """通过 SSH 逐条执行命令，并返回每条命令 stdout/stderr 合并输出。"""
+    import paramiko
+
+    outputs: List[str] = []
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        ssh.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            password=password,
+            allow_agent=False,
+            look_for_keys=False,
+            timeout=timeout,
+        )
+        for command in commands:
+            stdin, stdout, stderr = ssh.exec_command(command, timeout=timeout)
+            exit_code = stdout.channel.recv_exit_status()
+            output = stdout.read().decode("utf-8", errors="ignore")
+            err = stderr.read().decode("utf-8", errors="ignore")
+            merged = output + err
+            if exit_code != 0:
+                raise RuntimeError(f"SSH 命令执行失败({exit_code}): {command}\n{merged}")
+            outputs.append(merged)
+    finally:
+        ssh.close()
+    return outputs
