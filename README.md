@@ -1,57 +1,45 @@
 # AutoEnv
 
-一个用于**按环境模板自动拉取驱动包、渲染安装脚本并上传到目标服务器**的工具。
+AutoEnv 是一个用于**按环境定义自动拉取驱动/测试包、渲染安装脚本、上传目标机并可选执行远端命令**的工具。当前代码采用“镜像规则在 `config.json`、环境定义在 `ENV/<env_name>.py`、运行编排在 `env_executor.py`”的结构。
 
 ## 快速开始
 
-1. 配置 `config.json` 中的镜像规则（name/link/base_link/image_name）。
-2. 在 `env_config.py` 注册环境脚本模板与依赖镜像变量。
+1. 在 `config.json` 配置镜像规则（`name`/`link`/`base_link`/`image_name`/`target_file`）。
+2. 在 `ENV/<env_name>.py` 注册环境的 `EnvironmentSpec`。
 3. 运行：
 
 ```bash
 python3 main.py
 ```
 
-程序会列出所有可用环境，选择后自动：
-- 根据 `name` 找到包规则；
-- 若 `link` 为空则自动走 `newest` 目录；
-- 正则匹配真实包名并下载；
-- 将脚本模板中的 `${A1_image}` 变量替换为真实包名；
-- 生成并上传 `.sh` + 包到目标机器 `/root/autoEnv`。
-- 每次执行都会在 `runtime/YYYYMMDD_HHMMSS/` 下保存本次脚本和下载包；
-- `runtime/` 总容量超过 1GB 时，会自动删除最早的历史执行目录（保留本次目录）；
-- `logs/autoenv_YYYYMMDD_HHMMSS.log` 与 `runtime/YYYYMMDD_HHMMSS/` 使用同一 run_id，便于一一对应排查；
+程序会列出所有可用环境。选择环境后会自动：
 
-### link / base_link 优先级交互示例
-
-```text
-- A1 路径已配置 link=/a/b/c（直接回车保持现状）
-- A1 路径 [默认: /a/b/c]:
-# 直接回车 => 继续使用 link=/a/b/c（优先级最高）
-
-- A2 路径 [默认: <自动 newest from base_link=/x/y/z>]:
-# 直接回车 => 使用 base_link=/x/y/z，自动在 newest 目录内匹配包
-
-- A3 路径 [默认: <必填: link/base_link 均为空>]:
-# 直接回车 => 报错并阻止继续，必须手工输入路径
-```
-
-规则总结：
-- 手工输入路径 > `link` > `base_link(newest 自动解析)`；
-- 当 `link` 和 `base_link` 都为空时，程序会在输入阶段立即阻止继续。
+- 根据环境 `image_vars` 引用的 `name` 查找 `config.json` 中的包规则；
+- 允许交互式覆盖下载目录；否则按 `link > base_link(newest 自动解析)` 选择远端目录；
+- 用 `image_name` 正则匹配真实包名并下载到 `runtime/<run_id>/`；
+- 按需解包并提取 `target_file`；
+- 将脚本模板中的 `${变量名}` 替换为真实包名或提取文件名；
+- 生成 `.sh` 脚本并上传脚本 + 包到目标机器；
+- 每次执行都会写入 `logs/autoenv_<run_id>.log` 与对应 `runtime/<run_id>/`；
+- `runtime/` 总容量超过 1GB 时会删除最早历史执行目录（保留本次目录）。
 
 ## 目录结构
 
-- `main.py`：交互入口。
+- `main.py`：单环境交互入口。
 - `composite_runner.py`：按数组顺序组合执行多个已注册环境。
-- `models.py`：核心数据结构。
+- `models.py`：核心数据结构，包括 `EnvironmentSpec`、`ImageSpec`、`DownloadedImage`。
 - `config_loader.py`：加载并校验 `config.json`。
-- `env_config.py`：用户注册环境脚本。
-- `renderer.py`：脚本变量替换与渲染。
-- `tools.py`：WebHDFS 拉包与 SCP 上传。
+- `env_config.py`：注册表、`ENV/*.py` 自动导入、全局兜底默认值与默认值合并接口。
+- `ENV/`：每个环境的独立注册文件。
+- `env_common.py`：环境文件常用公共导入。
+- `env_executor.py`：执行主流程与 `EnvironmentProcessContext` 扩展接口。
+- `renderer.py`：脚本变量替换与未替换变量检查。
+- `tools.py`：WebHDFS 拉包、SCP/FTP 上传、SSH 命令执行。
+- `telnet.py`：Telnet 串口逐条命令发送。
+- `unextract.py`：`.run` / `.tar.gz` 解包与 `target_file` 提取。
 - `logger.py`：统一日志初始化。
-- `config.json`：镜像规则配置。
-- `logs/`：运行日志目录。
+- `debug/`：调试入口。
+- `docs/ENVIRONMENT_SETUP.md`：从零配置环境、底层组件接口与运行时调用链说明。
 
 ## 依赖
 
@@ -59,72 +47,143 @@ python3 main.py
 pip install requests urllib3 paramiko scp
 ```
 
+## 环境定义与连接默认值
+
+环境定义已经从 `env_config.py` 拆分到 `ENV/` 目录。`env_config.py` 只保留全局兜底默认值和合并逻辑，不再维护 `ENV_SSH_DEFAULTS`、`ENV_TELNET_DEFAULTS` 或 `ENV_FTP_DEFAULTS` 这类按环境的外置映射。
+
+按环境覆盖值应直接写进对应 `EnvironmentSpec`：
+
+```python
+from __future__ import annotations
+
+from env_common import ENV_REGISTER, EnvironmentSpec, default_environment_process
+
+
+@ENV_REGISTER("UDK_ENV_RUN")
+def build_env(env_name: str) -> EnvironmentSpec:
+    return EnvironmentSpec(
+        env_name=env_name,
+        image_vars={
+            "hn922_drv": "UnionS_SDK_Drv",
+            "mami_drv": "Ubengine_Drv",
+            "mami_testcase": "Ubengine_TestCase",
+        },
+        script_templates={
+            "main": """#!/bin/bash
+set -e
+cd /root/autoEnv
+
+echo "install ${hn922_drv} ${mami_drv} ${mami_testcase}"
+"""
+        },
+        process=default_environment_process,
+        upload_protocol="scp",
+        ssh_defaults={"username": "root", "password": "root", "host": "141.131.72.195", "port": 22},
+        telnet_defaults={"host": "141.131.72.195", "port": 23, "timeout": 30.0},
+        ftp_defaults={"username": "root", "password": "root", "port": 21, "remote_path": "/root/autoEnv"},
+    )
+```
+
+默认值合并规则：
+
+- `env_config.SSH_DEFAULTS`、`TELNET_DEFAULTS`、`FTP_DEFAULTS` 是全局兜底；
+- `EnvironmentSpec.ssh_defaults`、`telnet_defaults`、`ftp_defaults` 是环境级覆盖；
+- `get_ssh_defaults(env_name)`、`get_telnet_defaults(env_name)`、`get_ftp_defaults(env_name)` 会先复制全局兜底，再覆盖环境级字段；
+- 底层 `upload_files_via_scp` / `upload_files_via_ftp` / `run_ssh_commands` 不读取任何全局默认值，调用方必须显式传入连接参数，避免凭据来源歧义。
+
+## config.json 包规则
+
+`config.json` 顶层必须是数组。每项常用字段：
+
+- `name`：必填且唯一，供 `EnvironmentSpec.image_vars` 引用；
+- `link`：显式远端目录，优先级最高；
+- `base_link`：当 `link` 为空时，从该路径下自动找最新日期目录中的 `newest`；
+- `image_name`：必填，匹配真实包名的正则；
+- `target_file`：可选字符串或字符串数组，表示下载后要从包中提取的文件/目录。
+
+路径优先级：手工输入路径 > `link` > `base_link(newest 自动解析)`。当 `link` 和 `base_link` 都为空时，程序会要求手工输入路径。
+
+## image_vars 与脚本模板
+
+`EnvironmentSpec.image_vars` 支持三种写法：
+
+```python
+image_vars={
+    # 脚本变量 -> config.json 中的 name；脚本里 ${hn922_pkg} 渲染为下载包名。
+    "hn922_pkg": "UnionS_SDK_Drv",
+
+    # 脚本变量 -> (config.json 中的 name, target_file)。
+    # 脚本里 ${hn922_drv} 渲染为提取出的 file1 文件名。
+    "hn922_drv": ("UnionS_SDK_Drv", "file1"),
+
+    # 显式字典写法。
+    "mami_drv": {"name": "Ubengine_Drv", "target_file": "driver.bin"},
+}
+```
+
+`script_template` 已兼容保留，但推荐使用 `script_templates` 字典：
+
+```python
+script_templates={
+    "prepare": "... ${hn922_drv} ...",
+    "install": "...",
+}
+```
+
+如果一个环境只有 `main` 模板，生成脚本名形如 `<ENV>_<timestamp>.sh`；多个模板时会在环境名后追加模板名。
+
+## 可扩展 process
+
+`EnvironmentSpec.process` 是环境专属处理函数指针，默认可以使用 `default_environment_process`。自定义 process 会收到 `EnvironmentProcessContext`，可按环境需要编排下载、解包、渲染、上传与命令执行。
+
+常用接口：
+
+- `context.upload_files_scp(...)` / `context.upload_files_ftp(...)`：上传已准备的包和脚本；
+- `context.upload_file_to_telnet_path(...)`：通过 FTP 把单个文件发送到 Telnet 服务器可访问的远端路径；
+- `context.send_telnet_commands(...)` / `context.send_ssh_commands(...)`：逐条发送命令并获取输出；
+- `context.download_image_var(...)`：在 process 中继续从 WebHDFS 拉取包，并按需提取 `target_file`；
+- `context.extract_package_targets(...)`：对已有包继续解压并提取目标文件；
+- `context.render_template(...)`：在 process 中额外渲染并注册 `.sh` 脚本。
+
+## Telnet 串口执行与 FTP 发包
+
+`EnvironmentSpec` 中与 Telnet/FTP 有关的字段：
+
+- `telnet_commands`：可配置逐条发送的 Telnet 命令，命令中支持 `${script_name}` 占位符；
+- `upload_protocol`：默认发包方式，支持 `scp` 或 `ftp`；
+- `telnet_defaults`：Telnet 串口服务器默认 `host`/`port`/`timeout`；
+- `ftp_defaults`：FTP 默认 `username`/`password`/`port`/`remote_path`。
+
+`telnet.py` 的 `run_telnet_commands()` 会连接 Telnet 串口，先发送三次回车并识别 shell 提示符，再逐条发送命令；命令输出可写入指定 log。
+
 ## 组合环境执行
 
-当你希望把多个已有环境按顺序串起来执行时，可使用 `composite_runner.py`：
+组合环境用于把多个已注册单环境串起来执行：
 
 ```bash
 python3 composite_runner.py
 ```
 
-也可以在代码里直接调用：
+也可以在代码中调用：
 
 ```python
 from composite_runner import run_composite_environments
+
 run_composite_environments(["A_ENV_RUN", "B_ENV_RUN"])
 ```
 
-注意：组合执行时，每个子环境都会分别询问包路径（link）和目标服务器。
-- `env_config.py` 中提供了组合环境示例 `A_B_CHAIN_RUN = ["A_ENV_RUN", "B_ENV_RUN"]`。
+组合环境注册示例在 `ENV/composite_envs.py`：
 
-
-## SSH 默认值配置
-
-可在 `env_config.py` 配置全局或按环境的 SSH 默认值：
-
-- `SSH_DEFAULTS`：全局默认用户名/密码/端口
-- `ENV_SSH_DEFAULTS`：按环境覆盖默认值（如用户名/密码）
-
-执行时在输入目标服务器后，会继续询问用户名、密码、端口；如果直接回车，就使用上述默认值。
-
-> 说明：底层上传接口 `upload_files_via_scp` 无默认凭据，调用方必须显式传入 `username` 和 `password`，以避免凭据来源歧义。
-
-## target_file 解包提取
-
-`config.json` 的每个镜像规则可以额外配置 `target_file`，支持字符串或字符串数组：
-
-```json
-{
-  "name": "UnionS_SDK_Drv",
-  "link": "",
-  "base_link": "/compilepackage/CI_Version/torino/br_hisi_trunk_ai",
-  "image_name": "^HN922-driver-[a-zA-Z0-9.]+-rtos[a-zA-Z0-9.]+\\.aarch64-debug\\.run$",
-  "target_file": ["file1", "file2"]
-}
+```python
+register_composite_env("A_B_CHAIN_RUN", ["A_ENV_RUN", "B_ENV_RUN"])
 ```
 
-当 `target_file` 非空时，程序会先按 `image_name` 下载包，再使用 `unextract.py` 调用 Git `sh.exe`/`sh` 解包：
-- `.run`：执行 `sh <xxx.run> --noexec --extract=<runtime>/run_tmp`；
-- `.tar.gz`/`.tgz`：执行 `tar -xzf <包> -C <runtime>/tar_tmp`；
-- 从临时目录递归查找并复制目标文件到本次 `runtime/YYYYMMDD_HHMMSS/` 目录；
-- 提取完成后删除临时目录。
-
-## Telnet 串口执行与 FTP 发包
-
-`env_config.py` 现在提供：
-- `TELNET_DEFAULTS` / `ENV_TELNET_DEFAULTS`：Telnet 串口服务器默认 host/port/timeout；
-- `FTP_DEFAULTS` / `ENV_FTP_DEFAULTS`：通过 FTP 向 Telnet 服务器可访问目录发包的默认配置；
-- `EnvironmentSpec.telnet_commands`：可配置逐条发送的 Telnet 命令，命令中支持 `${script_name}` 占位符；
-- `EnvironmentSpec.upload_protocol`：默认发包方式，支持 `scp` 或 `ftp`。
-
-`telnet.py` 提供 `run_telnet_commands()`：连接 Telnet 串口后先发送三次回车，取最后一次输出的非空最后行作为当前 shell 开头；随后逐条发送命令，并在输出中再次看到该 shell 开头时判定本条命令结束，输出会写入指定 log。
+组合执行时，每个子环境都会分别询问包路径、上传协议和目标连接信息。
 
 ## Debug 调试接口
 
-新增功能对应的调试入口统一放在 `debug/` 目录，每个文件既可以 import 其中的 `debug_*` 函数，也可以直接命令行运行：
-
 ```bash
-# 调试 config.json 中 target_file 的解析，并查看指定环境 Telnet/FTP 默认值
+# 调试 config.json 中 target_file 的解析，并查看指定环境 SSH/Telnet/FTP 默认值
 python3 debug/config_debug.py --config config.json --env A_ENV_RUN
 
 # 调试 .run 解包
@@ -143,73 +202,12 @@ python3 debug/ftp_debug.py --host 192.168.1.100 --username root path/to/file1 pa
 python3 debug/telnet_debug.py --host 192.168.1.100 --command "pwd" --command "ls /root/autoEnv"
 ```
 
-## 环境注册与可扩展 process
+## 新增环境建议
 
-`env_config.py` 中的 `EnvironmentSpec.image_vars` 支持两种常用写法：
-
-```python
-image_vars={
-    # 两字段：脚本变量名 -> config.json 中的 name，脚本里 ${hn922_pkg} 渲染为下载包名
-    "hn922_pkg": "UnionS_SDK_Drv",
-
-    # 三字段：脚本变量名 -> (config.json 中的 name, name 下的 target_file)
-    # 下载并解包 UnionS_SDK_Drv 后，脚本里 ${hn922_drv} 渲染为 file1 的文件名
-    "hn922_drv": ("UnionS_SDK_Drv", "file1"),
-}
-```
-
-也可以用显式字典写法：`{"name": "UnionS_SDK_Drv", "target_file": "file1"}`。
-如果第三个字段指定了 `target_file`，该变量会使用提取出的目标文件名渲染脚本；未指定时仍使用原始下载包名。
-
-`script_template` 已升级为 `script_templates` 字典，每个模板都有名字索引，便于一个环境生成多个脚本：
-
-```python
-script_templates={
-    "prepare": "... ${hn922_drv} ...",
-    "install": "...",
-}
-```
-
-`EnvironmentSpec.process` 是环境专属处理函数指针，默认可以使用 `default_environment_process`；自定义 process 会收到 `EnvironmentProcessContext`，可按环境需要分步编排：
-
-- `context.upload_files_scp(...)` / `context.upload_files_ftp(...)`：上传已准备的 image 和脚本；
-- `context.upload_file_to_telnet_path(...)`：通过 FTP 把单个指定文件发送到 Telnet 服务器可访问的指定远端路径；
-- `context.send_telnet_commands(...)` / `context.send_ssh_commands(...)`：向远端逐条发送命令并获取输出；
-- `context.download_image_var(...)`：在 process 中继续从 WebHDFS 拉取 image_vars 相关包，并按需提取 target_file；
-- `context.extract_package_targets(...)`：对已有包继续解压并提取目标文件；
-- `context.render_template(...)`：在 process 中额外打包模板为 `.sh`。
-
-这样后续新增环境时，可以在自己的 process 里根据 SSH/Telnet 输出决定下一步上传哪些文件、执行哪些命令或生成哪些脚本。
-
-## ENV 目录拆分
-
-环境定义已经从 `env_config.py` 拆分到 `ENV/` 目录：
-
-- `ENV/<env_name>.py`：单个环境的注册文件，只描述该环境的 `image_vars`、`script_templates`、`process` 等；
-- `ENV/composite_envs.py`：组合环境注册入口；
-- `ENV/_template_env.py`：新增环境模板，文件名以下划线开头，不会被自动导入注册；
-- `env_common.py`：环境文件常用公共导入，包括 `ENV_REGISTER`、`EnvironmentSpec`、`default_environment_process`；
-- `env_config.py`：只保留注册表、自动加载 `ENV/*.py` 和默认值查询接口。
-
-新增环境建议复制 `ENV/_template_env.py` 为 `ENV/<your_env>.py`，然后通过：
-
-```python
-from env_common import ENV_REGISTER, EnvironmentSpec, default_environment_process
-
-@ENV_REGISTER("MY_ENV_RUN")
-def build_env(env_name: str) -> EnvironmentSpec:
-    return EnvironmentSpec(
-        env_name=env_name,
-        image_vars={
-            "pkg_var": "ConfigJsonName",
-            "target_file_var": ("ConfigJsonName", "file_inside_package"),
-        },
-        script_templates={"main": "... ${pkg_var} ${target_file_var} ..."},
-        process=default_environment_process,
-        ssh_defaults={"host": "192.168.1.100", "username": "root", "password": "root"},
-        telnet_defaults={"host": "192.168.1.100", "port": 23},
-        ftp_defaults={"username": "root", "password": "root"},
-    )
-```
-
-如果需要调整某个环境默认连接参数，直接改对应的 `ENV/<env_name>.py`，让配置和环境绑定在一起；如果需要新增组合环境，则在 `ENV/composite_envs.py` 调用 `register_composite_env(...)`。
+1. 复制 `ENV/_template_env.py` 为 `ENV/<your_env>.py`。
+2. 取消 `@ENV_REGISTER("...")` 注释并改成真实环境名。
+3. 在 `image_vars` 中引用 `config.json` 已存在的 `name`。
+4. 在 `script_templates` 中使用 `${变量名}` 引用 `image_vars`。
+5. 在同一个 `EnvironmentSpec` 内配置 `ssh_defaults` / `telnet_defaults` / `ftp_defaults`。
+6. 如需组合环境，在 `ENV/composite_envs.py` 调用 `register_composite_env(...)`。
+7. 详细从零示例、底层接口与运行链路见 `docs/ENVIRONMENT_SETUP.md`。

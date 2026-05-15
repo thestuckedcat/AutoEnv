@@ -26,4 +26,8 @@ echo "Use ${pkg_var} and ${target_file_var}"
 """
         },
         process=default_environment_process,
+        # 环境级连接默认值统一写在 EnvironmentSpec 内；不要再额外维护 ENV_SSH_DEFAULTS 等全局映射。
+        ssh_defaults={"host": "192.168.1.100", "username": "root", "password": "root", "port": 22},
+        telnet_defaults={"host": "192.168.1.100", "port": 23, "timeout": 30.0},
+        ftp_defaults={"username": "root", "password": "root", "port": 21, "remote_path": "/root/autoEnv"},
     )

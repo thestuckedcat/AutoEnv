@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config_loader import load_image_specs
-from env_config import get_ftp_defaults, get_telnet_defaults
+from env_config import get_ftp_defaults, get_ssh_defaults, get_telnet_defaults
 
 
 def debug_load_image_specs(config_path: str = "config.json") -> dict[str, dict[str, object]]:
@@ -21,8 +21,9 @@ def debug_load_image_specs(config_path: str = "config.json") -> dict[str, dict[s
 
 
 def debug_env_transport_defaults(env_name: str) -> dict[str, dict[str, object]]:
-    """调试接口：查看指定环境的 Telnet/FTP 默认配置。"""
+    """调试接口：查看指定环境的 SSH/Telnet/FTP 默认配置。"""
     return {
+        "ssh": dict(get_ssh_defaults(env_name)),
         "telnet": dict(get_telnet_defaults(env_name)),
         "ftp": dict(get_ftp_defaults(env_name)),
     }
@@ -31,7 +32,7 @@ def debug_env_transport_defaults(env_name: str) -> dict[str, dict[str, object]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="调试 config.json target_file 解析和环境传输默认值")
     parser.add_argument("--config", default="config.json", help="配置文件路径")
-    parser.add_argument("--env", help="环境名；传入后额外输出 Telnet/FTP 默认配置")
+    parser.add_argument("--env", help="环境名；传入后额外输出 SSH/Telnet/FTP 默认配置")
     return parser
 
 
