@@ -140,7 +140,6 @@ celerybeat.pid
 .venv
 env/
 venv/
-ENV/
 env.bak/
 venv.bak/
 
@@ -200,6 +199,10 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# AutoEnv runtime state
+logs/
+state/
 
 # Marimo
 marimo/_static/
