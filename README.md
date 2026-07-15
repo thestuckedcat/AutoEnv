@@ -116,3 +116,11 @@ logs/<run_id>/
 - [环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md)
 
 详细设计是接口语义和验收基线；环境注册指南包含全部可选参数、结果状态、完整示例和提交前检查清单。
+
+## 使用 Agent 交互生成环境脚本
+
+仓库内置了 [`autoenv-script-generator`](.agents/skills/autoenv-script-generator/SKILL.md) 项目级 skill。Codex 和 OpenCode 都能从仓库的 `.agents/skills/` 自动发现它，不需要分别安装或维护副本。
+
+从仓库目录启动 agent 后，可以直接提出“使用 autoenv-script-generator 生成一个环境脚本”。skill 会逐项确认连接对象、包来源、提取/上传、命令顺序、超时、成功条件和组合关系；得到最终确认后才写入 `scripts/`，随后进行编译、注册发现和单元测试检查。
+
+根目录 `AGENTS.md` 同时提供加载入口，便于其他支持项目指令但不能自动发现 skills 的 agent 读取并遵循同一流程。
