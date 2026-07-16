@@ -2,6 +2,8 @@
 
 本文面向第一次接触 AutoEnv 的使用者。照着“最小示例”即可注册一个环境；后续章节列出所有常用接口、可选参数和错误处理方式。
 
+如果只想先完成安装、最小脚本和快速测试，请先看 [`QUICK_START.md`](QUICK_START.md)。
+
 > 本文描述 `UNIFY_ENV` 新接口。旧版 `ENV/EnvironmentSpec` 接口不再使用。
 
 ## 1. 最快上手
@@ -16,6 +18,7 @@ from autoenv import SSHDefaults, package, register_script
 
 @register_script(name="start_demo", description="下载并安装演示环境")
 def start_demo(ctx):
+    demo_package = package("A1")
     host = ctx.register_ssh_host(
         "demo_server",
         defaults=SSHDefaults(
@@ -26,12 +29,12 @@ def start_demo(ctx):
         ),
     )
 
-    result = ctx.download_package(package("A1"))
+    result = ctx.download_package(demo_package)
     if not result.success:
         return result
 
     result = host.scp_upload(
-        local_file=package("A1"),
+        local_file=demo_package,
         remote_dir="/root/autoEnv",
     )
     if not result.success:
@@ -84,12 +87,14 @@ from autoenv import register_script
     description="启动我的测试环境",
 )
 def start_my_env(ctx):
-    # 1. 注册连接对象
+    # 1. 集中声明文件选择器和连接对象
     # 2. 显式下载或检查本地包
     # 3. 按需提取
     # 4. 上传
-    # 5. 执行命令并判断结果
-    # 6. 返回最后一个结果，或正常返回 None
+    # 5. 按需生成完整 shell 脚本
+    # 6. 执行命令并判断结果
+    # 7. 可选：在主流程末尾注册启动后 func
+    # 8. 返回最后一个结果，或正常返回 None
     ...
 ```
 
@@ -101,6 +106,76 @@ def start_my_env(ctx):
 - 菜单显示和日志定位。
 
 `description` 可省略，但建议填写一句能区分环境用途的说明。
+
+### 2.1 集中声明、顺序复用
+
+每个独立环境函数先集中声明文件选择器和连接对象。后续下载、提取、上传和命令步骤只复用这些变量：
+
+```python
+def start_ubengine(ctx):
+    ubengine_run = package("UBEngine")
+    ubengine_testcase = match(r"^UBEngine-testcase-.*\.tgz$")
+    install_script = extra_file("install.sh")
+    host_1260 = ctx.register_ssh_host("host_1260", defaults=SSHDefaults(...))
+
+    result = ctx.download_package(ubengine_run)
+    if not result.success:
+        return result
+
+    result = host_1260.sftp_upload(ubengine_run, "/root/autoEnv")
+    if not result.success:
+        return result
+
+    # 后续继续使用 ubengine_testcase、install_script 和 host_1260。
+```
+
+变量名是 Python 代码中的业务名称；`S{...}` 中使用的仍是选择器构造函数里的字符串，例如 `S{UBEngine}`。
+
+### 2.2 注册启动后的固定流程
+
+使用 `register_func()` 可以把环境拉起后常用的检查或维护动作放进循环菜单：
+
+```python
+from autoenv import register_func, register_script
+
+
+@register_script(name="start_demo", description="启动演示环境")
+def start_demo(ctx):
+    host = ctx.register_ssh_host("demo", defaults=SSHDefaults(...))
+    result = host.execute("/root/start.sh", timeout=600)
+    if not result.success:
+        return result
+
+    @register_func(name="check_status", description="检查 READY 状态")
+    def check_status(_func_ctx):
+        status = host.execute("cat /tmp/env_status", timeout=30)
+        if status.success and "READY" not in status.output:
+            return status.with_failure("environment status is not READY")
+        return status
+
+    @register_func(name="list_files", description="查看环境目录")
+    def list_files(_func_ctx):
+        return host.execute("ls -la /root/autoEnv", timeout=30)
+
+    return result
+```
+
+主流程成功后会反复显示：
+
+```text
+1. check_status             检查 READY 状态
+2. list_files               查看环境目录
+0. exit
+```
+
+规则：
+
+- `register_func()` 必须写在环境函数内部、所有主流程操作之后，不能放在模块末尾的顶层作用域。
+- 每个 func 必须接收一个 `ctx` 参数；它与主流程收到的是同一个 `RunContext`。
+- func 可调用主流程能够调用的接口；优先通过闭包复用已经声明的 Host、Telnet、选择器，不要重复注册同名对象。
+- func 名称在当前运行中必须唯一，描述建议填写。
+- 主流程失败时不进入菜单。func 返回失败或抛异常时记录结果并回到菜单，不覆盖已成功主流程的结果。
+- 选择 `0` 后退出菜单，随后关闭本次运行的 SSH/Telnet 连接。
 
 ## 3. 文件选择器：必须显式说明文件来源
 
@@ -194,6 +269,19 @@ console = ctx.register_telnet(
     ),
 )
 ```
+
+`uploaded_files_from` 是可选的已注册 SSH Host 名称。只有 Telnet 命令需要使用 `S{file_name}` 时才需要配置；SSH Host 必须先注册：
+
+```python
+host_1260 = ctx.register_ssh_host("host_1260", defaults=SSHDefaults(...))
+console = ctx.register_telnet(
+    "board_console",
+    defaults=TelnetDefaults(...),
+    uploaded_files_from="host_1260",
+)
+```
+
+该参数只选择上传记录，不共享 SSH 连接。未配置时，占位符来源必须能唯一推断。
 
 ### 5.1 `TelnetDefaults` 参数
 
@@ -352,6 +440,30 @@ result = host.sftp_upload(
 
 上传只查当前 `packages`。文件不存在会立即失败，并打印包目录；不会自动下载，也不会停下来等待用户补文件。
 
+### 10.3 从整段文本生成 shell 文件
+
+`ctx.generate_sh_file()` 接收完整 shell 文本，适合直接复制已有脚本。函数不会拆分命令，也不会自动添加 shebang 或 `set -e`；只把已成功上传文件的 `S{file_name}` 替换成实际文件名：
+
+```python
+result = host_1260.sftp_upload(ubengine_run, "/root/autoEnv")
+if not result.success:
+    return result
+
+ctx.generate_sh_file(
+    "install.sh",
+    """#!/bin/sh
+set -eu
+cd /root/autoEnv
+tar -xf "S{UBEngine}"
+./install
+""",
+)
+```
+
+生成文件名必须是无目录的 `.sh` 文件名。文件位于本次运行的 `packages/install.sh`，可以通过开头声明的 `install_script = extra_file("install.sh")` 上传。输入必须是一整段字符串，换行和布局保持不变。
+
+`S{...}` 使用选择器构造函数中的字符串，不使用 Python 变量名；例如变量 `ubengine_run = package("UBEngine")` 对应 `S{UBEngine}`。占位符只替换为实际文件名，脚本里的目录仍由用户保留。多个占位符必须在生成前成功上传到同一个 SSH Host。
+
 ## 11. 执行 SSH 命令
 
 ```python
@@ -504,7 +616,7 @@ def start_full_env(ctx):
 - 使用自己的 last-run。
 - 注册自己的 SSH/Telnet 对象。
 - 在 `run` 模式下单独询问。
-- 在 `rerun` 模式下单独无交互复用参数。
+- 在 `rerun` 模式下单独无参数交互地复用参数。
 
 不要把父脚本的 `ctx` 传给已注册子脚本。
 
@@ -520,14 +632,14 @@ autoenv run start_udk
 - 每项仍展示并可修改。
 - 直接回车使用显示值。
 
-快速重跑：
+快速重跑（不重新确认参数；若注册了 func，启动成功后仍显示 func 菜单）：
 
 ```bash
 autoenv rerun start_udk
 ```
 
 - 完全使用该脚本自己的上次参数。
-- 不出现交互提示。
+- 不出现参数确认提示；启动后 func 菜单仍会显示。
 - 没有历史参数时直接报错。
 
 每次 `rerun` 仍会创建全新的运行目录和 `packages`，不会复用上次下载文件。
@@ -544,6 +656,7 @@ from autoenv import (
     extra_file,
     match,
     package,
+    register_func,
     register_script,
 )
 
@@ -553,7 +666,12 @@ from autoenv import (
     description="AutoEnv 完整接口示例",
 )
 def example_environment(ctx):
-    host = ctx.register_ssh_host(
+    a1_package = package("A1")
+    manual_bundle = extra_file("manual_bundle.tar.gz")
+    driver_file = extra_file("driver.bin")
+    firmware_image = match(r"^firmware-.*\.bin$")
+    install_script = extra_file("install.sh")
+    host_1260 = ctx.register_ssh_host(
         "example_host",
         defaults=SSHDefaults(
             host="192.168.1.100",
@@ -564,7 +682,7 @@ def example_environment(ctx):
         ),
     )
 
-    console = ctx.register_telnet(
+    console_1260 = ctx.register_telnet(
         "example_console",
         defaults=TelnetDefaults(
             host="192.168.1.200",
@@ -575,13 +693,13 @@ def example_environment(ctx):
     )
 
     # 显式下载完整包；不会自动解包。
-    result = ctx.download_package(package("A1"))
+    result = ctx.download_package(a1_package)
     if not result.success:
         return result
 
     # 从 A1 包中提取单个文件。
     result = ctx.extract_file_from(
-        source=package("A1"),
+        source=a1_package,
         target_file="driver.bin",
     )
     if not result.success:
@@ -589,23 +707,23 @@ def example_environment(ctx):
 
     # 从用户手工放入 packages 的压缩包中提取目录。
     result = ctx.extract_file_from(
-        source=extra_file("manual_bundle.tar.gz"),
+        source=manual_bundle,
         target_dir="firmware",
     )
     if not result.success:
         return result
 
     # package() 按 config 的 image_name 找本地包。
-    result = host.scp_upload(
-        local_file=package("A1"),
+    result = host_1260.scp_upload(
+        local_file=a1_package,
         remote_dir="/root/autoEnv",
     )
     if not result.success:
         return result
 
     # extra_file() 使用明确文件名。
-    result = host.sftp_upload(
-        local_file=extra_file("driver.bin"),
+    result = host_1260.sftp_upload(
+        local_file=driver_file,
         remote_dir="/root/autoEnv",
         overwrite=True,
     )
@@ -613,28 +731,45 @@ def example_environment(ctx):
         return result
 
     # match() 按确定性顺序选择第一个匹配文件。
-    result = host.sftp_upload(
-        local_file=match(r"^firmware-.*\.bin$"),
+    result = host_1260.sftp_upload(
+        local_file=firmware_image,
         remote_dir="/root/autoEnv/firmware",
         overwrite=False,
     )
     if not result.success:
         return result
 
-    result = host.execute(
-        "bash /root/autoEnv/install.sh",
+    ctx.generate_sh_file(
+        "install.sh",
+        """#!/bin/sh
+set -e
+cd /root/autoEnv
+chmod +x "S{A1}"
+./"S{A1}"
+""",
+    )
+
+    result = host_1260.sftp_upload(
+        local_file=install_script,
+        remote_dir="/root/autoEnv",
+    )
+    if not result.success:
+        return result
+
+    result = host_1260.execute(
+        "bash /root/autoEnv/S{install.sh}",
         timeout=600,
     )
     if not result.success:
         return result
 
-    status = host.execute("cat /tmp/env_status", timeout=30)
+    status = host_1260.execute("cat /tmp/env_status", timeout=30)
     if not status.success:
         return status
     if "READY" not in status.output:
         return status.with_failure("环境状态不是 READY")
 
-    telnet_result = console.execute(
+    telnet_result = console_1260.execute(
         "source /root/start_slave.sh",
         timeout=300,
     )
@@ -645,11 +780,22 @@ def example_environment(ctx):
         return telnet_result
 
     # 示例：命令会主动导致连接断开。
-    return console.execute(
+    reboot_result = console_1260.execute(
         "reboot",
         timeout=60,
         expect_disconnect=True,
     )
+    if not reboot_result.success:
+        return reboot_result
+
+    @register_func(name="check_status", description="检查环境 READY 状态")
+    def check_status(_func_ctx):
+        result = host_1260.execute("cat /tmp/env_status", timeout=30)
+        if result.success and "READY" not in result.output:
+            return result.with_failure("环境状态不是 READY")
+        return result
+
+    return reboot_result
 ```
 
 仓库中的 `scripts/example.py` 会提供可直接复制的对应模板。
@@ -662,14 +808,33 @@ def example_environment(ctx):
 - [ ] `image_name` 正则能唯一匹配预期本地包。
 - [ ] 下载、提取、上传分别显式调用。
 - [ ] 手工文件使用 `extra_file()` 或 `match()`。
+- [ ] 所有选择器和连接对象集中声明在环境函数开头，流程只复用变量。
 - [ ] SSH Host 和 Telnet 分别注册。
+- [ ] `S{file_name}` 使用选择器字符串，且对应文件已成功上传到命令目标。
+- [ ] Telnet 使用占位符时已配置 `uploaded_files_from`，或上传来源唯一。
+- [ ] `generate_sh_file()` 接收完整 shell 字符串，所有占位符先上传到同一 Host。
+- [ ] 生成的 `.sh` 已声明为 `extra_file()`，并在生成后上传、执行。
 - [ ] 每个运行期结果都检查 `success` 或明确检查 `status`。
 - [ ] `TIMEOUT`/`DISCONNECTED` 操作不会被危险地自动重发。
 - [ ] 主动断连命令使用 `expect_disconnect=True`。
 - [ ] 组合脚本直接调用已注册脚本，不传递 `ctx`。
+- [ ] 可选 `register_func()` 位于主流程末尾，名称唯一，接收一个 `ctx` 参数。
+- [ ] 子 func 复用主流程上下文和已注册对象，失败条件与返回结果明确。
 - [ ] 不在脚本中直接写日志、调用 Paramiko 或访问绝对本地路径。
+- [ ] `python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py scripts/<name>.py` 通过。
+- [ ] `python -X utf8 -m pytest tests/test_generated_script_contract.py` 通过。
 - [ ] 使用 `autoenv run <name>` 完成一次交互运行。
 - [ ] 使用 `autoenv rerun <name>` 验证上次参数复用。
+
+### 19.1 统一 UT 能检查什么
+
+`tests/test_generated_script_contract.py` 对所有 `scripts/*.py` 调用同一个 AST 契约验证器，不执行环境函数。它离线检查：注册函数可解析、选择器和连接集中声明、流程复用变量、`generate_sh_file()` 使用完整字符串、占位符有声明、依赖文件先上传到同一目标、生成脚本随后上传，以及执行命令的 Host 与上传目标一致。
+
+框架的其他 UT 使用 fake HDFS、SSH、SFTP/SCP 和 Telnet Socket，验证成功上传才注册实际文件名、失败上传不能替换、多 Host 隔离、Telnet 来源选择、文本保持与错误分支。它们不依赖真实服务器。
+
+统一 UT 能验证 skill 生成的 Python 文件是否符合可静态判定的框架契约，但不能证明用户粘贴脚本的业务含义、远端路径、设备状态或交互询问质量正确。前者由该 UT 把关；后者仍需要生成前确认、skill eval/人工审阅和用户明确授权后的真实环境运行。
+
+每个测试文件的 fake/mock 实现、每条 `register_func`、上传占位符及统一契约 UT 的存在目的和失败排查方法见 [`tests/README.md`](../tests/README.md)。失败时优先复制 pytest 输出的完整 node id 单独执行，不要先放宽断言。
 
 ## 20. 常见问题
 

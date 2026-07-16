@@ -10,7 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from autoenv.package_manager import HDFSFileEntry
-from autoenv.registry import clear_registry_for_tests, register_script, run_script
+from autoenv.registry import (
+    clear_registry_for_tests,
+    register_func,
+    register_script,
+    run_script,
+)
 from autoenv.results import (
     CommandPhase,
     CommandProtocol,
@@ -304,6 +309,65 @@ def test_duplicate_registration_is_rejected_for_scripts_and_runtime_objects(tmp_
         context.finish_recording()
 
 
+def test_run_context_shares_uploaded_files_with_hosts_and_generated_scripts(tmp_path):
+    root = _project_root(tmp_path)
+    context = RunContext(
+        root_dir=root,
+        script_name="shared_upload_registry",
+        mode=RunMode.RUN,
+        input_func=lambda _: "",
+        password_input=lambda _: "",
+        console=io.StringIO(),
+    )
+    try:
+        host = context.register_ssh_host(
+            "dut", defaults=SSHDefaults(host="192.0.2.1")
+        )
+        host.uploaded_files.record(
+            "api", "/release/api-2.4.tgz", target_name=host.name
+        )
+
+        generated = context.generate_sh_file(
+            "install.sh", "#!/bin/sh\ntar -xf S{api}\n"
+        )
+
+        assert generated == context.package_dir / "install.sh"
+        assert generated.read_text("utf-8") == "#!/bin/sh\ntar -xf api-2.4.tgz\n"
+    finally:
+        context.close()
+        context.finish_recording()
+
+
+def test_telnet_upload_source_must_be_a_registered_ssh_host(tmp_path):
+    root = _project_root(tmp_path)
+    context = RunContext(
+        root_dir=root,
+        script_name="telnet_upload_source",
+        mode=RunMode.RUN,
+        input_func=lambda _: "",
+        password_input=lambda _: "",
+        console=io.StringIO(),
+    )
+    try:
+        with pytest.raises(ValueError, match="SSH host is not registered"):
+            context.register_telnet(
+                "console",
+                defaults=TelnetDefaults(host="192.0.2.2"),
+                uploaded_files_from="dut",
+            )
+
+        context.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
+        console = context.register_telnet(
+            "console",
+            defaults=TelnetDefaults(host="192.0.2.2"),
+            uploaded_files_from="dut",
+        )
+        assert console.uploaded_files_from == "dut"
+    finally:
+        context.close()
+        context.finish_recording()
+
+
 def test_registered_body_return_rules_are_reflected_in_script_results(tmp_path):
     root = _project_root(tmp_path)
 
@@ -341,6 +405,181 @@ def test_registered_body_return_rules_are_reflected_in_script_results(tmp_path):
     failed_summary = json.loads((Path(failed.run_dir) / "result.json").read_text("utf-8"))
     assert failed_summary["final_operation_id"] is None
     assert "final_operation" not in failed_summary
+
+
+def test_register_func_requires_an_active_registered_script() -> None:
+    with pytest.raises(RuntimeError, match="inside a running registered script"):
+
+        @register_func("status")
+        def status(_ctx: RunContext):
+            return None
+
+
+def test_registered_funcs_reuse_context_and_loop_until_exit(tmp_path):
+    root = _project_root(tmp_path)
+    seen: list[tuple[str, RunContext, object]] = []
+    answers = iter(["", "", "", "", "1", "2", "3", "0"])
+    console = io.StringIO()
+
+    @register_script("interactive_funcs")
+    def interactive_funcs(ctx: RunContext):
+        host = ctx.register_ssh_host(
+            "dut",
+            defaults=SSHDefaults(
+                host="192.0.2.1",
+                username="root",
+                password="secret",
+            ),
+        )
+
+        @register_func("status", description="Check environment status")
+        def status(func_ctx: RunContext):
+            seen.append(("status", func_ctx, host))
+
+        @register_func("failing_check", description="Demonstrate a failed check")
+        def failing_check(func_ctx: RunContext):
+            seen.append(("failing_check", func_ctx, host))
+            raise ValueError("check failed")
+
+        @register_func("failed_result", description="Return a failed operation")
+        def failed_result(func_ctx: RunContext):
+            seen.append(("failed_result", func_ctx, host))
+            return _command_failure()
+
+    result = run_script(
+        "interactive_funcs",
+        root_dir=root,
+        input_func=lambda _prompt: next(answers),
+        password_input=lambda _prompt: "",
+        console=console,
+    )
+
+    assert result.success is True
+    assert [name for name, _, _ in seen] == [
+        "status",
+        "failing_check",
+        "failed_result",
+    ]
+    assert len({id(ctx) for _, ctx, _ in seen}) == 1
+    assert len({id(host) for _, _, host in seen}) == 1
+    summary = json.loads((Path(result.run_dir) / "result.json").read_text("utf-8"))
+    assert summary["func_runs"] == [
+        {
+            "error_message": None,
+            "error_type": None,
+            "name": "status",
+            "status": "success",
+            "success": True,
+        },
+        {
+            "error_message": "check failed",
+            "error_type": "ValueError",
+            "name": "failing_check",
+            "status": "program_error",
+            "success": False,
+        },
+        {
+            "error_message": "exit 1",
+            "error_type": "NON_ZERO_EXIT_CODE",
+            "name": "failed_result",
+            "status": "command_failed",
+            "success": False,
+        },
+    ]
+    output = console.getvalue()
+    assert output.count("AVAILABLE FUNCS") == 4
+    assert "1. status" in output
+    assert "2. failing_check" in output
+    assert "3. failed_result" in output
+    assert "0. exit" in output
+
+
+def test_func_menu_reprompts_after_invalid_selections(tmp_path):
+    root = _project_root(tmp_path)
+    answers = iter(["not-a-number", "9", "0"])
+    called = False
+    console = io.StringIO()
+
+    @register_script("invalid_func_selection")
+    def invalid_func_selection(_ctx: RunContext):
+        @register_func("never_called")
+        def never_called(_func_ctx: RunContext):
+            nonlocal called
+            called = True
+
+    result = run_script(
+        "invalid_func_selection",
+        root_dir=root,
+        input_func=lambda _prompt: next(answers),
+        console=console,
+    )
+
+    assert result.success is True
+    assert called is False
+    assert "selection_must_be_number" in console.getvalue()
+    assert "selection_out_of_range" in console.getvalue()
+
+
+def test_func_menu_is_not_opened_when_main_flow_fails(tmp_path):
+    root = _project_root(tmp_path)
+
+    @register_script("failed_before_func_menu")
+    def failed_before_func_menu(_ctx: RunContext):
+        @register_func("not_available")
+        def not_available(_func_ctx: RunContext):
+            pytest.fail("failed main flow unexpectedly ran a func")
+
+        return _command_failure()
+
+    result = run_script(
+        "failed_before_func_menu",
+        root_dir=root,
+        input_func=lambda prompt: pytest.fail(f"unexpected func prompt: {prompt}"),
+        console=io.StringIO(),
+    )
+
+    assert result.success is False
+    assert result.status == "command_failed"
+
+
+def test_duplicate_func_name_fails_the_main_program(tmp_path):
+    root = _project_root(tmp_path)
+
+    @register_script("duplicate_func")
+    def duplicate_func(_ctx: RunContext):
+        @register_func("status")
+        def first(_func_ctx: RunContext):
+            return None
+
+        @register_func("status")
+        def second(_func_ctx: RunContext):
+            return None
+
+    result = run_script("duplicate_func", root_dir=root, console=io.StringIO())
+
+    assert result.success is False
+    assert result.status == "program_error"
+    assert result.error_type == "ValueError"
+    assert "func already registered" in result.error_message
+
+
+def test_registered_func_requires_one_context_argument(tmp_path):
+    root = _project_root(tmp_path)
+
+    @register_script("invalid_func_signature")
+    def invalid_func_signature(_ctx: RunContext):
+        @register_func("status")
+        def status():
+            return None
+
+    result = run_script(
+        "invalid_func_signature", root_dir=root, console=io.StringIO()
+    )
+
+    assert result.success is False
+    assert result.status == "program_error"
+    assert result.error_type == "TypeError"
+    assert "exactly one RunContext" in result.error_message
 
 
 def test_telnet_only_context_does_not_require_config_json(tmp_path):

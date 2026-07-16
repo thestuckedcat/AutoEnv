@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import paramiko
 
+from .command_files import UploadedFileRegistry
 from .recorder import RunRecorder
 from .results import (
     CommandPhase,
@@ -135,6 +136,7 @@ class SSHHost:
         package_dir: Path,
         recorder: RunRecorder,
         image_pattern_for: Callable[[str], str],
+        uploaded_files: UploadedFileRegistry | None = None,
         client_factory: Callable[[], Any] = paramiko.SSHClient,
         scp_factory: Callable[[Any], Any] = _default_scp_factory,
     ) -> None:
@@ -152,6 +154,9 @@ class SSHHost:
             raise TypeError("scp_factory must be callable")
         self.recorder = recorder
         self.image_pattern_for = image_pattern_for
+        if uploaded_files is not None and not isinstance(uploaded_files, UploadedFileRegistry):
+            raise TypeError("uploaded_files must be UploadedFileRegistry")
+        self.uploaded_files = uploaded_files or UploadedFileRegistry()
         self._client_factory = client_factory
         self._scp_factory = scp_factory
         self._client: Any | None = None
@@ -176,7 +181,7 @@ class SSHHost:
         timeout: float = 300.0,
         expect_disconnect: bool = False,
     ) -> CommandResult:
-        command = _text(command, "SSH command")
+        command = self.uploaded_files.resolve(command, target_name=self.name)
         timeout = _timeout(timeout, "SSH command timeout")
         if not isinstance(expect_disconnect, bool):
             raise TypeError("expect_disconnect must be a boolean")
@@ -633,6 +638,12 @@ class SSHHost:
             error_type=error_type,
             error_message=error_message,
         )
+        if result.success and result.remote_file is not None:
+            self.uploaded_files.record(
+                result.selector,
+                result.remote_file,
+                target_name=self.name,
+            )
         self.recorder.record_result(f"{protocol.upper()} UPLOAD", result)
         return result
 

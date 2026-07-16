@@ -659,6 +659,35 @@ def test_package_and_match_selectors_choose_package_root_files(
     assert fs.files[f"/incoming/{expected_file}"] == (package_dir / expected_file).read_bytes()
 
 
+def test_execute_resolves_successfully_uploaded_package_to_actual_filename(
+    tmp_path: Path,
+) -> None:
+    host, _, _, package_dir, _, _, _, _, transport = upload_rig(
+        tmp_path, image_pattern_for=lambda _name: r"^api-\d+\.tgz$"
+    )
+    (package_dir / "api-24.tgz").write_bytes(b"package")
+    assert host.sftp_upload(package("api"), "/incoming").success
+    channel = FakeChannel()
+    transport.channels.append(channel)
+
+    result = host.execute("tar -tf /incoming/S{api}")
+
+    assert result.success
+    assert result.command == "tar -tf /incoming/api-24.tgz"
+    assert channel.commands == ["tar -tf /incoming/api-24.tgz"]
+
+
+def test_failed_upload_does_not_enable_command_placeholder(tmp_path: Path) -> None:
+    host, _, _, package_dir, _, _, _, _, _ = upload_rig(
+        tmp_path, sftp_transform=lambda _data: b"corrupt"
+    )
+    (package_dir / "artifact.bin").write_bytes(b"package")
+    assert not host.sftp_upload(extra_file("artifact.bin"), "/incoming").success
+
+    with pytest.raises(ValueError, match="successfully uploaded file"):
+        host.execute("sha256sum S{artifact.bin}")
+
+
 @pytest.mark.parametrize("protocol", ["scp", "sftp"])
 def test_overwrite_true_reports_md5_before_and_after(
     tmp_path: Path, protocol: str

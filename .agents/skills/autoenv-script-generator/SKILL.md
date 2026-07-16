@@ -1,6 +1,6 @@
 ---
 name: autoenv-script-generator
-description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_ENV environment registration scripts under scripts/, including SSH or Telnet targets, HDFS package downloads, explicit extraction, SCP or SFTP uploads, command execution, result checks, retries, and serial combinations of registered scripts. Use when a user asks to add, register, create, adapt, or review an AutoEnv environment-startup script. Do not use for unrelated Python work or broad AutoEnv framework refactors.
+description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_ENV environment registration scripts under scripts/, including pasted shell conversion, file selectors, SSH or Telnet targets, downloads, uploads, commands, post-start register_func flows, checks, retries, and serial combinations. Use when a user asks to add, register, create, adapt, or review an AutoEnv environment-startup script. Do not use for unrelated Python work or broad framework refactors.
 ---
 
 # AutoEnv 脚本交互生成
@@ -69,6 +69,7 @@ description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_E
 - 默认 `host`、`port`、`timeout` 和 `shell_mode`。
 - Shell 是 POSIX、仅提示符模式，还是不确定。通常不确定时使用 `auto`；RTOS、U-Boot 或自定义 CLI 不要仅凭提示符外观推断系统类型。
 - 是否存在 `login:` 或密码登录流程。当前框架不处理 Telnet 登录提示；若需要，明确报告能力边界，不伪造支持。
+- 命令中若使用上传文件占位符，确认对应的 SSH Host 名，并设置 `uploaded_files_from="SSH注册名"`；不把 SSH 连接参数复制给 Telnet。
 
 不要擅自生成真实密码。用户未提供时使用空值或明确占位默认值，并说明运行时会交互确认。
 
@@ -104,7 +105,33 @@ SSH 每次 `execute()` 使用独立通道。需要保留目录或环境变量时
 
 只有用户明确需要时才加入重试，并确认次数、间隔和可重试状态。对已经发送后发生 `TIMEOUT` 或 `DISCONNECTED` 的安装、升级、重启命令，默认不要自动重发。
 
-### 3.6 组合脚本
+### 3.6 把已有 shell 脚本转换为环境脚本
+
+用户粘贴已有脚本时，把整段文本作为一个输入处理，不逐条改写成 Python 命令。按以下顺序引导：
+
+1. 原样保留 shebang、注释、换行、引号、变量、重定向和命令布局；不要自动增加 `set -e`。
+2. 找出脚本中所有会随构建变化、需要由 AutoEnv 准备的文件名。普通系统路径、固定配置名和脚本自身变量不自动变成占位符。
+3. 为每个待替换文件展示映射：原脚本文本、`S{选择器字符串}`、Python 变量名、`package`/`extra_file`/`match` 类型、下载或手工来源、上传 SSH Host 和远端目录。
+4. 确认输出 `.sh` 文件名，并在声明区增加对应的 `extra_file("name.sh")`。
+5. 执行顺序固定为：集中声明 → 下载/提取 → 上传脚本依赖文件 → `ctx.generate_sh_file()` → 上传生成的 `.sh` → 执行。
+6. `S{...}` 只替换文件名；原脚本中的目录仍保留。生成前，脚本内所有占位符必须已经成功上传到同一个 SSH Host。
+7. 若最终通过 Telnet 执行包含占位符的命令，确认并设置 `uploaded_files_from`。
+
+映射和完整脚本文本都属于编辑前确认稿；文件来源、上传目标或成功条件不明确时继续询问，不猜测。
+
+### 3.7 启动后固定 func
+
+询问环境成功后是否需要可重复选择的检查或维护流程。对每个 func 确认：
+
+- 唯一名称和一句描述。
+- 真实操作顺序、复用的 Host/Telnet/选择器、超时和成功条件。
+- 失败结果是否已有明确的 `with_failure()` 业务原因。
+
+生成时在所有主流程操作之后定义嵌套 `@register_func`。func 必须接收一个 `ctx` 参数，使用与主流程相同的 `RunContext`；优先闭包复用开头声明的连接和选择器，不重复注册同名对象。主流程失败时不会出现菜单；func 失败会记录并返回菜单，选择 `0` 才退出并关闭连接。
+
+不要把 `register_func` 放在模块顶层，也不要把固定 func 写成独立 `@register_script`。若组合脚本调用带 func 的子脚本，明确告诉用户：必须先退出该子脚本的 func 菜单，组合流程才继续。
+
+### 3.8 组合脚本
 
 确认子脚本列表、严格顺序以及失败是否立即停止。检查每个子脚本已经注册且可导入。
 
@@ -128,7 +155,9 @@ return start_second()
 3. SSH/Telnet 对象及默认值；密码必须脱敏。
 4. 按顺序编号的操作，每步标明输入、目标、超时、覆盖策略和成功条件。
 5. `config.json` 的拟议变更。
-6. 尚未解决的风险或框架能力边界。
+6. 已有 shell 脚本的文件映射、输出 `.sh` 名称及“原文只替换占位符”的约束。
+7. 启动后 func 的名称、描述、复用对象、步骤和成功条件。
+8. 尚未解决的风险或框架能力边界。
 
 请求一次明确确认。用户修改草案时继续对齐；确认前不要写业务脚本或包配置。
 
@@ -139,7 +168,13 @@ return start_second()
 - 在 `scripts/<name>.py` 新建脚本，或对用户指定文件做最小修改。
 - 仅从 `autoenv` 顶层导入当前需要的公共符号，保持导入最小化。
 - 使用 `@register_script(name=..., description=...)`，并保证注册名唯一。
-- 先注册连接对象，再按确认顺序执行操作。
+- 在环境函数开头集中声明所有 `package()`、`extra_file()`、`match()` 文件选择器以及 SSH/Telnet 连接对象；变量名应体现环境或文件用途。
+- 后续下载、提取、上传和命令步骤只复用开头声明的变量，不要在各步骤中重复构造相同选择器。
+- 声明完成后再按确认顺序执行操作。
+- `ctx.generate_sh_file(file_name, script)` 的 `script` 是一整段 shell 文本。保留用户粘贴内容的 shebang、换行和命令布局，仅替换其中已成功上传文件对应的 `S{file_name}`；不要拆成命令列表，也不要自动添加 `set -e`。
+- `file_name` 必须是无目录的 `.sh` 文件名，并在声明区有对应 `extra_file()`；生成文件后再上传。
+- `S{file_name}` 使用选择器构造函数的字符串参数。生成前所有占位符必须上传到同一 SSH Host；SSH 命令必须上传到当前 Host，Telnet 通过 `uploaded_files_from` 绑定来源。
+- 若需要启动后 func，从 `autoenv` 导入 `register_func`，在主流程成功路径的末尾定义嵌套 func；每个 func 接收同一个 `ctx`，复用集中声明的对象，并返回合法 AutoEnv 结果或 `None`。
 - 每个运行期操作后立即处理结果；通常使用：
 
 ```python
@@ -161,17 +196,21 @@ if not result.success:
 
 1. 重新读取生成文件，核对操作顺序与用户确认稿完全一致。
 2. 检查所有 `package()` 名称都存在，所有注册名都唯一，所有导入都可解析。
-3. 运行适合当前仓库的静态验证，至少包括 Python 编译检查。
+3. 先运行统一环境脚本契约验证器，再运行 Python 编译检查。契约检查负责集中声明、选择器复用、完整 shell 字符串、上传/生成/执行顺序、目标一致性，以及 `register_func` 的嵌套位置、参数和唯一名称。
 4. 运行项目现有单元测试；若完整测试不可用，运行与注册、运行时和新脚本发现相关的最小测试。
 5. 通过只导入/发现脚本的方式验证注册，不执行真实环境操作。
 6. 不自动运行 `autoenv run <name>` 或 `rerun <name>`，因为它们可能下载文件、连接设备、上传内容并执行远端命令。只有用户明确要求实际运行并确认目标环境后才执行。
 
+UT 失败时先读取 `tests/README.md` 中对应测试的实现、目标和排查入口，使用 pytest 输出的完整 node id 单独重跑；不要为了消除失败直接放宽契约断言。
+
 建议命令：
 
 ```bash
-python -m compileall autoenv scripts
-python -m pytest
-python -c "from autoenv.registry import list_scripts; print([item.name for item in list_scripts()])"
+python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py scripts/<name>.py
+python -X utf8 -m compileall autoenv scripts
+python -X utf8 -m pytest tests/test_generated_script_contract.py
+python -X utf8 -m pytest
+python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name for item in list_scripts()])"
 ```
 
 按仓库实际入口调整命令，不为了通过测试篡改业务语义。

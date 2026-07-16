@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from autoenv import telnet_client as telnet_module
+from autoenv.command_files import UploadedFileRegistry
 from autoenv.results import CommandPhase, CommandStatus
 from autoenv.telnet_client import (
     TelnetClient,
@@ -110,6 +111,8 @@ def make_client(
     *,
     shell_mode: str = "posix",
     clock: FakeClock | None = None,
+    uploaded_files: UploadedFileRegistry | None = None,
+    uploaded_files_from: str | None = None,
 ) -> tuple[TelnetClient, FakeRecorder, FakeClock]:
     fake_clock = clock or FakeClock()
     recorder = FakeRecorder()
@@ -123,6 +126,8 @@ def make_client(
         ),
         run_id="run-1",
         recorder=recorder,  # type: ignore[arg-type]
+        uploaded_files=uploaded_files,
+        uploaded_files_from=uploaded_files_from,
         socket_factory=factory,
         clock=fake_clock,
         sleep=fake_clock.sleep,
@@ -307,6 +312,48 @@ def test_auto_detects_posix_filters_iac_and_accepts_a_dynamic_prompt() -> None:
     assert any(PROBE_MARKER.encode() in sent for sent in sock.sent)
     assert factory.calls == [((("example.invalid", 2323),), {"timeout": 1.0})]
     assert recorder.recorded == [("TELNET EXECUTE", result)]
+
+
+def test_execute_resolves_uploaded_file_placeholder() -> None:
+    uploaded_files = UploadedFileRegistry()
+    uploaded_files.record("firmware", "/incoming/firmware-7.bin")
+    sock = FakeSocket(
+        initial_prompt(),
+        command_output("flash firmware-7.bin", "done"),
+    )
+    client, _, _ = make_client(
+        FakeSocketFactory(sock), uploaded_files=uploaded_files
+    )
+
+    result = client.execute("flash S{firmware}")
+
+    assert result.success
+    assert result.command == "flash firmware-7.bin"
+    assert b"flash firmware-7.bin" in sock.sent[-1]
+
+
+def test_execute_uses_the_explicit_ssh_upload_source() -> None:
+    uploaded_files = UploadedFileRegistry()
+    uploaded_files.record(
+        "firmware", "/incoming/firmware-a.bin", target_name="host_a"
+    )
+    uploaded_files.record(
+        "firmware", "/incoming/firmware-b.bin", target_name="host_b"
+    )
+    sock = FakeSocket(
+        initial_prompt(),
+        command_output("flash firmware-a.bin", "done"),
+    )
+    client, _, _ = make_client(
+        FakeSocketFactory(sock),
+        uploaded_files=uploaded_files,
+        uploaded_files_from="host_a",
+    )
+
+    result = client.execute("flash S{firmware}")
+
+    assert result.success
+    assert result.command == "flash firmware-a.bin"
 
 
 def test_auto_falls_back_to_prompt_only_and_returns_result_unknown() -> None:

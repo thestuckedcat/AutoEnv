@@ -11,6 +11,7 @@ from datetime import datetime
 from threading import RLock
 from typing import Callable, Protocol
 
+from .command_files import UploadedFileRegistry
 from .recorder import RunRecorder
 from .results import CommandPhase, CommandProtocol, CommandResult, CommandStatus
 
@@ -191,6 +192,8 @@ class TelnetClient:
         info: TelnetConnectionInfo,
         run_id: str,
         recorder: RunRecorder,
+        uploaded_files: UploadedFileRegistry | None = None,
+        uploaded_files_from: str | None = None,
         socket_factory: SocketFactory = socket.create_connection,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -212,6 +215,14 @@ class TelnetClient:
         self.info = info
         self.run_id = run_id.strip()
         self.recorder = recorder
+        if uploaded_files is not None and not isinstance(uploaded_files, UploadedFileRegistry):
+            raise TypeError("uploaded_files must be UploadedFileRegistry")
+        self.uploaded_files = uploaded_files or UploadedFileRegistry()
+        if uploaded_files_from is not None:
+            if not isinstance(uploaded_files_from, str) or not uploaded_files_from.strip():
+                raise ValueError("uploaded_files_from must be a non-empty SSH host name")
+            uploaded_files_from = uploaded_files_from.strip()
+        self.uploaded_files_from = uploaded_files_from
         self._socket_factory = socket_factory
         self._clock = clock
         self._sleep = sleep
@@ -253,10 +264,10 @@ class TelnetClient:
         timeout: float | None = None,
         expect_disconnect: bool = False,
     ) -> CommandResult:
-        if not isinstance(command, str):
-            raise TypeError("command must be a string")
-        if not command.strip():
-            raise ValueError("command must not be empty")
+        command = self.uploaded_files.resolve(
+            command,
+            target_name=self.uploaded_files_from,
+        )
         if timeout is None:
             command_timeout = self.info.timeout
         else:

@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, TextIO
 
+from .command_files import UploadedFileRegistry, generate_sh_file
 from .recorder import RunRecorder, mask_sensitive
 from .selectors import (
     LocalFileSelector,
@@ -98,6 +99,7 @@ class RunContext:
         self._hdfs_client = hdfs_client
         self._package_manager: object | None = None
         self._extractor: object | None = None
+        self._uploaded_files = UploadedFileRegistry()
         self._closed = False
 
         self.package_dir.mkdir(parents=True, exist_ok=False)
@@ -200,6 +202,7 @@ class RunContext:
             package_dir=self.package_dir,
             recorder=self.recorder,
             image_pattern_for=self.image_pattern_for,
+            uploaded_files=self._uploaded_files,
         )
         self._ssh_hosts[normalized_name] = host
         self.params["ssh_hosts"][normalized_name] = dict(values)  # type: ignore[index]
@@ -209,7 +212,13 @@ class RunContext:
         )
         return host
 
-    def register_telnet(self, name: str, *, defaults: object | None = None):
+    def register_telnet(
+        self,
+        name: str,
+        *,
+        defaults: object | None = None,
+        uploaded_files_from: str | None = None,
+    ):
         from .telnet_client import TelnetClient, TelnetConnectionInfo, TelnetDefaults
 
         normalized_name = self._validate_object_name(name, "Telnet")
@@ -219,6 +228,14 @@ class RunContext:
             defaults = TelnetDefaults()
         if not isinstance(defaults, TelnetDefaults):
             raise TypeError("defaults must be TelnetDefaults")
+        if uploaded_files_from is not None:
+            uploaded_files_from = self._validate_object_name(
+                uploaded_files_from, "uploaded_files_from SSH host"
+            )
+            if uploaded_files_from not in self._ssh_hosts:
+                raise ValueError(
+                    f"uploaded_files_from SSH host is not registered: {uploaded_files_from}"
+                )
 
         history = self._history_for("telnet_connections", normalized_name)
         values = self._collect_values(
@@ -243,11 +260,16 @@ class RunContext:
             info=info,
             run_id=self.run_id,
             recorder=self.recorder,
+            uploaded_files=self._uploaded_files,
+            uploaded_files_from=uploaded_files_from,
         )
         self._telnet_clients[normalized_name] = client
         self.params["telnet_connections"][normalized_name] = dict(values)  # type: ignore[index]
         self._save_params()
-        self.recorder.log(f"REGISTER TELNET name={normalized_name} values={values}")
+        self.recorder.log(
+            f"REGISTER TELNET name={normalized_name} values={values} "
+            f"uploaded_files_from={uploaded_files_from!r}"
+        )
         return client
 
     def download_package(self, selector: PackageSelector):
@@ -324,6 +346,14 @@ class RunContext:
     def resolve_local_file(self, selector: LocalFileSelector) -> ResolvedLocalFile:
         return resolve_local_file(
             selector, self.package_dir, self.image_pattern_for
+        )
+
+    def generate_sh_file(self, file_name: str, script: str) -> Path:
+        return generate_sh_file(
+            file_name,
+            script,
+            output_dir=self.package_dir,
+            uploaded_files=self._uploaded_files,
         )
 
     @property

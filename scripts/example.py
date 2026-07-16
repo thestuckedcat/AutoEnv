@@ -7,6 +7,7 @@ from autoenv import (
     extra_file,
     match,
     package,
+    register_func,
     register_script,
 )
 
@@ -16,7 +17,14 @@ from autoenv import (
     description="Example: download, extract, upload and run SSH commands",
 )
 def example_host_environment(ctx):
-    host = ctx.register_ssh_host(
+    # Declare every file selector and connection object in one place. The ordered
+    # workflow below reuses these names instead of reconstructing selectors.
+    ubengine_run = package("A1")
+    manual_bundle = extra_file("manual_bundle.tar.gz")
+    driver_file = extra_file("driver.bin")
+    firmware_image = match(r"^firmware-.*\.bin$")
+    install_script = extra_file("install.sh")
+    host_1260 = ctx.register_ssh_host(
         "example_host",
         defaults=SSHDefaults(
             host="192.168.1.100",
@@ -27,13 +35,13 @@ def example_host_environment(ctx):
         ),
     )
 
-    result = ctx.download_package(package("A1"))
+    result = ctx.download_package(ubengine_run)
     if not result.success:
         return result
 
     # Extraction is always explicit. Change the target to a real file in A1.
     result = ctx.extract_file_from(
-        source=package("A1"),
+        source=ubengine_run,
         target_file="driver.bin",
     )
     if not result.success:
@@ -42,45 +50,84 @@ def example_host_environment(ctx):
     # target_dir is mutually exclusive with target_file. This manual archive must
     # already be present in the packages directory printed at script startup.
     result = ctx.extract_file_from(
-        source=extra_file("manual_bundle.tar.gz"),
+        source=manual_bundle,
         target_dir="firmware",
     )
     if not result.success:
         return result
 
-    result = host.scp_upload(
-        local_file=package("A1"),
+    result = host_1260.scp_upload(
+        local_file=ubengine_run,
         remote_dir="/root/autoEnv",
     )
     if not result.success:
         return result
 
-    result = host.sftp_upload(
-        local_file=extra_file("driver.bin"),
+    result = host_1260.sftp_upload(
+        local_file=driver_file,
         remote_dir="/root/autoEnv",
         overwrite=True,
     )
     if not result.success:
         return result
 
-    result = host.sftp_upload(
-        local_file=match(r"^firmware-.*\.bin$"),
+    result = host_1260.sftp_upload(
+        local_file=firmware_image,
         remote_dir="/root/autoEnv/firmware",
         overwrite=False,
     )
     if not result.success:
         return result
 
-    result = host.execute(
-        "bash /root/autoEnv/install.sh",
+    ctx.generate_sh_file(
+        "install.sh",
+        """#!/bin/sh
+set -e
+cd /root/autoEnv
+chmod +x "S{A1}"
+./"S{A1}"
+""",
+    )
+
+    result = host_1260.sftp_upload(
+        local_file=install_script,
+        remote_dir="/root/autoEnv",
+    )
+    if not result.success:
+        return result
+
+    result = host_1260.execute(
+        "bash /root/autoEnv/S{install.sh}",
         timeout=600,
     )
     if not result.success:
         return result
 
-    status = host.execute("cat /tmp/env_status", timeout=30)
+    status = host_1260.execute("cat /tmp/env_status", timeout=30)
     if status.success and "READY" not in status.output:
         return status.with_failure("environment status is not READY")
+    if not status.success:
+        return status
+
+    # Register reusable post-start flows only after the main environment is ready.
+    # They reuse this run's context and the already registered/connected host.
+    @register_func(
+        name="check_environment_status",
+        description="Read and validate the environment READY marker",
+    )
+    def check_environment_status(_func_ctx):
+        result = host_1260.execute("cat /tmp/env_status", timeout=30)
+        if result.success and "READY" not in result.output:
+            return result.with_failure("environment status is not READY")
+        return result
+
+    @register_func(
+        name="list_environment_files",
+        description="List files uploaded to /root/autoEnv",
+    )
+    def list_environment_files(_func_ctx):
+        return host_1260.execute("ls -la /root/autoEnv", timeout=30)
+
     return status
 
 

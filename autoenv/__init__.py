@@ -1,4 +1,4 @@
-from .registry import register_script
+from .registry import register_func, register_script
 from .results import (
     CommandPhase,
     CommandProtocol,
@@ -28,4 +28,5 @@ __all__ = [
     "match",
     "package",
     "register_script",
+    "register_func",
 ]

@@ -40,6 +40,7 @@ AutoEnv/
 │   ├── registry.py                  # @register_script 与自动发现
 │   ├── runtime.py                   # RunContext、运行目录、last run
 │   ├── selectors.py                 # package/extra_file/match
+│   ├── command_files.py             # 上传文件映射与 shell 文件生成
 │   ├── results.py                   # 所有结果数据结构和枚举
 │   ├── package_manager.py           # config.json 与 WebHDFS 下载
 │   ├── extractor.py                 # extract_file_from
@@ -50,7 +51,9 @@ AutoEnv/
 │   ├── __init__.py
 │   └── example.py                   # 可复制的完整示例
 ├── tests/                           # 单元测试
+│   └── README.md                    # UT 目标与失败排查
 ├── docs/
+│   ├── QUICK_START.md               # 快速使用、快速测试和文档导航
 │   ├── AutoEnv-Refactor-Detailed-Design.md
 │   └── ENVIRONMENT_REGISTRATION_GUIDE.md
 ├── config.json
@@ -77,6 +80,7 @@ from autoenv import (
     extra_file,
     match,
     package,
+    register_func,
     register_script,
 )
 ```
@@ -84,17 +88,28 @@ from autoenv import (
 核心调用形式：
 
 ```python
+package_a1 = package("A1")
+driver = extra_file("driver.bin")
+install_script = extra_file("install.sh")
 host = ctx.register_ssh_host("server", defaults=SSHDefaults(...))
-console = ctx.register_telnet("console", defaults=TelnetDefaults(...))
+console = ctx.register_telnet(
+    "console",
+    defaults=TelnetDefaults(...),
+    uploaded_files_from="server",
+)
 
-ctx.download_package(package("A1"))
-ctx.extract_file_from(source=package("A1"), target_file="driver.bin")
+ctx.download_package(package_a1)
+ctx.extract_file_from(source=package_a1, target_file="driver.bin")
 
-host.scp_upload(local_file=package("A1"), remote_dir="/root/autoEnv")
-host.sftp_upload(local_file=extra_file("driver.bin"), remote_dir="/root/autoEnv")
-host.execute("bash /root/autoEnv/install.sh", timeout=600)
+host.scp_upload(local_file=package_a1, remote_dir="/root/autoEnv")
+host.sftp_upload(local_file=driver, remote_dir="/root/autoEnv")
+ctx.generate_sh_file("install.sh", "#!/bin/sh\ntar -xf S{A1}\n")
+host.sftp_upload(local_file=install_script, remote_dir="/root/autoEnv")
+host.execute("bash /root/autoEnv/S{install.sh}", timeout=600)
 console.execute("source /root/start.sh", timeout=300)
 ```
+
+环境函数开头集中声明文件选择器与连接对象，后续流程只复用这些变量。`generate_sh_file()` 是 `RunContext` 方法，不作为无上下文的顶层公共 API 导出，因为替换必须读取本次运行的成功上传记录。
 
 ## 5. 文件选择器
 
@@ -179,6 +194,32 @@ class ScriptResult:
 
 这样 `start_udk()` 既可以由 CLI 启动，也可以在组合脚本中稳定使用 `result.success` 判断。
 
+### 6.1 启动后固定 func
+
+主流程可以在成功返回前、函数末尾注册常用检查或维护流程：
+
+```python
+@register_script(name="start_udk", description="启动 UDK 环境")
+def start_udk(ctx):
+    host = ctx.register_ssh_host("udk", defaults=SSHDefaults(...))
+    result = host.execute("/root/start.sh", timeout=600)
+    if not result.success:
+        return result
+
+    @register_func(name="check_status", description="检查环境状态")
+    def check_status(_func_ctx):
+        return host.execute("cat /tmp/env_status", timeout=30)
+
+    return result
+```
+
+- `register_func()` 只能在当前正在执行的注册脚本内部调用，不能放在模块顶层。
+- 注册定义位于主流程末尾；主流程失败或注册前提前返回时不显示菜单。
+- func 名称在本次脚本运行中唯一，函数必须接收一个 `RunContext` 参数。
+- 主流程成功后循环显示全部 func 和 `0. exit`；执行、失败或异常后均回到菜单。
+- func 接收与主流程相同的 `RunContext`，可调用相同接口，并可通过 Python 闭包复用主流程的 Host、Telnet、选择器和其他对象。
+- 退出菜单后才关闭连接和 recorder。func 失败只记录独立执行摘要，不覆盖成功主流程的 `ScriptResult`。
+
 ## 7. 组合脚本语义
 
 组合脚本直接调用已经注册的脚本：
@@ -201,6 +242,8 @@ def start_full_env(ctx):
 
 组合脚本不共享上下文，不复用同名 Host，也不需要额外适配器或组合注册表。`run start_full_env` 时子脚本分别交互；`rerun start_full_env` 时执行模式向下传播，每个子脚本分别使用自己的 last-run。
 
+若某个被调用子脚本注册了 func，它会在该子脚本主流程成功后先进入自己的 func 菜单；选择退出并关闭子脚本上下文后，组合脚本才继续下一项。
+
 ## 8. 运行模式和交互默认值
 
 ### 8.1 `run`
@@ -221,7 +264,7 @@ autoenv rerun start_udk
 ```
 
 - 必须存在该脚本的 last-run。
-- 完全复用历史参数，不进行任何交互。
+- 完全复用历史参数，不进行参数确认；若脚本注册了 func，主流程成功后仍显示显式操作菜单。
 - last-run 不存在时明确报错并退出，不降级成普通 `run`。
 - 包路径选择会复用，但 `base_link/newest` 每次仍重新解析最新包，不绑定上次下载的具体文件。
 
@@ -309,16 +352,27 @@ logs/
 {
   "run_id": "20260715_101530_123_start_udk",
   "script_name": "start_udk",
-  "success": false,
-  "status": "command_failed",
+  "success": true,
+  "status": "success",
   "started_at": "2026-07-15T10:15:30.123+08:00",
   "finished_at": "2026-07-15T10:18:42.512+08:00",
   "duration_ms": 192389,
-  "final_operation_id": "0007",
-  "error_type": "NON_ZERO_EXIT_CODE",
-  "error_message": "remote command exited with code 1"
+  "final_operation_id": "0008",
+  "error_type": null,
+  "error_message": null,
+  "func_runs": [
+    {
+      "name": "check_status",
+      "success": false,
+      "status": "command_failed",
+      "error_type": "NON_ZERO_EXIT_CODE",
+      "error_message": "remote command exited with code 1"
+    }
+  ]
 }
 ```
+
+`func_runs` 按用户实际选择顺序保存启动后 func 的每次执行摘要；未选择或未注册时为空数组。
 
 ### 10.3 last-run 更新规则
 
@@ -365,10 +419,11 @@ console = ctx.register_telnet(
         timeout=30.0,
         shell_mode="auto",
     ),
+    uploaded_files_from="main_server",
 )
 ```
 
-Telnet 对象只负责 Telnet 命令，不共享 SSH Host 的任何连接配置。
+Telnet 对象只负责 Telnet 命令，不共享 SSH Host 的连接配置。可选的 `uploaded_files_from` 只声明命令占位符使用哪个已注册 SSH Host 的成功上传记录；它不共享连接，也不会触发上传。省略时，仅在来源唯一可推断时允许使用占位符。
 
 ### 11.3 名称与注册行为
 
@@ -584,6 +639,31 @@ started_at, finished_at, duration_ms,
 error_type, error_message
 ```
 
+### 15.4 上传文件映射与 shell 文件生成
+
+成功完成 MD5 校验的 SCP/SFTP 上传会记录：选择器字符串、实际远端文件名和目标 SSH Host。失败上传不进入映射。映射只在当前 `RunContext` 有效，并按目标 Host 隔离。
+
+SSH/Telnet 命令和 `ctx.generate_sh_file()` 支持 `S{file_name}`：
+
+- `file_name` 必须等于已声明 `package()`、`extra_file()` 或 `match()` 的字符串参数，不是 Python 变量名。
+- 替换值只取远端路径的文件名部分，不把远端目录写入占位符。
+- SSH 命令只解析上传到当前 Host 的文件。
+- Telnet 通过 `uploaded_files_from` 指定 SSH 来源；未指定时来源必须唯一。
+- 一个生成脚本中的所有占位符必须在生成前成功上传到同一个 Host。
+- 未上传、上传失败、跨目标无共同来源、目标歧义和畸形占位符均在发送命令或写文件前抛出 `ValueError`。
+
+```python
+ctx.generate_sh_file(
+    "install.sh",
+    """#!/bin/sh
+cd /root/autoEnv
+tar -xf "S{A1}"
+""",
+)
+```
+
+`file_name` 必须是无目录的 `.sh` 文件名，输出固定到本次运行的 `packages`。`script` 必须是一整段字符串；函数只替换占位符，保留 shebang、换行类型、末尾换行和命令布局，不自动增加 shell 选项。
+
 ## 16. SSH/Telnet 命令执行
 
 ### 16.1 接口
@@ -761,7 +841,7 @@ autoenv run start_udk
 autoenv rerun start_udk
 ```
 
-没有指定脚本时显示名称和描述菜单。未知脚本名、缺失 last-run 和导入脚本失败需要返回非零退出码和明确错误。
+没有指定脚本时显示名称和描述菜单。主流程成功且注册了 func 时，再循环显示该运行的 func 菜单；`rerun` 只跳过参数确认，不跳过这个显式操作菜单。未知脚本名、缺失 last-run 和导入脚本失败需要返回非零退出码和明确错误。
 
 ## 23. 第一版明确不支持
 
@@ -784,7 +864,7 @@ autoenv rerun start_udk
 3. `link`、`base_link/newest`、交互覆盖优先级和远端最新文件选择。
 4. `.part`、大小校验、原子覆盖、MD5 和下载失败保护。
 5. 文件与目录提取、精确路径、递归名称、歧义、覆盖和 tree MD5。
-6. SSH/Telnet 注册、交互默认值、last-run 和 rerun 无交互。
+6. SSH/Telnet 注册、交互默认值、last-run、rerun 参数无交互和启动后 func 菜单。
 7. SSH 连接复用、失效重连、不重放命令和关闭资源。
 8. SCP/SFTP 单文件、目录创建、覆盖、`overwrite=False` 和 MD5 校验。
 9. SSH 所有 `CommandStatus`、阶段、实时输出、部分输出和预期断连。
@@ -793,8 +873,13 @@ autoenv rerun start_udk
 12. 运行目录、操作编号、日志脱敏、参数/结果 JSON 和 last-run 更新。
 13. 1 GiB 历史包清理策略和当前运行保护。
 14. CLI 菜单、`run`、`rerun`、错误码和两种入口等价性。
+15. 上传文件占位符的成功/失败上传、多 Host 隔离、Telnet 来源、共同目标和完整 shell 文本保持。
+16. 统一环境脚本契约：集中声明、选择器复用、生成前上传、生成后上传、命令目标一致和注册发现。
+17. `register_func` 的作用域、重复名、同一上下文、循环选择、退出、失败/异常隔离、结果摘要和主流程失败时不展示菜单。
 
 网络相关测试使用 mock/fake，不依赖真实 HDFS、SSH 或 Telnet 服务器。少量可选集成测试必须单独标记，默认单元测试可离线运行。
+
+各测试文件的简单实现、重点 UT 的逐条目标和失败排查入口维护在 [`tests/README.md`](../tests/README.md)。新增或改变测试契约时必须同步该说明。
 
 ## 25. 迁移顺序
 
@@ -816,6 +901,9 @@ autoenv rerun start_udk
 - `run`、`rerun` 和组合脚本符合本文语义。
 - 下载、提取、上传严格分离。
 - SSH/Telnet 输出实时可见，所有失败情况可由结果对象区分。
+- 命令与完整 shell 文本中的 `S{file_name}` 只解析本次运行中对正确目标成功上传的文件，并替换为实际文件名。
+- 新增环境脚本可通过统一离线契约 UT 检查，不连接 HDFS、SSH 或 Telnet。
+- 主流程成功后可循环执行同一上下文中的注册 func，并在退出前保持连接可用。
 - 每次脚本调用都有独立可追溯的目录、参数和结果。
 - 单元测试在无外部服务器条件下通过。
 - 最终变更只提交到 `UNIFY_ENV` 分支。
