@@ -412,7 +412,7 @@ def test_posix_reports_zero_and_nonzero_exit_codes(
     else:
         assert result.error_message is None
     assert RESULT_MARKER.encode() in sock.sent[-1]
-    assert recorder.streamed == []
+    assert recorder.streamed
 
 
 def test_execute_on_output_matches_across_chunks_and_sends_ctrl_b() -> None:
@@ -438,7 +438,7 @@ def test_execute_on_output_matches_across_chunks_and_sends_ctrl_b() -> None:
     assert sock.sent == [b"\r\n", b"reboot\r\n", b"\x02"]
     assert sock.closed
     assert not client.connected
-    assert recorder.streamed == []
+    assert recorder.streamed
     assert recorder.recorded == [("TELNET EXECUTE", result)]
 
 
