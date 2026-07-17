@@ -623,7 +623,7 @@ result = host.sftp_upload(
 - 即使覆盖前 MD5 与本地相同，也仍执行明确请求的覆盖。
 - `overwrite=False` 且远端文件存在时不上传，返回 `remote_file_exists`。
 - 上传后 MD5 不一致返回 `md5_verification_failed`。
-- SCP 的预检查和事后校验仍使用 SFTP，但两个协议 Channel 必须串行：关闭预检查 SFTP 后才启动 SCP，SCP 关闭后再重开 SFTP。SCP 的远端参数使用 `remote_dir`，由远端按本地 basename 落盘，与 main 分支行为一致，兼容只允许单 Session Channel 的精简 SSH Server。
+- SCP 不依赖 SFTP：目录创建、覆盖检查和前后 MD5 通过普通 SSH 命令完成，文件传输只使用 SCP。SCP 的远端参数使用 `remote_dir`，由远端按本地 basename 落盘，与 main 分支行为一致，也支持未启用 SFTP subsystem 的精简 SSH Server。
 
 ### 15.3 `UploadResult`
 
