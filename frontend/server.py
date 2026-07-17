@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -41,11 +42,13 @@ class Session:
         process = subprocess.Popen(
             command,
             cwd=ROOT_DIR,
+            env=_worker_environment(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self.process = process
@@ -98,6 +101,13 @@ class Session:
 
 
 SESSION = Session()
+
+
+def _worker_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -182,8 +192,15 @@ class WorkerStream:
 
 
 def emit(event: dict[str, object]) -> None:
-    sys.__stdout__.write(json.dumps(event, ensure_ascii=False) + "\n")
-    sys.__stdout__.flush()
+    payload = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+    stream = sys.__stdout__
+    binary = getattr(stream, "buffer", None)
+    if binary is not None:
+        binary.write(payload)
+        binary.flush()
+        return
+    stream.write(payload.decode("utf-8"))
+    stream.flush()
 
 
 def worker(mode: str, script: str) -> int:
