@@ -205,10 +205,13 @@ class FakeClient:
         transport: FakeTransport,
         *,
         sftp: FakeSFTP | None = None,
+        sftp_factory: Callable[[], FakeSFTP] | None = None,
         connect_error: BaseException | None = None,
     ) -> None:
         self.transport = transport
         self.sftp = sftp
+        self.sftp_factory = sftp_factory
+        self.sftp_sessions = [sftp] if sftp is not None else []
         self.connect_error = connect_error
         self.connect_calls: list[dict[str, Any]] = []
         self.policies: list[Any] = []
@@ -228,8 +231,13 @@ class FakeClient:
 
     def open_sftp(self) -> FakeSFTP:
         self.open_sftp_count += 1
-        assert self.sftp is not None
-        return self.sftp
+        if self.open_sftp_count == 1:
+            assert self.sftp is not None
+            return self.sftp
+        assert self.sftp_factory is not None
+        session = self.sftp_factory()
+        self.sftp_sessions.append(session)
+        return session
 
     def close(self) -> None:
         self.close_count += 1
@@ -264,6 +272,10 @@ class FakeSCP:
         remote_path = self.fs.normalize(remote_path)
         self.put_calls.append((local_path, remote_path))
         data = Path(local_path).read_bytes()
+        if remote_path in self.fs.dirs:
+            remote_path = self.fs.normalize(
+                posixpath.join(remote_path, Path(local_path).name)
+            )
         self.fs.files[remote_path] = self.upload_transform(data)
 
     def close(self) -> None:
@@ -328,7 +340,11 @@ def upload_rig(
     fs = FakeRemoteFS()
     sftp = FakeSFTP(fs, sftp_transform)
     transport = FakeTransport()
-    client = FakeClient(transport, sftp=sftp)
+    client = FakeClient(
+        transport,
+        sftp=sftp,
+        sftp_factory=lambda: FakeSFTP(fs, sftp_transform),
+    )
     scp_factory = FakeSCPFactory(fs, scp_transform)
     host, recorder, client_factory, package_dir = make_host(
         tmp_path,
@@ -720,7 +736,9 @@ def test_disconnect_invalidates_but_does_not_replay_on_reconnect(tmp_path: Path)
 def test_single_file_upload_creates_remote_tree_and_verifies_md5(
     tmp_path: Path, protocol: str
 ) -> None:
-    host, recorder, _, package_dir, fs, sftp, scp_factory, _, transport = upload_rig(tmp_path)
+    host, recorder, _, package_dir, fs, sftp, scp_factory, client, transport = upload_rig(
+        tmp_path
+    )
     content = b"release payload\x00\xff"
     local_file = package_dir / "release.bin"
     local_file.write_bytes(content)
@@ -742,8 +760,15 @@ def test_single_file_upload_creates_remote_tree_and_verifies_md5(
     assert fs.mkdir_calls == ["/opt", "/opt/apps", "/opt/apps/v1"]
     if protocol == "scp":
         assert scp_factory.transports == [transport]
-        assert scp_factory.created[0].put_calls == [(str(local_file.resolve()), result.remote_file)]
+        assert scp_factory.created[0].put_calls == [
+            (str(local_file.resolve()), result.remote_dir)
+        ]
         assert sftp.put_calls == []
+        assert sftp.close_count == 1
+        assert scp_factory.created[0].close_count == 1
+        assert client.open_sftp_count == 2
+        assert len(client.sftp_sessions) == 2
+        assert client.sftp_sessions[1].close_count == 0
     else:
         assert sftp.put_calls == [(str(local_file.resolve()), result.remote_file)]
         assert scp_factory.created == []

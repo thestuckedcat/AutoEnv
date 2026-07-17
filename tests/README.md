@@ -84,7 +84,7 @@ python -X utf8 -m pytest -q
 | `test_generate_sh_file_requires_one_complete_script_string` | 禁止恢复成命令列表 API | 检查调用方是否传入一个三引号字符串 |
 | `test_generate_sh_file_rejects_invalid_filename` | 输出只能是 packages 根目录的 `.sh` 文件 | 检查文件名后缀、绝对路径、子目录和 `..` |
 
-SSH/Telnet 文件中的占位符 UT 进一步证明：只有通过 MD5 校验的上传才可替换，SSH 绑定当前 Host，Telnet 使用明确的 `uploaded_files_from`。
+SSH/Telnet 文件中的占位符 UT 进一步证明：只有通过 MD5 校验的上传才可替换，SSH 绑定当前 Host，Telnet 使用明确的 `uploaded_files_from`。SCP UT 还检查目标参数使用远端目录，并确认预检查 SFTP、SCP 和事后校验 SFTP 不会作为并行 Channel 保持。
 
 ## 6. 统一环境脚本契约每条 UT 的目的
 

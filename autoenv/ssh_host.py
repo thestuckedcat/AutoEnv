@@ -592,8 +592,16 @@ class SSHHost:
                     )
 
             if protocol == "scp":
+                # Some embedded SSH servers only allow one session channel per
+                # transport. Finish the SFTP pre-check before starting legacy
+                # SCP, then close SCP before reopening SFTP for MD5 verification.
+                self._close_sftp()
                 scp_client = self._get_scp()
-                scp_client.put(str(resolved_path), remote_path=remote_file)
+                try:
+                    scp_client.put(str(resolved_path), remote_path=remote_dir)
+                finally:
+                    self._close_scp()
+                sftp = self._get_sftp()
             else:
                 sftp.put(str(resolved_path), remote_file)
 
@@ -808,10 +816,28 @@ class SSHHost:
     def _invalidate_connection(self) -> None:
         self._discard_connection()
 
-    def _discard_connection(self) -> None:
-        resources = (self._scp, self._sftp, self._client, self._transport)
+    def _close_scp(self) -> None:
+        resource = self._scp
         self._scp = None
+        if resource is not None:
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def _close_sftp(self) -> None:
+        resource = self._sftp
         self._sftp = None
+        if resource is not None:
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def _discard_connection(self) -> None:
+        self._close_scp()
+        self._close_sftp()
+        resources = (self._client, self._transport)
         self._client = None
         self._transport = None
         for resource in resources:
