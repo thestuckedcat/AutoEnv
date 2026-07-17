@@ -684,6 +684,23 @@ result = console.execute(
 
 默认实时显示并记录远端输出。命令结束后，完整输出仍保存在 `CommandResult` 中。超时或断连也保留已经收到的部分输出。
 
+### 16.1.1 按输出触发原始字节
+
+SSH Host 与 Telnet 对象提供相同的阻塞式契约：
+
+```python
+result = target.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+```
+
+接口在一个操作内完成初始命令发送、持续输出读取、跨接收分片的大小写敏感关键词匹配和一次性原始字节发送。`send_data` 必须是非空 `bytes`，且不隐式追加换行。成功只表示匹配和发送完成；超时使用 `KEYWORD_NOT_FOUND`，响应发送失败使用 `RESPONSE_SEND_FAILED`，所有失败均保留部分输出且不自动重放命令。
+
+SSH 复用现有 Transport，但每次操作仍使用独立 Channel。Telnet 在响应发送后丢弃当前 Socket 及旧 Shell 提示符状态，下一次操作懒重连，避免设备进入 Bootloader 后仍按原 POSIX Shell 解析。Ctrl+A 到 Ctrl+Z 对应 `0x01` 到 `0x1A`；常用字节写法和 Enter/Backspace 差异以环境注册指南为准。
+
 ### 16.2 `CommandResult`
 
 ```python
@@ -889,10 +906,11 @@ autoenv rerun start_udk
 4. 迁移 `.run`/tar 解包为显式 `extract_file_from()`。
 5. 实现 SSH Host、实时命令、SFTP 和 SCP 单文件上传。
 6. 实现 Telnet 自动 Shell 探测和统一命令结果。
-7. 添加 `scripts/example.py` 和注册指南。
-8. 添加完整单元测试并修复边界问题。
-9. 更新 README、依赖和 Git 忽略规则。
-10. 删除旧 Python API 和失效文档，保留 `config.json`。
+7. 为 SSH/Telnet 增加按输出关键词发送原始字节的阻塞接口。
+8. 添加 `scripts/example.py` 和注册指南。
+9. 添加完整单元测试并修复边界问题。
+10. 更新 README、依赖和 Git 忽略规则。
+11. 删除旧 Python API 和失效文档，保留 `config.json`。
 
 ## 26. 验收标准
 
@@ -901,6 +919,7 @@ autoenv rerun start_udk
 - `run`、`rerun` 和组合脚本符合本文语义。
 - 下载、提取、上传严格分离。
 - SSH/Telnet 输出实时可见，所有失败情况可由结果对象区分。
+- SSH/Telnet 可在同一次阻塞操作中匹配跨分片输出并发送一次原始响应字节，超时、断连和发送失败均保留部分输出。
 - 命令与完整 shell 文本中的 `S{file_name}` 只解析本次运行中对正确目标成功上传的文件，并替换为实际文件名。
 - 新增环境脚本可通过统一离线契约 UT 检查，不连接 HDFS、SSH 或 Telnet。
 - 主流程成功后可循环执行同一上下文中的注册 func，并在退出前保持连接可用。

@@ -48,13 +48,16 @@ class FakeChannel:
         exit_code: int | None = 0,
         disconnect_when_drained: bool = False,
         recv_ready_error: BaseException | None = None,
+        send_error: BaseException | None = None,
     ) -> None:
         self.stdout = list(stdout)
         self.stderr = list(stderr)
         self.exit_code = exit_code
         self.disconnect_when_drained = disconnect_when_drained
         self.recv_ready_error = recv_ready_error
+        self.send_error = send_error
         self.commands: list[str] = []
+        self.sent: list[bytes] = []
         self.close_count = 0
         self._explicitly_closed = False
 
@@ -66,6 +69,11 @@ class FakeChannel:
 
     def exec_command(self, command: str) -> None:
         self.commands.append(command)
+
+    def sendall(self, data: bytes) -> None:
+        if self.send_error is not None:
+            raise self.send_error
+        self.sent.append(data)
 
     def recv_ready(self) -> bool:
         if self.stdout:
@@ -460,6 +468,119 @@ def test_execute_success_and_nonzero_exit(
     assert result.error_type == error_type
     assert channel.close_count == 1
     assert recorder.results[-1] == ("SSH EXECUTE", result)
+
+
+def test_execute_on_output_matches_across_chunks_and_sends_raw_bytes(
+    tmp_path: Path,
+) -> None:
+    channel = FakeChannel(
+        stdout=(b"rebooting\nPress Ctrl", b"+B to enter menu"),
+        exit_code=None,
+    )
+    host, recorder, _, _ = make_host(
+        tmp_path, [FakeClient(FakeTransport([channel]))]
+    )
+
+    result = host.execute_on_output(
+        "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
+        timeout=1,
+    )
+
+    assert result.status is CommandStatus.SUCCESS
+    assert result.phase is CommandPhase.COMPLETE
+    assert result.exit_code is None
+    assert result.stdout == "rebooting\nPress Ctrl+B to enter menu"
+    assert channel.commands == ["reboot"]
+    assert channel.sent == [b"\x02"]
+    assert channel.close_count == 1
+    assert recorder.results[-1] == ("SSH EXECUTE", result)
+
+
+def test_execute_on_output_keeps_ssh_transport_reusable(tmp_path: Path) -> None:
+    triggered = FakeChannel(stdout=(b"Continue?",), exit_code=None)
+    follow_up = FakeChannel(stdout=(b"healthy",))
+    transport = FakeTransport([triggered, follow_up])
+    client = FakeClient(transport)
+    host, _, factory, _ = make_host(tmp_path, [client])
+
+    first = host.execute_on_output(
+        "installer",
+        keyword="Continue?",
+        send_data=b"y\n",
+    )
+    second = host.execute("health-check")
+
+    assert first.success
+    assert second.success and second.stdout == "healthy"
+    assert factory.created == [client]
+    assert triggered.sent == [b"y\n"]
+    assert follow_up.commands == ["health-check"]
+
+
+def test_execute_on_output_reports_command_exit_before_keyword(tmp_path: Path) -> None:
+    channel = FakeChannel(stdout=(b"ordinary output",), exit_code=0)
+    host, _, _, _ = make_host(
+        tmp_path, [FakeClient(FakeTransport([channel]))]
+    )
+
+    result = host.execute_on_output(
+        "short-command",
+        keyword="never appears",
+        send_data=b"response\n",
+    )
+
+    assert result.status is CommandStatus.COMMAND_FAILED
+    assert result.phase is CommandPhase.COMPLETE
+    assert result.exit_code == 0
+    assert result.error_type == "KEYWORD_NOT_FOUND"
+    assert channel.sent == []
+
+
+def test_execute_on_output_reports_response_send_failure(tmp_path: Path) -> None:
+    channel = FakeChannel(
+        stdout=(b"Continue?",),
+        exit_code=None,
+        send_error=OSError(errno.EIO, "send failed"),
+    )
+    host, _, _, _ = make_host(
+        tmp_path, [FakeClient(FakeTransport([channel]))]
+    )
+
+    result = host.execute_on_output(
+        "installer",
+        keyword="Continue?",
+        send_data=b"y\n",
+    )
+
+    assert result.status is CommandStatus.PROTOCOL_ERROR
+    assert result.phase is CommandPhase.SEND_COMMAND
+    assert result.error_type == "RESPONSE_SEND_FAILED"
+    assert "send failed" in (result.error_message or "")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    [
+        ({"keyword": 1, "send_data": b"x"}, TypeError),
+        ({"keyword": "", "send_data": b"x"}, ValueError),
+        ({"keyword": "ready", "send_data": "x"}, TypeError),
+        ({"keyword": "ready", "send_data": b""}, ValueError),
+        ({"keyword": "ready", "send_data": b"x", "timeout": 0}, ValueError),
+    ],
+)
+def test_execute_on_output_validates_trigger_inputs(
+    tmp_path: Path,
+    kwargs: dict[str, Any],
+    error: type[Exception],
+) -> None:
+    host, _, factory, _ = make_host(tmp_path, [FakeClient(FakeTransport())])
+
+    with pytest.raises(error):
+        host.execute_on_output("command", **kwargs)  # type: ignore[arg-type]
+
+    assert factory.created == []
 
 
 @pytest.mark.parametrize(

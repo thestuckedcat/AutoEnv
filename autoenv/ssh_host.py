@@ -181,6 +181,46 @@ class SSHHost:
         timeout: float = 300.0,
         expect_disconnect: bool = False,
     ) -> CommandResult:
+        return self._execute(
+            command,
+            timeout=timeout,
+            expect_disconnect=expect_disconnect,
+        )
+
+    def execute_on_output(
+        self,
+        command: str,
+        *,
+        keyword: str,
+        send_data: bytes,
+        timeout: float = 300.0,
+    ) -> CommandResult:
+        """Run a command, then block until output matches and send raw bytes."""
+        if not isinstance(keyword, str):
+            raise TypeError("keyword must be a string")
+        if not keyword:
+            raise ValueError("keyword must not be empty")
+        if not isinstance(send_data, bytes):
+            raise TypeError("send_data must be bytes")
+        if not send_data:
+            raise ValueError("send_data must not be empty")
+        return self._execute(
+            command,
+            timeout=timeout,
+            expect_disconnect=False,
+            keyword=keyword,
+            send_data=send_data,
+        )
+
+    def _execute(
+        self,
+        command: str,
+        *,
+        timeout: float,
+        expect_disconnect: bool,
+        keyword: str | None = None,
+        send_data: bytes | None = None,
+    ) -> CommandResult:
         command = self.uploaded_files.resolve(command, target_name=self.name)
         timeout = _timeout(timeout, "SSH command timeout")
         if not isinstance(expect_disconnect, bool):
@@ -203,8 +243,12 @@ class SSHHost:
         raw_parts: list[str] = []
         stdout_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         stderr_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        match_tails = {"stdout": "", "stderr": ""}
+        response_send_attempted = False
+        response_sent = False
 
         def receive(stream: str, data: bytes) -> None:
+            nonlocal response_send_attempted, response_sent
             decoder = stdout_decoder if stream == "stdout" else stderr_decoder
             text = decoder.decode(data, final=False)
             if not text:
@@ -215,6 +259,15 @@ class SSHHost:
                 stderr_parts.append(text)
             raw_parts.append(text)
             self.recorder.stream(f"SSH {self.name} {stream.upper()}", text)
+            if keyword is not None and not response_sent:
+                candidate = match_tails[stream] + text
+                if keyword in candidate:
+                    response_send_attempted = True
+                    assert channel is not None and send_data is not None
+                    channel.sendall(send_data)
+                    response_sent = True
+                keep = max(0, len(keyword) - 1)
+                match_tails[stream] = candidate[-keep:] if keep else ""
 
         try:
             transport = self._ensure_transport()
@@ -243,18 +296,31 @@ class SSHHost:
                         receive("stderr", chunk)
                         made_progress = True
 
+                if response_sent:
+                    phase = CommandPhase.COMPLETE
+                    status = CommandStatus.SUCCESS
+                    break
+
                 if channel.exit_status_ready():
                     # Paramiko may announce exit before the caller has drained all data.
                     if channel.recv_ready() or channel.recv_stderr_ready():
                         continue
                     phase = CommandPhase.PARSE_RESULT
                     exit_code = channel.recv_exit_status()
-                    status = (
-                        CommandStatus.SUCCESS
-                        if exit_code == 0
-                        else CommandStatus.COMMAND_FAILED
-                    )
-                    if exit_code != 0:
+                    if keyword is not None:
+                        status = CommandStatus.COMMAND_FAILED
+                        error_type = "KEYWORD_NOT_FOUND"
+                        error_message = (
+                            f"SSH command exited before output keyword {keyword!r} "
+                            "was found"
+                        )
+                    else:
+                        status = (
+                            CommandStatus.SUCCESS
+                            if exit_code == 0
+                            else CommandStatus.COMMAND_FAILED
+                        )
+                    if keyword is None and exit_code != 0:
                         error_type = "NON_ZERO_EXIT_CODE"
                         error_message = f"remote command exited with code {exit_code}"
                     phase = CommandPhase.COMPLETE
@@ -268,8 +334,15 @@ class SSHHost:
                     raise EOFError("SSH transport disconnected while command was running")
                 if time.monotonic() - started_clock >= timeout:
                     status = CommandStatus.TIMEOUT
-                    error_type = "COMMAND_TIMEOUT"
-                    error_message = f"SSH command timed out after {timeout:g} seconds"
+                    if keyword is None:
+                        error_type = "COMMAND_TIMEOUT"
+                        error_message = f"SSH command timed out after {timeout:g} seconds"
+                    else:
+                        error_type = "KEYWORD_NOT_FOUND"
+                        error_message = (
+                            f"SSH output keyword {keyword!r} was not found within "
+                            f"{timeout:g} seconds"
+                        )
                     break
                 if not made_progress:
                     time.sleep(_POLL_INTERVAL)
@@ -280,10 +353,16 @@ class SSHHost:
             error_message = str(exc) or "SSH authentication failed"
             self._invalidate_connection()
         except (socket.timeout, TimeoutError) as exc:
-            if command_sent:
+            if response_send_attempted and not response_sent:
+                status = CommandStatus.PROTOCOL_ERROR
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+            elif command_sent:
                 status = CommandStatus.TIMEOUT
                 phase = CommandPhase.WAIT_OUTPUT
-                error_type = "COMMAND_TIMEOUT"
+                error_type = (
+                    "KEYWORD_NOT_FOUND" if keyword is not None else "COMMAND_TIMEOUT"
+                )
             elif connected:
                 status = CommandStatus.TIMEOUT
                 phase = CommandPhase.SEND_COMMAND
@@ -311,7 +390,12 @@ class SSHHost:
                 error_message = str(exc) or "SSH connection was lost"
             self._invalidate_connection()
         except (paramiko.ssh_exception.NoValidConnectionsError, OSError) as exc:
-            if command_sent:
+            if response_send_attempted and not response_sent:
+                status = CommandStatus.PROTOCOL_ERROR
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+                error_message = str(exc) or "SSH response bytes could not be sent"
+            elif command_sent:
                 if self._is_disconnect_exception(exc) or self._looks_disconnected(exc):
                     disconnected = True
                     if expect_disconnect:
@@ -341,7 +425,12 @@ class SSHHost:
                 error_message = str(exc) or "SSH connection failed"
             self._invalidate_connection()
         except paramiko.SSHException as exc:
-            if command_sent and self._looks_disconnected(exc):
+            if response_send_attempted and not response_sent:
+                status = CommandStatus.PROTOCOL_ERROR
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+                error_message = str(exc) or "SSH response bytes could not be sent"
+            elif command_sent and self._looks_disconnected(exc):
                 disconnected = True
                 if expect_disconnect:
                     status = CommandStatus.SUCCESS
@@ -364,7 +453,11 @@ class SSHHost:
             error_message = str(exc)
         except Exception as exc:  # A malformed/failed channel is a protocol failure.
             status = CommandStatus.PROTOCOL_ERROR
-            error_type = type(exc).__name__
+            if response_send_attempted and not response_sent:
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+            else:
+                error_type = type(exc).__name__
             error_message = str(exc) or repr(exc)
             self._invalidate_connection()
         finally:

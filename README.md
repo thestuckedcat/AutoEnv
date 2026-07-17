@@ -1,6 +1,6 @@
 # AutoEnv
 
-AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 下载、显式文件/目录提取、SCP/SFTP 单文件上传、SSH/Telnet 命令执行、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
+AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 下载、显式文件/目录提取、SCP/SFTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
 
 AutoEnv 不包含工作流 DAG、Step 依赖或并发调度。脚本中的代码顺序就是实际执行顺序。
 
@@ -187,3 +187,18 @@ return host.execute("sh /root/autoEnv/S{install.sh}")
 python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py
 python -X utf8 -m pytest tests/test_generated_script_contract.py
 ```
+
+## 按输出关键词发送数据
+
+SSH Host 和 Telnet 对象均提供阻塞式 `execute_on_output()`。它先执行命令，再持续读取输出；关键词出现后立即向同一通道发送原始字节并返回：
+
+```python
+result = console.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+```
+
+`b"\x02"` 是 Ctrl+B 的实际字节，不是文本 `b"ctrl+b"`。`send_data` 不会自动追加回车或换行；普通命令需显式写成例如 `b"boot\r\n"`。完整状态语义、串口连接重置规则和常用控制字符对照见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#121-按输出关键词发送数据)。普通 SSH 在 reboot 后通常断开，无法观察 BIOS、BootROM 或 Bootloader 输出；进入启动模式的场景通常应使用串口映射的 Telnet 连接。

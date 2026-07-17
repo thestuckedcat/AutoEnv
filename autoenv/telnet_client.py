@@ -282,8 +282,53 @@ class TelnetClient:
         with self._lock:
             return self._execute_locked(command, command_timeout, expect_disconnect)
 
+    def execute_on_output(
+        self,
+        command: str,
+        *,
+        keyword: str,
+        send_data: bytes,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        """Run a command, then block until output matches and send raw bytes."""
+        command = self.uploaded_files.resolve(
+            command,
+            target_name=self.uploaded_files_from,
+        )
+        if not isinstance(keyword, str):
+            raise TypeError("keyword must be a string")
+        if not keyword:
+            raise ValueError("keyword must not be empty")
+        if not isinstance(send_data, bytes):
+            raise TypeError("send_data must be bytes")
+        if not send_data:
+            raise ValueError("send_data must not be empty")
+        if timeout is None:
+            command_timeout = self.info.timeout
+        else:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise TypeError("timeout must be a number")
+            command_timeout = float(timeout)
+            if not math.isfinite(command_timeout) or command_timeout <= 0:
+                raise ValueError("timeout must be a finite number greater than zero")
+
+        with self._lock:
+            return self._execute_locked(
+                command,
+                command_timeout,
+                False,
+                keyword=keyword,
+                send_data=send_data,
+            )
+
     def _execute_locked(
-        self, command: str, timeout: float, expect_disconnect: bool
+        self,
+        command: str,
+        timeout: float,
+        expect_disconnect: bool,
+        *,
+        keyword: str | None = None,
+        send_data: bytes | None = None,
     ) -> CommandResult:
         operation_id = self.recorder.next_operation_id()
         started_at = datetime.now().astimezone()
@@ -370,7 +415,9 @@ class TelnetClient:
         marker = uuid.uuid4().hex
         result_marker = f"__AUTOENV_RC_{marker}__"
         mode = self._active_shell_mode
-        if mode == "posix":
+        if keyword is not None:
+            wire_command = command
+        elif mode == "posix":
             marker_command = f"printf '\\n{result_marker}:%d\\n' $?"
             wire_command = f"{command}\n{marker_command}"
         else:
@@ -394,6 +441,85 @@ class TelnetClient:
                 error_message=message,
                 expected_disconnect=expect_disconnect,
                 disconnected=True,
+            )
+
+        if keyword is not None:
+            try:
+                raw_output = self._receive_until(
+                    timeout,
+                    lambda text: keyword in self._clean_terminal_text(text),
+                    stream=True,
+                )
+            except _ReadTimedOut as exc:
+                raw_output = exc.partial
+                stdout = self._clean_command_output(raw_output, wire_command, "")
+                self._drop_connection()
+                return self._result(
+                    operation_id=operation_id,
+                    command=command,
+                    status=CommandStatus.TIMEOUT,
+                    phase=CommandPhase.WAIT_OUTPUT,
+                    started_at=started_at,
+                    started_clock=started_clock,
+                    stdout=stdout,
+                    raw_output=raw_output,
+                    error_type="KEYWORD_NOT_FOUND",
+                    error_message=(
+                        f"Telnet output keyword {keyword!r} was not found within "
+                        f"{timeout:g} seconds"
+                    ),
+                )
+            except _ConnectionClosed as exc:
+                raw_output = exc.partial
+                stdout = self._clean_command_output(raw_output, wire_command, "")
+                self._drop_connection()
+                return self._result(
+                    operation_id=operation_id,
+                    command=command,
+                    status=CommandStatus.DISCONNECTED,
+                    phase=CommandPhase.WAIT_OUTPUT,
+                    started_at=started_at,
+                    started_clock=started_clock,
+                    stdout=stdout,
+                    raw_output=raw_output,
+                    error_type="CONNECTION_LOST",
+                    error_message=self._connection_error_message(exc),
+                    disconnected=True,
+                )
+
+            try:
+                assert self._sock is not None and send_data is not None
+                self._sock.sendall(send_data)
+            except (OSError, EOFError) as exc:
+                stdout = self._clean_command_output(raw_output, wire_command, "")
+                self._drop_connection()
+                return self._result(
+                    operation_id=operation_id,
+                    command=command,
+                    status=CommandStatus.PROTOCOL_ERROR,
+                    phase=CommandPhase.SEND_COMMAND,
+                    started_at=started_at,
+                    started_clock=started_clock,
+                    stdout=stdout,
+                    raw_output=raw_output,
+                    error_type="RESPONSE_SEND_FAILED",
+                    error_message=str(exc) or "Telnet response bytes could not be sent",
+                )
+
+            stdout = self._clean_command_output(raw_output, wire_command, "")
+            # The response often changes from a Linux shell to a bootloader or
+            # another prompt. Discard stale prompt/mode state; the object remains
+            # reusable and reconnects lazily on its next operation.
+            self._drop_connection()
+            return self._result(
+                operation_id=operation_id,
+                command=command,
+                status=CommandStatus.SUCCESS,
+                phase=CommandPhase.COMPLETE,
+                started_at=started_at,
+                started_clock=started_clock,
+                stdout=stdout,
+                raw_output=raw_output,
             )
 
         try:

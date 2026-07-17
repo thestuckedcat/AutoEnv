@@ -507,6 +507,75 @@ result = console.execute("./start_slave.sh")
 
 意外断连后下一条命令会重新连接；新会话不保证保留之前状态。
 
+### 12.1 按输出关键词发送数据
+
+SSH Host 和 Telnet 对象都提供阻塞式 `execute_on_output()`：它先发送初始命令，然后持续读取并实时记录输出。累计输出中第一次出现大小写敏感的 `keyword` 后，接口立即向同一通道原样发送 `send_data` 并返回。
+
+```python
+result = console.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+
+if not result.success:
+    return result
+```
+
+关键词可以被拆在多个网络包中，例如先收到 `Press Ctrl`、再收到 `+B`，仍然能够匹配。`send_data` 必须是非空 `bytes`，不会自动增加 `\r`、`\n` 或 `\r\n`：
+
+```python
+# 发送一个控制字符
+send_data=b"\x02"          # Ctrl+B
+
+# 发送一条需要回车确认的命令
+send_data=b"boot recovery\r\n"
+```
+
+返回规则：
+
+| 情况 | `status` | `phase` | `error_type` |
+|---|---|---|---|
+| 命中并成功发送 | `SUCCESS` | `COMPLETE` | `None` |
+| 超时仍未命中 | `TIMEOUT` | `WAIT_OUTPUT` | `KEYWORD_NOT_FOUND` |
+| 命中前断连 | `DISCONNECTED` | `WAIT_OUTPUT` | `CONNECTION_LOST` |
+| 命中但响应发送失败 | `PROTOCOL_ERROR` | `SEND_COMMAND` | `RESPONSE_SEND_FAILED` |
+| SSH 命令正常退出但从未命中 | `COMMAND_FAILED` | `COMPLETE` | `KEYWORD_NOT_FOUND` |
+
+`SUCCESS` 只证明关键词已经出现且响应字节已经交给连接通道，不证明设备一定进入了目标模式。接口不会自动重发初始命令或响应。完整的匹配前输出保留在 `stdout` 和 `raw_output` 中。
+
+发送响应后，SSH 本次独立命令 Channel 会关闭，但 SSH Transport 仍可复用。Telnet 响应通常会让设备从 Linux Shell 切换到 Bootloader，因此接口会断开当前 Telnet Socket，清除旧提示符和 Shell 模式；同一个 Telnet 对象下次调用时会自动重新连接。
+
+普通 SSH 在执行 `reboot` 后通常会断开，无法继续观察 BIOS、BootROM 或 Bootloader 输出。卡启动时点进入模式应使用串口，或者使用串口服务器映射出来的 Telnet 连接。SSH 上的该接口更适合安装器确认、交互式脚本输入等场景。
+
+#### 常用控制字符对照
+
+控制字符必须发送实际字节，不能发送它们的文字名称。Ctrl+A 到 Ctrl+Z 的 ASCII 值依次为 `0x01` 到 `0x1A`，可用 `bytes([ord(letter.upper()) & 0x1F])` 计算。
+
+| 按键/字符 | 十六进制 | Python `bytes` | 常见含义 |
+|---|---:|---|---|
+| Ctrl+A | `0x01` | `b"\x01"` | SOH，部分终端的行首 |
+| Ctrl+B | `0x02` | `b"\x02"` | STX，常用于进入 Bootloader 菜单 |
+| Ctrl+C | `0x03` | `b"\x03"` | ETX，通常中断前台程序 |
+| Ctrl+D | `0x04` | `b"\x04"` | EOT，终端中常表示输入结束 |
+| Ctrl+H / Backspace | `0x08` | `b"\x08"` 或 `b"\b"` | 退格；部分终端使用 DEL |
+| Ctrl+I / Tab | `0x09` | `b"\x09"` 或 `b"\t"` | 水平制表符 |
+| Ctrl+J / LF | `0x0A` | `b"\x0a"` 或 `b"\n"` | Unix 换行 |
+| Ctrl+L / FF | `0x0C` | `b"\x0c"` 或 `b"\f"` | 终端中常用于清屏 |
+| Ctrl+M / CR | `0x0D` | `b"\x0d"` 或 `b"\r"` | 回车 |
+| Ctrl+Q / XON | `0x11` | `b"\x11"` | 恢复软件流控 |
+| Ctrl+S / XOFF | `0x13` | `b"\x13"` | 暂停软件流控 |
+| Ctrl+Z | `0x1A` | `b"\x1a"` | POSIX 终端中常挂起前台程序 |
+| Esc | `0x1B` | `b"\x1b"` | 转义键/ANSI 序列起始符 |
+| Space | `0x20` | `b" "` | 空格，有些启动菜单要求按任意键 |
+| DEL | `0x7F` | `b"\x7f"` | 删除；部分终端把它作为 Backspace |
+| Enter（CR） | `0x0D` | `b"\r"` | 串口/终端常用回车 |
+| Enter（LF） | `0x0A` | `b"\n"` | Linux 管道或部分程序使用 |
+| Enter（CRLF） | `0x0D 0x0A` | `b"\r\n"` | Telnet 和部分串口命令行常用 |
+
+实际设备需要哪一种 Enter/Backspace 取决于串口程序、终端服务器和目标固件配置，应以人工终端抓包或设备说明为准。
+
 ## 13. 判断命令结果
 
 最常用判断：
@@ -779,11 +848,12 @@ chmod +x "S{A1}"
     elif not telnet_result.success:
         return telnet_result
 
-    # 示例：命令会主动导致连接断开。
-    reboot_result = console_1260.execute(
+    # 示例：监控串口启动输出，并在时点出现时发送 Ctrl+B。
+    reboot_result = console_1260.execute_on_output(
         "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
         timeout=60,
-        expect_disconnect=True,
     )
     if not reboot_result.success:
         return reboot_result
@@ -817,6 +887,7 @@ chmod +x "S{A1}"
 - [ ] 每个运行期结果都检查 `success` 或明确检查 `status`。
 - [ ] `TIMEOUT`/`DISCONNECTED` 操作不会被危险地自动重发。
 - [ ] 主动断连命令使用 `expect_disconnect=True`。
+- [ ] 按输出响应使用同一次 `execute_on_output()`，关键词、原始字节、回车形式和超时均已确认。
 - [ ] 组合脚本直接调用已注册脚本，不传递 `ctx`。
 - [ ] 可选 `register_func()` 位于主流程末尾，名称唯一，接收一个 `ctx` 参数。
 - [ ] 子 func 复用主流程上下文和已注册对象，失败条件与返回结果明确。

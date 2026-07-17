@@ -133,7 +133,7 @@ chmod +x "S{A1}"
 
 @register_script(
     name="example_console_environment",
-    description="Example: Telnet auto detection and an expected reboot disconnect",
+    description="Example: Telnet auto detection and a timed Ctrl+B response",
 )
 def example_console_environment(ctx):
     console = ctx.register_telnet(
@@ -156,10 +156,11 @@ def example_console_environment(ctx):
     elif not result.success:
         return result
 
-    return console.execute(
+    return console.execute_on_output(
         "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
         timeout=60,
-        expect_disconnect=True,
     )
 
 

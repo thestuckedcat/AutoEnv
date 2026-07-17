@@ -48,9 +48,9 @@ python -X utf8 -m pytest -q
 |---|---|---|---|
 | `test_runtime_registry.py` | 临时项目、注入输入、内存 console | 注册、RunContext、last-run、组合脚本、`register_func` 生命周期 | `autoenv/registry.py`、`autoenv/runtime.py`、`result.json` |
 | `test_command_files.py` | 纯内存上传映射、临时输出文件 | `S{file_name}`、Host 隔离、完整 shell 文本生成 | `autoenv/command_files.py` |
-| `test_generated_script_contract.py` | 临时 Python 片段和 AST 验证器 | skill 生成脚本的统一静态契约 | 失败消息对应行、验证器和生成脚本 |
-| `test_ssh_host.py` | fake Paramiko/SFTP/SCP/远端文件系统 | SSH 状态、连接复用、上传校验、占位符目标 | `autoenv/ssh_host.py` 和 fake 收到的命令/文件 |
-| `test_telnet_client.py` | fake Socket、Clock、提示符字节流 | Telnet 模式探测、退出结果、断连、上传来源 | `autoenv/telnet_client.py` 和预置字节流 |
+| `test_generated_script_contract.py` | 临时 Python 片段和 AST 验证器 | skill 生成脚本的统一静态契约，包括两类命令接口的上传目标 | 失败消息对应行、验证器和生成脚本 |
+| `test_ssh_host.py` | fake Paramiko/SFTP/SCP/远端文件系统 | SSH 状态、连接复用、按输出响应、上传校验、占位符目标 | `autoenv/ssh_host.py` 和 fake 收到的命令/响应/文件 |
+| `test_telnet_client.py` | fake Socket、Clock、提示符字节流 | Telnet 模式探测、按输出响应、退出结果、断连、上传来源 | `autoenv/telnet_client.py` 和预置收发字节流 |
 | `test_package_extractor.py` | fake HDFS、临时压缩包、注入 `.run` runner | 下载路径、原子文件、提取安全和摘要 | `package_manager.py`、`extractor.py`、临时包内容 |
 | `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏 | `results.py`、`selectors.py`、`recorder.py` |
 | `test_cli.py` | monkeypatch 注册表和执行函数 | 菜单选择、命令模式和退出码 | `autoenv/cli.py` 的参数/输出映射 |
@@ -94,7 +94,14 @@ SSH/Telnet 文件中的占位符 UT 进一步证明：只有通过 MD5 校验的
 | `test_contract_rejects_a_command_list_instead_of_complete_shell_text` | 保证粘贴脚本保持为一整段文本 | 检查 `generate_sh_file()` 第二个参数 |
 | `test_contract_rejects_inline_selectors_and_generate_before_upload` | 保证集中声明、变量复用和先上传后生成 | 把 selector 移到函数开头，并调整操作顺序 |
 | `test_contract_rejects_execute_on_a_different_upload_target` | 防止 A Host 上传的文件在 B Host 命令中误替换 | 对齐上传对象与执行对象 |
+| `test_contract_checks_execute_on_output_upload_target` | 保证按输出响应接口也执行相同的上传目标检查 | 将初始命令使用的文件上传到执行对象 |
 | `test_contract_accepts_an_exact_regex_selector_with_braces` | 防止验证器误伤合法正则 selector | 检查验证器是否先匹配已声明 selector |
 | `test_contract_rejects_module_level_and_non_final_registered_funcs` | 保证 func 位于主流程成功路径末尾且签名正确 | 移入 `@register_script` 函数末尾，保留一个 ctx 参数 |
 
 如果反例 UT 突然“不再失败”，通常是验证器漏检；如果合法示例突然失败，通常是验证器误报。两者都应同时查看测试片段、验证器实现和 `scripts/example.py`。
+
+## 7. 按输出关键词响应 UT
+
+SSH 和 Telnet 测试都把关键词拆成两个接收分片，证明接口按累计输出匹配而不是只检查单包。成功 case 检查 Ctrl+B 的实际字节 `b"\x02"`，失败 case 检查关键词缺失、命令提前退出或响应发送失败时的状态、阶段和部分输出。
+
+Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 提示符不会带到 Bootloader 会话；对象本身没有永久关闭，后续操作仍可懒重连。SSH 只关闭本次 Channel，Transport 保持可复用。

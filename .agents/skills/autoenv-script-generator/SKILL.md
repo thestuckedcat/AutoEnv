@@ -48,7 +48,7 @@ description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_E
 
 让用户按实际先后描述启动流程，然后逐步补齐，不要先套固定模板。对每一步确认：
 
-- 操作类型：下载、提取、上传、SSH 命令、Telnet 命令或调用子脚本。
+- 操作类型：下载、提取、上传、SSH 命令、Telnet 命令、按输出关键词响应或调用子脚本。
 - 操作对象：哪个包、哪个 SSH Host、哪个 Telnet 连接或哪个子脚本。
 - 前置条件和失败后是否立即停止。
 - 成功依据：框架结果、退出码、输出文本、预期断连或其他业务状态。
@@ -100,6 +100,15 @@ description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_E
 - 是否会主动重启、关机或导致连接断开；若会，确认使用 `expect_disconnect=True`。
 - 是否只需 `result.success`，还是还需检查 `result.output` 中的业务标志。
 - Telnet `RESULT_UNKNOWN` 时，什么输出可以证明业务成功。
+
+若需要在命令输出出现特定内容时立即输入，再确认：
+
+- 初始命令、大小写敏感的输出关键词、总超时。
+- 响应是控制字符还是普通命令；必须落实为确切 `bytes`，例如 Ctrl+B 是 `b"\x02"`，不是文本 `b"ctrl+b"`。
+- 是否需要回车以及实际换行形式；`send_data` 不会自动追加 `\r`、`\n` 或 `\r\n`。
+- 命中并发送是否足以视为成功。当前 `execute_on_output()` 不验证设备已经进入目标模式，也不自动重发。
+
+初始命令、等待和响应必须放在同一次 `execute_on_output()` 调用中，不能先用阻塞的 `execute()` 发 reboot、再单独等待。普通 SSH reboot 后无法继续读取固件启动输出；这类流程通常使用串口映射的 Telnet 连接。
 
 SSH 每次 `execute()` 使用独立通道。需要保留目录或环境变量时，把相关动作合并到同一条命令，例如 `cd ... && ...`。Telnet 会话可跨命令保留状态，但重连后不能依赖旧状态。
 
@@ -170,6 +179,7 @@ return start_second()
 - 使用 `@register_script(name=..., description=...)`，并保证注册名唯一。
 - 在环境函数开头集中声明所有 `package()`、`extra_file()`、`match()` 文件选择器以及 SSH/Telnet 连接对象；变量名应体现环境或文件用途。
 - 后续下载、提取、上传和命令步骤只复用开头声明的变量，不要在各步骤中重复构造相同选择器。
+- 按输出响应使用 `target.execute_on_output(command, keyword=..., send_data=..., timeout=...)`；`send_data` 必须是明确的 bytes 字面量，控制字符和回车形式必须与用户确认结果一致。
 - 声明完成后再按确认顺序执行操作。
 - `ctx.generate_sh_file(file_name, script)` 的 `script` 是一整段 shell 文本。保留用户粘贴内容的 shebang、换行和命令布局，仅替换其中已成功上传文件对应的 `S{file_name}`；不要拆成命令列表，也不要自动添加 `set -e`。
 - `file_name` 必须是无目录的 `.sh` 文件名，并在声明区有对应 `extra_file()`；生成文件后再上传。

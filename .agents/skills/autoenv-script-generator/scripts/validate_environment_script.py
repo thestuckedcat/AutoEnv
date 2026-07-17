@@ -348,7 +348,7 @@ def _function_violations(
                     )
                 )
 
-        if method == "execute" and owner is not None:
+        if method in {"execute", "execute_on_output"} and owner is not None:
             command_node = call.args[0] if call.args else None
             for keyword in call.keywords:
                 if keyword.arg == "command":
@@ -383,7 +383,7 @@ def _function_violations(
                         Violation(
                             path,
                             call.lineno,
-                            f"S{{{key}}} must be uploaded to the command target before execute",
+                            f"S{{{key}}} must be uploaded to the command target before execution",
                         )
                     )
 

@@ -129,6 +129,19 @@ if not result.success:
 return host.execute("bash /root/autoEnv/S{install.sh}", timeout=600)
 ```
 
+需要卡启动时点输入控制字符时，把触发命令、关键词和响应放在同一次阻塞操作中：
+
+```python
+return console.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+```
+
+`b"\x02"` 才是 Ctrl+B。接口不会给 `send_data` 自动加回车；普通命令应显式使用例如 `b"boot\r\n"`。常用控制字符完整对照见环境注册指南。
+
 关键规则：
 
 - `S{file_name}` 使用 `package()`、`extra_file()` 或 `match()` 中的字符串，不是 Python 变量名。
