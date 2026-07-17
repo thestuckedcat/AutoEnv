@@ -40,6 +40,8 @@ python main.py rerun example_host_environment
 
 `run` 会逐项确认参数；`rerun` 不重新确认参数。如果环境注册了启动后 func，两种模式都会在主流程成功后显示 func 菜单。以上命令可能下载包、连接设备、上传文件并执行远端命令，只能在确认目标地址和包来源后运行。
 
+确认 package 远端目录时，回车沿用默认值；若 `config.json` 中该项定义了 `base_link`，提示会一直显示 `!newest`。输入 `!newest` 可忽略上次手工路径，直接按 `base_link` 重新选择 automatic newest 包。
+
 ## 3. 快速创建一个环境脚本
 
 在 `scripts/` 下创建 `start_demo.py`。下面示例展示推荐顺序：集中声明、下载、上传、执行、注册启动后检查。
