@@ -424,7 +424,7 @@ SCP 和 SFTP 规则一致：
 - 自动记录本地、覆盖前远端和上传后远端 MD5。
 - 上传后校验远端 MD5 与本地一致。
 
-SCP 为兼容只允许单个 Session Channel 的小系统 SSH Server，会串行使用协议通道：先通过 SFTP 完成目录、覆盖状态和旧 MD5 检查，关闭 SFTP 后将文件 SCP 到 `remote_dir`，关闭 SCP 后再重开 SFTP 校验新 MD5。不会在同一个 SSH Transport 上同时保持 SFTP 和 SCP Channel。
+`scp_upload()` 不依赖 SFTP：远端目录创建、覆盖状态和 MD5 检查使用普通 SSH 命令通道，文件传输只使用 SCP。因而可以用于支持 SSH/SCP、但未启用 SFTP subsystem 的精简设备。`sftp_upload()` 才会打开 SFTP 会话。
 
 ### 10.1 禁止覆盖
 
