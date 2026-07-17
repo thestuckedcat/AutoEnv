@@ -188,7 +188,7 @@ def test_recorder_numbers_operations_writes_json_and_masks_secrets(tmp_path):
     assert "  operation_id: 0002" in console_text
     assert "  command:\n    echo ready\n" in console_text
     assert "  result: status=success phase=complete exit_code=0 duration_ms=1000" in console_text
-    assert "  output:\n    ready\n    warning\n" in console_text
+    assert "  output:" not in console_text
     assert '"raw_output"' not in console_text
 
     stored = json.loads(json_path.read_text(encoding="utf-8"))
@@ -223,7 +223,7 @@ def test_recorder_displays_unknown_command_output_without_changing_result(tmp_pa
 
     console_text = console.getvalue()
     assert "=== TELNET EXECUTE [UNKNOWN] ===" in console_text
-    assert "  output:\n    file-a.bin\n    file-b.bin\n" in console_text
+    assert "  output:" not in console_text
     assert result.output == "file-a.bin\nfile-b.bin"
 
 
