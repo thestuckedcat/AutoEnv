@@ -497,7 +497,7 @@ host.execute("./install.sh")
 host.execute("cd /root/autoEnv && ./install.sh")
 ```
 
-远端 stdout/stderr 会在命令运行期间持续读取并累计，命令结束后统一显示在摘要的 `output` 区块；相同内容保存在 `result.output`，不会重复打印。长命令在结束、超时或断连前不会逐段刷新终端。
+远端 stdout/stderr 会在命令运行期间实时显示并累计，清理后的完整正文保存在 `result.output`。结束摘要只显示状态元数据，不重复打印正文；长短命令使用相同契约。
 
 ## 12. 执行 Telnet 命令
 
@@ -519,7 +519,7 @@ result = console.execute("./start_slave.sh")
 
 ### 12.1 按输出关键词发送数据
 
-SSH Host 和 Telnet 对象都提供阻塞式 `execute_on_output()`：它先发送初始命令，然后在内部持续读取输出但不逐段打印。累计输出中第一次出现大小写敏感的 `keyword` 后，接口立即向同一通道原样发送 `send_data`，并在结果摘要的 `output` 区块统一显示已收集内容。
+SSH Host 和 Telnet 对象都提供阻塞式 `execute_on_output()`：它先发送初始命令，然后持续读取并实时显示输出。累计输出中第一次出现大小写敏感的 `keyword` 后，接口立即向同一通道原样发送 `send_data`；已收集内容同时保存在 `result.output`，结束摘要不重复打印。
 
 ```python
 result = console.execute_on_output(
