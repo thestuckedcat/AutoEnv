@@ -130,10 +130,14 @@ def _format_console_result(value: Any) -> tuple[str, list[str]]:
     if not isinstance(value, dict):
         return "RESULT", [str(value)]
 
-    success = value.get("success")
-    if success is None:
-        success = value.get("status") == "success"
-    state = "SUCCESS" if success else "FAILED"
+    status = str(value.get("status", "")).lower()
+    if status == "result_unknown":
+        state = "UNKNOWN"
+    else:
+        success = value.get("success")
+        if success is None:
+            success = status == "success"
+        state = "SUCCESS" if success else "FAILED"
     lines: list[str] = []
     operation_id = value.get("operation_id")
     if operation_id is not None:
@@ -174,6 +178,22 @@ def _append_command_summary(lines: list[str], value: dict[str, Any]) -> None:
         result_parts.append(f"exit_code={value['exit_code']}")
     result_parts.append(f"duration_ms={value.get('duration_ms', 0)}")
     lines.append("result: " + " ".join(result_parts))
+    output = _combined_command_output(value)
+    lines.append("output:")
+    if output:
+        lines.extend(f"  {line}" for line in output.splitlines())
+    else:
+        lines.append("  <empty>")
+
+
+def _combined_command_output(value: dict[str, Any]) -> str:
+    stdout = str(value.get("stdout") or "")
+    stderr = str(value.get("stderr") or "")
+    if not stderr:
+        return stdout
+    if not stdout:
+        return stderr
+    return f"{stdout}\n{stderr}"
 
 
 def _append_upload_summary(lines: list[str], value: dict[str, Any]) -> None:
