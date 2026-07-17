@@ -249,6 +249,69 @@ def test_rerun_preserves_saved_package_path_mode(tmp_path):
         context.finish_recording()
 
 
+def test_package_newest_shortcut_overrides_saved_manual_path(tmp_path):
+    root = _project_root(tmp_path, with_package=True)
+    config = json.loads((root / "config.json").read_text("utf-8"))
+    config[0]["base_link"] = "/config/newest-root"
+    (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    last_path = root / "state" / "last_runs" / "newest_shortcut.json"
+    last_path.parent.mkdir(parents=True)
+    last_path.write_text(
+        json.dumps(
+            {
+                "script_name": "newest_shortcut",
+                "ssh_hosts": {},
+                "telnet_connections": {},
+                "packages": {
+                    "firmware": {
+                        "path_mode": "override",
+                        "path_override": "/saved/manual-build",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class FakeManager:
+        def get_spec(self, _name: str):
+            return SimpleNamespace(
+                link="/config/fixed-build",
+                base_link="/config/newest-root",
+            )
+
+        def download(self, selector, **kwargs):
+            captured.update(selector=selector, **kwargs)
+            return "downloaded"
+
+    prompts: list[str] = []
+    context = RunContext(
+        root_dir=root,
+        script_name="newest_shortcut",
+        mode=RunMode.RUN,
+        input_func=lambda prompt: prompts.append(prompt) or "!NEWEST",
+        console=io.StringIO(),
+    )
+    try:
+        context._package_manager = FakeManager()
+        assert context.download_package(package("firmware")) == "downloaded"
+        assert captured["path_mode"] == "base_link_newest"
+        assert captured["path_override"] is None
+        assert context.params["packages"]["firmware"] == {
+            "path_mode": "base_link_newest",
+            "path_override": None,
+        }
+        assert prompts == [
+            "Package firmware remote directory "
+            "[default: /saved/manual-build; "
+            "!newest: /config/newest-root (automatic newest)]: "
+        ]
+    finally:
+        context.close()
+        context.finish_recording()
+
+
 def test_exception_after_operation_keeps_collected_parameters_as_last_run(tmp_path):
     root = _project_root(tmp_path)
 
