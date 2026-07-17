@@ -18,6 +18,9 @@ ROOT_DIR = FRONTEND_DIR.parent
 HOST = "127.0.0.1"
 PORT = 8765
 
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 
 class Session:
     def __init__(self) -> None:
