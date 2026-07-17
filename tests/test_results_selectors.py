@@ -183,7 +183,12 @@ def test_recorder_numbers_operations_writes_json_and_masks_secrets(tmp_path):
     payload = json.loads(log_text.split(" COMMAND ", 1)[1])
     assert payload["operation_id"] == "0002"
     assert payload["status"] == "success"
-    assert "COMMAND" in console.getvalue()
+    console_text = console.getvalue()
+    assert "=== COMMAND [SUCCESS] ===" in console_text
+    assert "  operation_id: 0002" in console_text
+    assert "  command:\n    echo ready\n" in console_text
+    assert "  result: status=success phase=complete exit_code=0 duration_ms=1000" in console_text
+    assert '"raw_output"' not in console_text
 
     stored = json.loads(json_path.read_text(encoding="utf-8"))
     assert stored == {
@@ -196,3 +201,39 @@ def test_recorder_numbers_operations_writes_json_and_masks_secrets(tmp_path):
         {"passwd": "******"},
         {"secret": None},
     ]
+
+
+def test_recorder_formats_upload_failure_as_readable_console_block(tmp_path):
+    console = io.StringIO()
+    log_path = tmp_path / "run.log"
+    fixed_now = lambda: datetime(2026, 7, 15, 9, 30, tzinfo=timezone.utc)
+    result = {
+        "operation_id": "0007",
+        "protocol": "sftp",
+        "target_name": "udk_host",
+        "resolved_local_file": r"D:\packages\udk_install.sh",
+        "remote_file": "/root/autoEnv/udk_install.sh",
+        "status": "protocol_error",
+        "success": False,
+        "duration_ms": 48,
+        "local_md5": "abc",
+        "remote_md5_after": None,
+        "md5_verified": False,
+        "error_type": "SSH_PROTOCOL_ERROR",
+        "error_message": "EOF during negotiation",
+    }
+
+    with RunRecorder(log_path, console=console, now=fixed_now) as recorder:
+        recorder.record_result("SFTP UPLOAD", result)
+
+    console_text = console.getvalue()
+    assert "=== SFTP UPLOAD [FAILED] ===" in console_text
+    assert "  source: D:\\packages\\udk_install.sh" in console_text
+    assert "  destination: /root/autoEnv/udk_install.sh" in console_text
+    assert "  result: status=protocol_error duration_ms=48" in console_text
+    assert "  error: SSH_PROTOCOL_ERROR: EOF during negotiation" in console_text
+    assert console_text.startswith("\n[") and console_text.endswith("\n\n")
+
+    log_line = log_path.read_text(encoding="utf-8").strip()
+    assert "SFTP UPLOAD {" in log_line
+    assert "\n" not in log_line
