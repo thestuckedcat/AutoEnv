@@ -539,6 +539,7 @@ def test_execute_success_and_nonzero_exit(
     assert result.raw_output == "hello warning\n世界"
     assert result.error_type == error_type
     assert channel.close_count == 1
+    assert recorder.streams == []
     assert recorder.results[-1] == ("SSH EXECUTE", result)
 
 
@@ -567,6 +568,7 @@ def test_execute_on_output_matches_across_chunks_and_sends_raw_bytes(
     assert channel.commands == ["reboot"]
     assert channel.sent == [b"\x02"]
     assert channel.close_count == 1
+    assert recorder.streams == []
     assert recorder.results[-1] == ("SSH EXECUTE", result)
 
 
