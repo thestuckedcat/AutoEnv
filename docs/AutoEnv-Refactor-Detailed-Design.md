@@ -685,7 +685,7 @@ result = console.execute(
 )
 ```
 
-默认实时显示并记录远端输出。命令结束后，完整输出仍保存在 `CommandResult` 中。超时或断连也保留已经收到的部分输出。
+命令运行期间持续读取远端输出但不逐段打印；命令结束后统一在结果摘要的 `output` 区块显示。完全相同的正文保存在 `CommandResult.output` 中，超时或断连也保留并显示已经收到的部分输出。
 
 ### 16.1.1 按输出触发原始字节
 
@@ -819,9 +819,9 @@ result = target.execute("reboot", expect_disconnect=True)
 - `target_file` 和 `target_dir` 同时提供或都未提供。
 - 内部程序逻辑错误。
 
-## 20. 实时输出与日志
+## 20. 命令输出与日志
 
-SSH 必须并行读取 stdout/stderr，避免大输出填满 Paramiko Channel 缓冲区造成死锁。Telnet 按接收顺序实时读取原始字节并保留完整 `raw_output`。
+SSH 必须在命令运行期间并行读取 stdout/stderr，避免大输出填满 Paramiko Channel 缓冲区造成死锁。Telnet 按接收顺序持续读取原始字节并保留完整 `raw_output`。读取与终端展示解耦：运行期间只累计，操作结束后统一展示。
 
 `run.log` 自动记录：
 
@@ -829,7 +829,7 @@ SSH 必须并行读取 stdout/stderr，避免大输出填满 Paramiko Channel �
 - 交互后最终参数，密码脱敏。
 - 本次包目录和包路径选择。
 - 下载、提取、上传、连接和命令操作。
-- SSH stdout/stderr 与 Telnet 原始输出。
+- SSH stdout/stderr 与 Telnet 原始输出，保存在单行操作结果字段中。
 - MD5、目录 tree MD5、文件大小和耗时。
 - 运行期错误和未捕获异常堆栈。
 - 最终脚本状态。
@@ -839,7 +839,7 @@ SSH 必须并行读取 stdout/stderr，避免大输出填满 Paramiko Channel �
 - `run.log` 中的操作结果保持单行 JSON，便于检索和程序解析。
 - 终端将脚本开始/结束和每个操作结果显示为带空行的摘要块，突出成功或失败状态。
 - 下载、提取和上传摘要分行显示源、目标、校验值及耗时。
-- SSH/Telnet 命令的 stdout/stderr 仍实时显示；命令结束后另起摘要块，分行显示 command、status、phase、exit code、耗时和错误，不重复整段输出。
+- SSH/Telnet 命令结束后在同一个摘要块中分行显示 command、status、phase、exit code、耗时、output 和错误；运行期间不逐段打印，因此完整输出只出现一次。
 
 脚本层不公开 `ctx.logger`，避免日志内容和结构失控。
 
@@ -894,7 +894,7 @@ autoenv rerun start_udk
 6. SSH/Telnet 注册、交互默认值、last-run、rerun 参数无交互和启动后 func 菜单。
 7. SSH 连接复用、失效重连、不重放命令和关闭资源。
 8. SCP/SFTP 单文件、目录创建、覆盖、`overwrite=False` 和 MD5 校验。
-9. SSH 所有 `CommandStatus`、阶段、实时输出、部分输出和预期断连。
+9. SSH 所有 `CommandStatus`、阶段、完整输出、部分输出和预期断连。
 10. Telnet 自动探测、POSIX、prompt-only、提示符失败和预期断连。
 11. 注册脚本自动发现、返回规则、异常记录和组合脚本独立运行。
 12. 运行目录、操作编号、日志脱敏、参数/结果 JSON 和 last-run 更新。
@@ -914,7 +914,7 @@ autoenv rerun start_udk
 2. 实现 RunContext、参数存档、脚本注册和 CLI。
 3. 迁移并封装现有 WebHDFS 逻辑，移除自动提取。
 4. 迁移 `.run`/tar 解包为显式 `extract_file_from()`。
-5. 实现 SSH Host、实时命令、SFTP 和 SCP 单文件上传。
+5. 实现 SSH Host、阻塞命令、SFTP 和 SCP 单文件上传。
 6. 实现 Telnet 自动 Shell 探测和统一命令结果。
 7. 为 SSH/Telnet 增加按输出关键词发送原始字节的阻塞接口。
 8. 添加 `scripts/example.py` 和注册指南。
@@ -928,7 +928,7 @@ autoenv rerun start_udk
 - 所有基础接口都有明确类型、统一结果和自动日志。
 - `run`、`rerun` 和组合脚本符合本文语义。
 - 下载、提取、上传严格分离。
-- SSH/Telnet 输出实时可见，所有失败情况可由结果对象区分。
+- SSH/Telnet 输出在操作结束后完整可见并与 `result.output` 一致，所有失败情况可由结果对象区分。
 - SSH/Telnet 可在同一次阻塞操作中匹配跨分片输出并发送一次原始响应字节，超时、断连和发送失败均保留部分输出。
 - 命令与完整 shell 文本中的 `S{file_name}` 只解析本次运行中对正确目标成功上传的文件，并替换为实际文件名。
 - 新增环境脚本可通过统一离线契约 UT 检查，不连接 HDFS、SSH 或 Telnet。
