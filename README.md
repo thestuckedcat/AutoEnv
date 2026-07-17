@@ -35,6 +35,8 @@ python main.py
 python main.py run example_host_environment
 ```
 
+确认 package 远端目录时，直接回车沿用显示的上次值；只要对应 `config.json` 项定义了 `base_link`，提示中就始终提供 `!newest`，输入它会忽略上次手工路径并立即按 `base_link` 重新解析 automatic newest 包。
+
 无参数确认地复用该脚本的上次参数；如果脚本注册了启动后 func，主流程成功后仍会显示 func 菜单：
 
 ```powershell
