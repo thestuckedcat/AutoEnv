@@ -259,7 +259,6 @@ class SSHHost:
             else:
                 stderr_parts.append(text)
             raw_parts.append(text)
-            self.recorder.stream(f"SSH {self.name} {stream.upper()}", text)
             if keyword is not None and not response_sent:
                 candidate = match_tails[stream] + text
                 if keyword in candidate:
@@ -470,7 +469,6 @@ class SSHHost:
                 if tail:
                     parts.append(tail)
                     raw_parts.append(tail)
-                    self.recorder.stream(f"SSH {self.name} {stream.upper()}", tail)
             if channel is not None:
                 try:
                     channel.close()
