@@ -20,6 +20,7 @@ from .selectors import (
 
 
 DEFAULT_PACKAGE_CACHE_LIMIT = 1024 * 1024 * 1024
+PACKAGE_NEWEST_SHORTCUT = "!newest"
 
 
 class RunMode(str, Enum):
@@ -324,16 +325,34 @@ class RunContext:
                 f"{spec.base_link} (automatic newest)" if spec.base_link else "<required>"
             )
             shown_default = default_override or automatic
+            newest_hint = (
+                f"; {PACKAGE_NEWEST_SHORTCUT}: {spec.base_link} (automatic newest)"
+                if spec.base_link
+                else ""
+            )
             answer = self.input_func(
                 f"Package {selector.config_name} remote directory "
-                f"[default: {shown_default}]: "
+                f"[default: {shown_default}{newest_hint}]: "
             ).strip()
-            override = answer or default_override
+            use_newest = answer.lower() == PACKAGE_NEWEST_SHORTCUT
+            override = None if use_newest else (answer or default_override)
+            if use_newest and not spec.base_link:
+                raise ValueError(
+                    f"package {selector.config_name} does not define base_link; "
+                    f"{PACKAGE_NEWEST_SHORTCUT} is unavailable"
+                )
             if not override and not spec.link and not spec.base_link:
                 raise ValueError(
                     f"package {selector.config_name} requires a remote directory"
                 )
-            path_mode = "override" if override else ("link" if spec.link else "base_link_newest")
+            if use_newest:
+                path_mode = "base_link_newest"
+            elif override:
+                path_mode = "override"
+            elif spec.link:
+                path_mode = "link"
+            else:
+                path_mode = "base_link_newest"
 
         package_values = {"path_mode": path_mode, "path_override": override}
         self.params["packages"][selector.config_name] = package_values  # type: ignore[index]
