@@ -188,6 +188,7 @@ def test_recorder_numbers_operations_writes_json_and_masks_secrets(tmp_path):
     assert "  operation_id: 0002" in console_text
     assert "  command:\n    echo ready\n" in console_text
     assert "  result: status=success phase=complete exit_code=0 duration_ms=1000" in console_text
+    assert "  output:\n    ready\n    warning\n" in console_text
     assert '"raw_output"' not in console_text
 
     stored = json.loads(json_path.read_text(encoding="utf-8"))
@@ -201,6 +202,29 @@ def test_recorder_numbers_operations_writes_json_and_masks_secrets(tmp_path):
         {"passwd": "******"},
         {"secret": None},
     ]
+
+
+def test_recorder_displays_unknown_command_output_without_changing_result(tmp_path):
+    console = io.StringIO()
+    log_path = tmp_path / "run.log"
+    result = _command_result(
+        protocol=CommandProtocol.TELNET,
+        status=CommandStatus.RESULT_UNKNOWN,
+        exit_code=None,
+        stdout="file-a.bin\nfile-b.bin",
+        stderr="",
+        raw_output="ls /tmp\r\nfile-a.bin\r\nfile-b.bin\r\n#root",
+        error_type="EXIT_STATUS_UNAVAILABLE",
+        error_message="prompt-only Telnet mode cannot determine the exit status",
+    )
+
+    with RunRecorder(log_path, console=console) as recorder:
+        recorder.record_result("TELNET EXECUTE", result)
+
+    console_text = console.getvalue()
+    assert "=== TELNET EXECUTE [UNKNOWN] ===" in console_text
+    assert "  output:\n    file-a.bin\n    file-b.bin\n" in console_text
+    assert result.output == "file-a.bin\nfile-b.bin"
 
 
 def test_recorder_formats_upload_failure_as_readable_console_block(tmp_path):
