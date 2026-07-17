@@ -4,6 +4,7 @@ import errno
 import hashlib
 import io
 import posixpath
+import shlex
 import socket
 import stat
 from pathlib import Path
@@ -103,6 +104,20 @@ class FakeChannel:
     def close(self) -> None:
         self.close_count += 1
         self._explicitly_closed = True
+
+
+class FakeExecChannel:
+    def __init__(self, exit_code: int) -> None:
+        self.exit_code = exit_code
+
+    def recv_exit_status(self) -> int:
+        return self.exit_code
+
+
+class FakeExecStream(io.BytesIO):
+    def __init__(self, data: bytes = b"", *, exit_code: int = 0) -> None:
+        super().__init__(data)
+        self.channel = FakeExecChannel(exit_code)
 
 
 class FakeRemoteFS:
@@ -206,17 +221,20 @@ class FakeClient:
         *,
         sftp: FakeSFTP | None = None,
         sftp_factory: Callable[[], FakeSFTP] | None = None,
+        fs: FakeRemoteFS | None = None,
         connect_error: BaseException | None = None,
     ) -> None:
         self.transport = transport
         self.sftp = sftp
         self.sftp_factory = sftp_factory
+        self.fs = fs
         self.sftp_sessions = [sftp] if sftp is not None else []
         self.connect_error = connect_error
         self.connect_calls: list[dict[str, Any]] = []
         self.policies: list[Any] = []
         self.open_sftp_count = 0
         self.close_count = 0
+        self.exec_calls: list[tuple[str, float | None]] = []
 
     def set_missing_host_key_policy(self, policy: Any) -> None:
         self.policies.append(policy)
@@ -238,6 +256,43 @@ class FakeClient:
         session = self.sftp_factory()
         self.sftp_sessions.append(session)
         return session
+
+    def exec_command(
+        self, command: str, *, timeout: float | None = None
+    ) -> tuple[FakeExecStream, FakeExecStream, FakeExecStream]:
+        self.exec_calls.append((command, timeout))
+        assert self.fs is not None
+        tokens = shlex.split(command)
+        output = b""
+        error = b""
+        exit_code = 0
+        if tokens[:2] == ["mkdir", "-p"]:
+            remote_dir = self.fs.normalize(tokens[2])
+            missing: list[str] = []
+            cursor = remote_dir
+            while cursor not in self.fs.dirs and cursor not in ("/", "."):
+                missing.append(cursor)
+                cursor = posixpath.dirname(cursor) or "."
+            for item in reversed(missing):
+                self.fs.mkdir_calls.append(item)
+                self.fs.dirs.add(item)
+        elif tokens[:3] == ["if", "[", "-e"]:
+            path = self.fs.normalize(tokens[3])
+            output = b"1" if path in self.fs.files or path in self.fs.dirs else b"0"
+        elif tokens[:1] == ["md5sum"]:
+            path = self.fs.normalize(tokens[1])
+            if path in self.fs.files:
+                output = f"{md5(self.fs.files[path])}  {path}\n".encode()
+            else:
+                error = f"md5sum: {path}: No such file\n".encode()
+                exit_code = 1
+        else:
+            raise AssertionError(f"unexpected fake SSH command: {command}")
+        return (
+            FakeExecStream(),
+            FakeExecStream(output, exit_code=exit_code),
+            FakeExecStream(error),
+        )
 
     def close(self) -> None:
         self.close_count += 1
@@ -344,6 +399,7 @@ def upload_rig(
         transport,
         sftp=sftp,
         sftp_factory=lambda: FakeSFTP(fs, sftp_transform),
+        fs=fs,
     )
     scp_factory = FakeSCPFactory(fs, scp_transform)
     host, recorder, client_factory, package_dir = make_host(
@@ -764,15 +820,42 @@ def test_single_file_upload_creates_remote_tree_and_verifies_md5(
             (str(local_file.resolve()), result.remote_dir)
         ]
         assert sftp.put_calls == []
-        assert sftp.close_count == 1
         assert scp_factory.created[0].close_count == 1
-        assert client.open_sftp_count == 2
-        assert len(client.sftp_sessions) == 2
-        assert client.sftp_sessions[1].close_count == 0
+        assert client.open_sftp_count == 0
+        assert len(client.sftp_sessions) == 1
+        assert client.exec_calls == [
+            ("mkdir -p /opt/apps/v1", 7.0),
+            (
+                "if [ -e /opt/apps/v1/release.bin ]; "
+                "then printf 1; else printf 0; fi",
+                7.0,
+            ),
+            ("md5sum /opt/apps/v1/release.bin", 7.0),
+        ]
     else:
         assert sftp.put_calls == [(str(local_file.resolve()), result.remote_file)]
         assert scp_factory.created == []
     assert recorder.results[-1] == (f"{protocol.upper()} UPLOAD", result)
+
+
+def test_scp_upload_does_not_require_or_open_sftp(tmp_path: Path) -> None:
+    fs = FakeRemoteFS()
+    transport = FakeTransport()
+    client = FakeClient(transport, fs=fs)
+    scp_factory = FakeSCPFactory(fs)
+    host, _, _, package_dir = make_host(
+        tmp_path,
+        [client],
+        scp_factory=scp_factory,
+    )
+    local_file = package_dir / "artifact.bin"
+    local_file.write_bytes(b"payload")
+
+    result = host.scp_upload(extra_file("artifact.bin"), "/release")
+
+    assert result.success
+    assert client.open_sftp_count == 0
+    assert fs.files["/release/artifact.bin"] == b"payload"
 
 
 @pytest.mark.parametrize(
@@ -950,7 +1033,8 @@ def test_close_closes_all_cached_resources_once_and_prevents_reconnect(
     host.close()
 
     assert not host.connected
-    assert close_counts[0:3] == (1, 1, 1)
+    # The SCP path never opens SFTP, so there is no SFTP resource to close.
+    assert close_counts[0:3] == (1, 0, 1)
     assert close_counts[3] >= 1
     assert (
         scp.close_count,
