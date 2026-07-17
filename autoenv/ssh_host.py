@@ -5,6 +5,7 @@ import errno
 import hashlib
 import math
 import posixpath
+import shlex
 import socket
 import stat
 import time
@@ -560,11 +561,19 @@ class SSHHost:
 
             self._ensure_transport()
             connected = True
-            sftp = self._get_sftp()
-            self._mkdir_recursive(sftp, remote_dir)
-            remote_existed = self._remote_exists(sftp, remote_file)
+            if protocol == "scp":
+                self._mkdir_via_ssh(remote_dir)
+                remote_existed = self._remote_exists_via_ssh(remote_file)
+            else:
+                sftp = self._get_sftp()
+                self._mkdir_recursive(sftp, remote_dir)
+                remote_existed = self._remote_exists(sftp, remote_file)
             if remote_existed:
-                remote_md5_before = self._remote_md5(sftp, remote_file)
+                remote_md5_before = (
+                    self._remote_md5_via_ssh(remote_file)
+                    if protocol == "scp"
+                    else self._remote_md5(sftp, remote_file)
+                )
                 if not overwrite:
                     status = "remote_file_exists"
                     error_type = "REMOTE_FILE_EXISTS"
@@ -592,20 +601,16 @@ class SSHHost:
                     )
 
             if protocol == "scp":
-                # Some embedded SSH servers only allow one session channel per
-                # transport. Finish the SFTP pre-check before starting legacy
-                # SCP, then close SCP before reopening SFTP for MD5 verification.
-                self._close_sftp()
                 scp_client = self._get_scp()
                 try:
                     scp_client.put(str(resolved_path), remote_path=remote_dir)
                 finally:
                     self._close_scp()
-                sftp = self._get_sftp()
+                remote_md5_after = self._remote_md5_via_ssh(remote_file)
             else:
                 sftp.put(str(resolved_path), remote_file)
+                remote_md5_after = self._remote_md5(sftp, remote_file)
 
-            remote_md5_after = self._remote_md5(sftp, remote_file)
             md5_changed = remote_md5_before != remote_md5_after
             md5_verified = remote_md5_after == local_md5
             if md5_verified:
@@ -812,6 +817,79 @@ class SSHHost:
         if self._scp is None:
             self._scp = self._scp_factory(transport)
         return self._scp
+
+    def _exec_remote_checked(self, command: str) -> str:
+        """Run a short SSH command without opening or depending on SFTP."""
+        self._ensure_transport()
+        assert self._client is not None
+        stdin = stdout = stderr = None
+        try:
+            stdin, stdout, stderr = self._client.exec_command(
+                command,
+                timeout=self.info.connect_timeout,
+            )
+            stdout_data = stdout.read()
+            stderr_data = stderr.read()
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                detail = self._decode_remote_output(stderr_data).strip()
+                raise paramiko.SSHException(
+                    f"remote command failed with code {exit_code}"
+                    + (f": {detail}" if detail else "")
+                )
+            return self._decode_remote_output(stdout_data)
+        finally:
+            for stream in (stdin, stdout, stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+
+    @staticmethod
+    def _decode_remote_output(data: Any) -> str:
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+
+    @staticmethod
+    def _quoted_remote_path(remote_path: str) -> str:
+        # Avoid treating a relative path beginning with '-' as a command option.
+        safe_path = f"./{remote_path}" if remote_path.startswith("-") else remote_path
+        return shlex.quote(safe_path)
+
+    def _mkdir_via_ssh(self, remote_dir: str) -> None:
+        if remote_dir in ("", ".", "/"):
+            return
+        self._exec_remote_checked(
+            f"mkdir -p {self._quoted_remote_path(remote_dir)}"
+        )
+
+    def _remote_exists_via_ssh(self, remote_path: str) -> bool:
+        output = self._exec_remote_checked(
+            "if [ -e {path} ]; then printf 1; else printf 0; fi".format(
+                path=self._quoted_remote_path(remote_path)
+            )
+        )
+        value = output.strip()
+        if value not in {"0", "1"}:
+            raise paramiko.SSHException(
+                f"unexpected remote file existence response: {value!r}"
+            )
+        return value == "1"
+
+    def _remote_md5_via_ssh(self, remote_path: str) -> str:
+        output = self._exec_remote_checked(
+            f"md5sum {self._quoted_remote_path(remote_path)}"
+        )
+        digest = output.strip().split(maxsplit=1)[0] if output.strip() else ""
+        if len(digest) != 32 or any(
+            char not in "0123456789abcdefABCDEF" for char in digest
+        ):
+            raise paramiko.SSHException(
+                f"unexpected md5sum response for {remote_path}: {output.strip()!r}"
+            )
+        return digest.lower()
 
     def _invalidate_connection(self) -> None:
         self._discard_connection()
