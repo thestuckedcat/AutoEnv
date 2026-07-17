@@ -256,6 +256,7 @@ autoenv run start_udk
 - 没有历史值时使用脚本中的 `SSHDefaults`、`TelnetDefaults` 和 `config.json` 默认路径。
 - 逐项展示并允许修改。
 - 直接回车使用当前显示的默认值。
+- package 定义 `base_link` 时始终显示 `!newest` 快捷方式；输入后忽略历史手工覆盖并切换为 `base_link_newest`。
 
 ### 8.2 `rerun`
 
@@ -479,14 +480,15 @@ result = ctx.download_package(package("A1"))
 
 - `name`：唯一配置名。
 - `link`：明确远端目录。
-- `base_link`：`link` 为空时用于执行现有的 `newest` 候选查找流程。
+- `base_link`：`link` 为空时作为默认的 `newest` 候选查找根目录；即使同时定义了 `link`，普通 `run` 也始终可以通过 `!newest` 明确选择它。
 - `image_name`：匹配远端文件名的正则。
 - `target_file`：为兼容旧配置继续允许和解析，但新流程不使用它进行下载或自动提取。
 
 远端目录优先级：
 
 ```text
-本次交互路径覆盖
+本次输入 !newest（明确选择 base_link/newest）
+    > 本次交互路径覆盖
     > config.json.link
     > config.json.base_link 下最新日期目录/newest
 ```
