@@ -448,7 +448,7 @@ class TelnetClient:
                 raw_output = self._receive_until(
                     timeout,
                     lambda text: keyword in self._clean_terminal_text(text),
-                    stream=False,
+                    stream=True,
                 )
             except _ReadTimedOut as exc:
                 raw_output = exc.partial
@@ -526,7 +526,7 @@ class TelnetClient:
             raw_output = self._read_to_prompt(
                 timeout,
                 marker=result_marker if mode == "posix" else None,
-                stream=False,
+                stream=True,
             )
         except _ReadTimedOut as exc:
             raw_output = exc.partial
