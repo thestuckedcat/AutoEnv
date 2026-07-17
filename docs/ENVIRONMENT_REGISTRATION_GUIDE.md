@@ -319,6 +319,14 @@ if not result.success:
 本次输入 > 上次运行值 > config.link > config.base_link/newest 候选解析
 ```
 
+只要该 package 在 `config.json` 中定义了 `base_link`，确认提示就始终包含：
+
+```text
+!newest: <base_link> (automatic newest)
+```
+
+输入 `!newest` 会忽略显示的上次手工目录，保存 `path_mode=base_link_newest`、`path_override=null`，并立即从 `base_link` 重新解析 newest 候选；该快捷方式不受同时存在的 `config.link` 影响。直接回车仍沿用显示的默认值，输入其他内容仍表示本次手工目录覆盖。
+
 `rerun` 不询问，复用上次路径选择。如果是 `base_link` 模式，仍会按 WebHDFS 修改时间重新选择最新子目录及其中名称含 `newest` 的候选目录，再选择最新匹配包；不会绑定上次下载的具体文件。
 
 ### 6.2 下载不会解包
