@@ -320,7 +320,18 @@ def run_script(
         context.recorder.write_json(context.result_path, result_to_dict(result_summary))
         context.recorder.log(
             f"SCRIPT END name={definition.name} status={status} success={success} "
-            f"duration_ms={result.duration_ms}"
+            f"duration_ms={result.duration_ms}",
+            console=False,
+        )
+        context.recorder.console_block(
+            "SCRIPT END",
+            (
+                f"name: {definition.name}",
+                f"status: {status}",
+                f"duration_ms: {result.duration_ms}",
+                f"run_dir: {context.run_dir}",
+            ),
+            state="SUCCESS" if success else "FAILED",
         )
         context.finish_recording()
         return result
