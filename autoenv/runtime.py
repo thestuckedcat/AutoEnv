@@ -106,10 +106,23 @@ class RunContext:
         self.recorder = RunRecorder(self.log_path, console=console)
         try:
             self._save_params()
-            self.recorder.log(f"SCRIPT START name={self.script_name} mode={self.mode.value}")
-            self.recorder.log(f"run_dir={self.run_dir}")
-            self.recorder.log(f"package_dir={self.package_dir}")
-            self.recorder.log(f"log_file={self.log_path}")
+            self.recorder.log(
+                f"SCRIPT START name={self.script_name} mode={self.mode.value}",
+                console=False,
+            )
+            self.recorder.log(f"run_dir={self.run_dir}", console=False)
+            self.recorder.log(f"package_dir={self.package_dir}", console=False)
+            self.recorder.log(f"log_file={self.log_path}", console=False)
+            self.recorder.console_block(
+                "SCRIPT START",
+                (
+                    f"name: {self.script_name}",
+                    f"mode: {self.mode.value}",
+                    f"run_dir: {self.run_dir}",
+                    f"package_dir: {self.package_dir}",
+                    f"log_file: {self.log_path}",
+                ),
+            )
             self._cleanup_historical_packages()
         except Exception as exc:
             try:
