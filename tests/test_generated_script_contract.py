@@ -113,7 +113,7 @@ def bad(ctx):
     assert any("command target" in item.message for item in violations)
 
 
-def test_contract_accepts_an_exact_regex_selector_with_braces(tmp_path) -> None:
+def test_contract_accepts_regex_selector_with_braces_and_search_path(tmp_path) -> None:
     violations = _validate_source(
         tmp_path,
         r'''
@@ -121,7 +121,7 @@ from autoenv import SSHDefaults, match, register_script
 
 @register_script("regex")
 def regex(ctx):
-    archive = match(r"^api-\d{2}\.tgz$")
+    archive = match(r"^api-\d{2}\.tgz$", search_path=r"D:\build-output")
     host = ctx.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
     result = host.sftp_upload(local_file=archive, remote_dir="/tmp")
     if not result.success:

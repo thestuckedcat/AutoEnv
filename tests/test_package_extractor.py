@@ -602,7 +602,6 @@ def test_package_extra_and_match_sources_are_resolved_offline(tmp_path: Path) ->
     make_tar(package_dir / "sdk-1.tgz", {"package.txt": b"package"})
     make_tar(package_dir / "extra.tgz", {"extra.txt": b"extra"})
     make_tar(package_dir / "a-match.tgz", {"match.txt": b"first"})
-    make_tar(package_dir / "z-match.tgz", {"match.txt": b"last"})
     (package_dir / "0-match.tgz.part").write_bytes(b"ignored")
     extractor, recorder, pattern_calls = make_extractor(
         package_dir, {"sdk": r"^sdk-\d+\.tgz$"}

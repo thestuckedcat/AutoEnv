@@ -106,7 +106,8 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 - `package("A1")`：根据 `config.json` 中 `name=A1` 的 `image_name` 匹配本地文件。
 - `extra_file("firmware.bin")`：使用包目录中的明确文件名。
-- `match(r"^firmware-.*\.bin$")`：正则匹配并按稳定顺序选择第一个文件。
+- `match(r"^firmware-.*\.bin$")`：在包目录中按正则匹配；多个候选会列出文件名并要求输入编号。
+- `match(r"^firmware-.*\.bin$", search_path=r"D:\builds")`：在指定本地目录匹配，选择后把文件复制到本次 `packages/`，再供提取和上传使用。
 
 上传和提取不会隐式下载。需要从 HDFS 下载时必须显式调用 `ctx.download_package(package("A1"))`。
 

@@ -27,6 +27,7 @@ from .results import (
 )
 from .selectors import (
     LocalFileSelector,
+    ResolvedLocalFile,
     SelectorResolutionError,
     describe_selector,
     resolve_local_file,
@@ -138,6 +139,9 @@ class SSHHost:
         recorder: RunRecorder,
         image_pattern_for: Callable[[str], str],
         uploaded_files: UploadedFileRegistry | None = None,
+        local_file_resolver: (
+            Callable[[LocalFileSelector], ResolvedLocalFile] | None
+        ) = None,
         client_factory: Callable[[], Any] = paramiko.SSHClient,
         scp_factory: Callable[[Any], Any] = _default_scp_factory,
     ) -> None:
@@ -153,8 +157,11 @@ class SSHHost:
             raise TypeError("client_factory must be callable")
         if not callable(scp_factory):
             raise TypeError("scp_factory must be callable")
+        if local_file_resolver is not None and not callable(local_file_resolver):
+            raise TypeError("local_file_resolver must be callable")
         self.recorder = recorder
         self.image_pattern_for = image_pattern_for
+        self.local_file_resolver = local_file_resolver
         if uploaded_files is not None and not isinstance(uploaded_files, UploadedFileRegistry):
             raise TypeError("uploaded_files must be UploadedFileRegistry")
         self.uploaded_files = uploaded_files or UploadedFileRegistry()
@@ -552,8 +559,12 @@ class SSHHost:
         error_message: str | None = None
 
         try:
-            resolved = resolve_local_file(
-                selector, self.package_dir, self.image_pattern_for
+            resolved = (
+                self.local_file_resolver(selector)
+                if self.local_file_resolver is not None
+                else resolve_local_file(
+                    selector, self.package_dir, self.image_pattern_for
+                )
             )
             resolved_path = resolved.path
             local_md5 = self._local_md5(resolved_path)

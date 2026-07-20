@@ -79,7 +79,8 @@ description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_E
 
 - `package("NAME")`：按 `config.json` 的 `image_name` 匹配当前运行的 `packages`。
 - `extra_file("filename")`：使用用户手工放入当前 `packages` 的明确文件。
-- `match(r"pattern")`：按正则匹配当前 `packages` 根目录。
+- `match(r"pattern")`：按正则匹配当前 `packages` 根目录；多个候选由用户输入编号选择。
+- `match(r"pattern", search_path=...)`：按正则匹配指定本地目录，选择后自动复制到当前运行的 `packages`。只有用户明确提供或确认搜索目录时才生成该参数，不猜测本地绝对路径。
 
 若使用 `package()`：
 
@@ -90,7 +91,7 @@ description: Interactively clarify, generate, modify, and verify AutoEnv UNIFY_E
 
 若要提取，确认源选择器、`target_file` 或 `target_dir`，二者必须且只能选择一个。若要上传，确认协议、选择器、远端目录和 `overwrite`。
 
-不要把裸字符串、绝对本地路径或包含 `..` 的路径传给上传和提取接口。不要让上传或提取隐式触发下载。
+不要把裸字符串或包含 `..` 的路径传给上传和提取接口。`extra_file()` 不能使用绝对路径；外部本地目录必须通过 `match(..., search_path=...)` 明确声明。不要让上传或提取隐式触发下载。
 
 ### 3.5 命令、判定与重试
 
@@ -196,7 +197,7 @@ if not result.success:
 - 业务输出不满足条件时使用 `result.with_failure("明确原因")`。
 - 只返回 `None` 或 AutoEnv 结果对象；不要返回 `True`/`False`。
 - 保留明确请求的覆盖策略和超时，不自行改变危险命令语义。
-- 不直接使用 Paramiko、socket、WebHDFS 请求、文件日志或任意本地绝对路径。
+- 不直接使用 Paramiko、socket、WebHDFS 请求或文件日志；本地绝对目录只允许作为用户已确认的 `match(..., search_path=...)` 参数。
 - 仅为不明显的业务判断添加短注释，不复制整份注册指南。
 - 若新增包配置，保持 `config.json` 为合法顶层数组并遵循已有字段风格。
 

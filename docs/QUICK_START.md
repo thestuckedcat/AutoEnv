@@ -98,6 +98,8 @@ def start_demo(ctx):
 
 使用 `package("A1")` 前，确认 [`config.json`](../config.json) 中存在同名配置，且 `image_name` 能唯一匹配目标包。上传和提取不会自动下载；每一步都必须显式调用并立即检查结果。
 
+本地构建产物可用 `match(r"正则", search_path=r"D:\build-output")` 从指定目录选择。若正则匹配到多个文件，AutoEnv 会列出排序后的全部文件名并要求输入编号；选中的文件会复制到本次 `logs/<run>/packages/`，随后再用于提取或上传。
+
 也可以直接让仓库 skill 引导生成：向 agent 提出“使用 `autoenv-script-generator` 生成环境脚本”，或粘贴一整段已有 shell 脚本。agent 会先确认包来源、连接、操作顺序和成功条件，再写入 `scripts/`。
 
 ## 4. 快速复制已有 shell 脚本
@@ -201,7 +203,7 @@ logs/<run_id>/
 | 现象 | 先检查 |
 |---|---|
 | `unknown AutoEnv script` | 文件是否位于 `scripts/`、是否使用 `@register_script`、导入是否报错 |
-| 包不存在或多匹配 | `config.json.image_name`、本次 `packages` 内容、选择器字符串 |
+| 包不存在或多匹配 | `package()` 检查 `config.json.image_name` 和本次 `packages`；`match()` 按终端列表输入正确编号 |
 | `S{...}` 无法替换 | 是否成功上传、上传 Host 是否与执行 Host 一致、Telnet 是否配置 `uploaded_files_from` |
 | `register_func` 注册失败 | 是否位于主流程内部末尾、名称是否重复、是否只有一个 ctx 参数 |
 | func 不显示 | 主流程是否成功、是否在注册定义前提前 `return` |

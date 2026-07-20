@@ -199,13 +199,21 @@ local_file=extra_file("install.sh")
 
 适合用户手工放入包目录的脚本、补丁或固件。
 
-### 3.3 `match(r"正则")`
+### 3.3 `match(r"正则", search_path=...)`
 
 ```python
 local_file=match(r"^firmware-.*\.bin$")
+
+# 也可以从指定本地目录选择构建产物
+local_file=match(
+    r"^firmware-.*\.bin$",
+    search_path=r"D:\build-output",
+)
 ```
 
-含义：在本次 `packages` 根目录中按正则匹配；多个匹配按文件名排序后取第一个。
+不传 `search_path` 时，在本次 `packages` 根目录中按正则匹配；传入时，在指定目录的顶层匹配。候选按文件名排序，若有多个，终端会列出全部文件名，输入 `1..N` 选择。选中的外部文件会复制到本次 `packages`，后续提取和上传都使用该副本；同一选择器不会重复询问。
+
+`search_path` 可以是绝对目录，但不会递归搜索。目录不存在、符号链接逃离搜索目录，或本次 `packages` 已有同名但内容不同的文件时，操作会明确失败。
 
 ### 3.4 禁止的写法
 
@@ -213,7 +221,7 @@ local_file=match(r"^firmware-.*\.bin$")
 # 不接受裸字符串
 host.scp_upload(local_file="A1", remote_dir="/root/autoEnv")
 
-# 不允许绝对路径
+# extra_file() 不允许绝对路径；指定外部目录应使用 match(..., search_path=...)
 extra_file(r"D:\packages\driver.run")
 
 # 不允许逃离 packages
@@ -809,7 +817,7 @@ def example_environment(ctx):
     if not result.success:
         return result
 
-    # match() 按确定性顺序选择第一个匹配文件。
+    # match() 只有一个候选时直接使用；多个候选时要求用户输入编号。
     result = host_1260.sftp_upload(
         local_file=firmware_image,
         remote_dir="/root/autoEnv/firmware",
@@ -888,6 +896,7 @@ chmod +x "S{A1}"
 - [ ] `image_name` 正则能唯一匹配预期本地包。
 - [ ] 下载、提取、上传分别显式调用。
 - [ ] 手工文件使用 `extra_file()` 或 `match()`。
+- [ ] `match(..., search_path=...)` 的目录已由用户确认；多匹配时允许用户在运行期选择，而非依赖排序后的第一项。
 - [ ] 所有选择器和连接对象集中声明在环境函数开头，流程只复用变量。
 - [ ] SSH Host 和 Telnet 分别注册。
 - [ ] `S{file_name}` 使用选择器字符串，且对应文件已成功上传到命令目标。
@@ -929,9 +938,9 @@ ctx.download_package(package("A1"))
 
 也可以由用户手工把符合 `A1.image_name` 的文件放进本次 `packages`。
 
-### 为什么不能传绝对路径？
+### 为什么 `extra_file()` 不能传绝对路径？
 
-所有输入文件集中在本次 `packages`，日志才能完整记录该次运行实际使用了哪些文件，也能避免脚本意外访问任意 Windows 路径。
+`extra_file()` 只表示本次 `packages` 根目录中的明确文件名。需要从绝对目录选择本地构建产物时，使用 `match(pattern, search_path=...)`；框架会显示候选、记录用户选择，并把选中文件复制到本次 `packages` 后再使用，从而保留该次运行实际使用的文件。
 
 ### `RESULT_UNKNOWN` 是否表示命令失败？
 

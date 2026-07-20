@@ -14,6 +14,7 @@ from .recorder import RunRecorder
 from .results import ExtractResult
 from .selectors import (
     LocalFileSelector,
+    ResolvedLocalFile,
     SelectorResolutionError,
     describe_selector,
     resolve_local_file,
@@ -44,6 +45,9 @@ class Extractor:
         recorder: RunRecorder,
         image_pattern_for: Callable[[str], str],
         *,
+        local_file_resolver: (
+            Callable[[LocalFileSelector], ResolvedLocalFile] | None
+        ) = None,
         command_runner: CommandRunner | None = None,
         bash_executable: str | None = None,
         run_timeout: float = 300.0,
@@ -52,6 +56,9 @@ class Extractor:
         self.run_id = run_id
         self.recorder = recorder
         self.image_pattern_for = image_pattern_for
+        if local_file_resolver is not None and not callable(local_file_resolver):
+            raise TypeError("local_file_resolver must be callable")
+        self.local_file_resolver = local_file_resolver
         self.command_runner = command_runner or subprocess.run
         self.bash_executable = bash_executable
         if isinstance(run_timeout, bool) or not isinstance(run_timeout, (int, float)):
@@ -134,8 +141,12 @@ class Extractor:
 
         try:
             try:
-                resolved = resolve_local_file(
-                    source, self.package_dir, self.image_pattern_for
+                resolved = (
+                    self.local_file_resolver(source)
+                    if self.local_file_resolver is not None
+                    else resolve_local_file(
+                        source, self.package_dir, self.image_pattern_for
+                    )
                 )
             except SelectorResolutionError as exc:
                 return result(

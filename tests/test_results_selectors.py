@@ -80,7 +80,7 @@ def test_command_result_properties_failure_copy_and_serialization(tmp_path):
     json.dumps(serialized)
 
 
-def test_all_selectors_resolve_and_match_has_a_stable_first_item(tmp_path):
+def test_all_selectors_resolve_and_match_uses_explicit_choice(tmp_path):
     package_dir = tmp_path / "package-resolution"
     package_dir.mkdir()
     (package_dir / "firmware-001.bin").write_bytes(b"image")
@@ -111,13 +111,94 @@ def test_all_selectors_resolve_and_match_has_a_stable_first_item(tmp_path):
     for name in ("z.bin", "b.bin", "A.bin", "00.bin.part"):
         (match_dir / name).write_bytes(name.encode())
     match_selector = match(r"^[A-Za-z]\.bin$")
-    resolved_match = resolve_local_file(match_selector, match_dir, lambda _: r"$^")
-    assert resolved_match.path.name == "A.bin"
+    choices: list[list[str]] = []
+
+    def choose(_selector, _search_root, matches):
+        choices.append([item.name for item in matches])
+        return matches[1]
+
+    resolved_match = resolve_local_file(
+        match_selector,
+        match_dir,
+        lambda _: r"$^",
+        match_chooser=choose,
+    )
+    assert choices == [["A.bin", "b.bin", "z.bin"]]
+    assert resolved_match.path.name == "b.bin"
     assert describe_selector(match_selector) == ("match", r"^[A-Za-z]\.bin$")
 
 
+def test_match_search_path_copies_selected_file_into_package_directory(tmp_path):
+    package_dir = tmp_path / "run" / "packages"
+    package_dir.mkdir(parents=True)
+    search_path = tmp_path / "build-output"
+    search_path.mkdir()
+    (search_path / "firmware-1.bin").write_bytes(b"one")
+    (search_path / "firmware-2.bin").write_bytes(b"two")
+
+    selector = match(r"^firmware-\d+\.bin$", search_path=search_path)
+    resolved = resolve_local_file(
+        selector,
+        package_dir,
+        lambda _: r"$^",
+        match_chooser=lambda _selector, _root, matches: matches[1],
+    )
+
+    assert selector.search_path == search_path
+    assert resolved.path == (package_dir / "firmware-2.bin").resolve()
+    assert resolved.path.read_bytes() == b"two"
+    assert (search_path / "firmware-2.bin").read_bytes() == b"two"
+    assert not list(package_dir.glob("*.part"))
+
+
+def test_match_without_chooser_rejects_multiple_candidates(tmp_path):
+    package_dir = tmp_path / "packages"
+    package_dir.mkdir()
+    (package_dir / "a.bin").write_bytes(b"a")
+    (package_dir / "b.bin").write_bytes(b"b")
+
+    with pytest.raises(SelectorResolutionError) as raised:
+        resolve_local_file(match(r"\.bin$"), package_dir, lambda _: r"$^")
+
+    assert raised.value.code == "AMBIGUOUS_LOCAL_FILE"
+    assert "a.bin, b.bin" in str(raised.value)
+
+
+def test_match_search_path_reports_missing_directory_and_copy_conflict(tmp_path):
+    package_dir = tmp_path / "packages"
+    package_dir.mkdir()
+    missing = tmp_path / "missing"
+
+    with pytest.raises(SelectorResolutionError) as raised:
+        resolve_local_file(
+            match(r"\.bin$", search_path=missing),
+            package_dir,
+            lambda _: r"$^",
+        )
+    assert raised.value.code == "MATCH_SEARCH_PATH_NOT_FOUND"
+
+    search_path = tmp_path / "build-output"
+    search_path.mkdir()
+    (search_path / "firmware.bin").write_bytes(b"new")
+    (package_dir / "firmware.bin").write_bytes(b"existing")
+    with pytest.raises(SelectorResolutionError) as raised:
+        resolve_local_file(
+            match(r"^firmware\.bin$", search_path=search_path),
+            package_dir,
+            lambda _: r"$^",
+        )
+    assert raised.value.code == "LOCAL_FILE_COPY_CONFLICT"
+    assert (package_dir / "firmware.bin").read_bytes() == b"existing"
+
+
 def test_selectors_reject_unsafe_paths_and_package_ambiguity(tmp_path):
-    for unsafe in ("../escape.bin", "nested/file.bin", r"C:\escape.bin"):
+    for unsafe in (
+        "../escape.bin",
+        "nested/file.bin",
+        r"nested\file.bin",
+        r"C:\escape.bin",
+        r"\\server\share\escape.bin",
+    ):
         with pytest.raises(ValueError):
             extra_file(unsafe)
 

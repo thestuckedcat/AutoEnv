@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ from autoenv.results import (
     CommandStatus,
 )
 from autoenv.runtime import RunContext, RunMode
-from autoenv.selectors import package
+from autoenv.selectors import match, package
 from autoenv.ssh_host import SSHDefaults
 from autoenv.telnet_client import TelnetDefaults
 
@@ -198,6 +199,48 @@ def test_missing_last_run_does_not_execute_body(tmp_path):
     assert result.run_dir == ""
     assert called is False
     assert not (root / "state" / "last_runs" / "fresh.json").exists()
+
+
+def test_match_lists_candidates_copies_selection_and_reuses_it(tmp_path):
+    root = _project_root(tmp_path)
+    search_path = tmp_path / "build-output"
+    search_path.mkdir()
+    for name, content in (("firmware-A.tgz", b"A"), ("firmware-b.tgz", b"B")):
+        with tarfile.open(search_path / name, "w:gz") as archive:
+            info = tarfile.TarInfo("marker.txt")
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    answers = iter(("invalid", "2"))
+    prompts: list[str] = []
+    console = io.StringIO()
+    context = RunContext(
+        root_dir=root,
+        script_name="choose_firmware",
+        mode=RunMode.RUN,
+        input_func=lambda prompt: prompts.append(prompt) or next(answers),
+        console=console,
+    )
+    selector = match(r"^firmware-.*\.tgz$", search_path=search_path)
+
+    try:
+        extract_result = context.extract_file_from(selector, target_file="marker.txt")
+        resolved = context.resolve_local_file(selector)
+    finally:
+        context.close()
+
+    assert extract_result.success is True
+    assert resolved.path == (context.package_dir / "firmware-b.tgz").resolve()
+    assert Path(extract_result.source_file or "") == resolved.path
+    assert (context.package_dir / "marker.txt").read_bytes() == b"B"
+    assert prompts == [
+        "Select matched file [1-2]: ",
+        "Select matched file [1-2]: ",
+    ]
+    console_text = console.getvalue()
+    assert "1. firmware-A.tgz" in console_text
+    assert "2. firmware-b.tgz" in console_text
+    assert "INVALID MATCH SELECTION [RETRY]" in console_text
+    assert "file='firmware-b.tgz'" in context.log_path.read_text("utf-8")
 
 
 def test_rerun_preserves_saved_package_path_mode(tmp_path):

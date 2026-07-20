@@ -7,12 +7,13 @@ from dataclasses import asdict
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import Callable, Sequence, TextIO
 
 from .command_files import UploadedFileRegistry, generate_sh_file
 from .recorder import RunRecorder, mask_sensitive
 from .selectors import (
     LocalFileSelector,
+    MatchSelector,
     PackageSelector,
     ResolvedLocalFile,
     resolve_local_file,
@@ -101,6 +102,7 @@ class RunContext:
         self._package_manager: object | None = None
         self._extractor: object | None = None
         self._uploaded_files = UploadedFileRegistry()
+        self._resolved_match_files: dict[MatchSelector, ResolvedLocalFile] = {}
         self._closed = False
 
         self.package_dir.mkdir(parents=True, exist_ok=False)
@@ -217,6 +219,7 @@ class RunContext:
             recorder=self.recorder,
             image_pattern_for=self.image_pattern_for,
             uploaded_files=self._uploaded_files,
+            local_file_resolver=self.resolve_local_file,
         )
         self._ssh_hosts[normalized_name] = host
         self.params["ssh_hosts"][normalized_name] = dict(values)  # type: ignore[index]
@@ -376,9 +379,55 @@ class RunContext:
         )
 
     def resolve_local_file(self, selector: LocalFileSelector) -> ResolvedLocalFile:
-        return resolve_local_file(
-            selector, self.package_dir, self.image_pattern_for
+        if isinstance(selector, MatchSelector):
+            cached = self._resolved_match_files.get(selector)
+            if cached is not None and cached.path.is_file():
+                return cached
+        resolved = resolve_local_file(
+            selector,
+            self.package_dir,
+            self.image_pattern_for,
+            match_chooser=self._choose_match_file,
         )
+        if isinstance(selector, MatchSelector):
+            self._resolved_match_files[selector] = resolved
+        return resolved
+
+    def _choose_match_file(
+        self,
+        selector: MatchSelector,
+        search_root: Path,
+        matches: Sequence[Path],
+    ) -> Path:
+        self.recorder.console_block(
+            "MATCH FILE SELECTION",
+            (
+                f"search_path: {search_root}",
+                f"pattern: {selector.pattern}",
+                *(f"{index}. {item.name}" for index, item in enumerate(matches, 1)),
+            ),
+        )
+        while True:
+            raw_choice = self.input_func(
+                f"Select matched file [1-{len(matches)}]: "
+            ).strip()
+            try:
+                choice = int(raw_choice)
+            except ValueError:
+                choice = 0
+            if 1 <= choice <= len(matches):
+                selected = matches[choice - 1]
+                self.recorder.log(
+                    f"MATCH FILE SELECTED pattern={selector.pattern!r} "
+                    f"search_path={search_root} file={selected.name!r}",
+                    console=False,
+                )
+                return selected
+            self.recorder.console_block(
+                "INVALID MATCH SELECTION",
+                (f"enter a number from 1 to {len(matches)}",),
+                state="RETRY",
+            )
 
     def generate_sh_file(self, file_name: str, script: str) -> Path:
         return generate_sh_file(
@@ -412,6 +461,7 @@ class RunContext:
                 run_id=self.run_id,
                 recorder=self.recorder,
                 image_pattern_for=self.image_pattern_for,
+                local_file_resolver=self.resolve_local_file,
             )
         return self._extractor
 

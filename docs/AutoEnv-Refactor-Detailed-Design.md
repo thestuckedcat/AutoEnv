@@ -138,15 +138,19 @@ extra_file("manual_firmware.bin")
 - 不读取 `config.json`。
 - 不允许绝对路径、`..` 或逃离 `packages`。
 
-### 5.3 `match(pattern)`
+### 5.3 `match(pattern, search_path=None)`
 
 ```python
 match(r"^firmware-.*\.bin$")
+match(r"^firmware-.*\.bin$", search_path=r"D:\build-output")
 ```
 
-- 正则只匹配本次 `packages` 根目录中的普通文件。
+- 未传 `search_path` 时，正则匹配本次 `packages` 根目录中的普通文件。
+- 传入 `search_path` 时，正则匹配指定本地目录；选中的文件先复制到本次 `packages`，上传和提取仍只使用运行目录内的副本。
 - 不递归搜索。
-- 按文件名忽略大小写升序排序后取第一个匹配项，保证结果稳定。
+- 候选按文件名忽略大小写升序排序；多个匹配项会全部显示，用户通过 `1..N` 选择，非法编号会重新询问。
+- 同一选择器在一次运行中只解析一次，后续上传或提取复用已复制的文件，不重复询问。
+- 指定目录中的符号链接若解析到目录外会被拒绝；若 `packages` 中已有同名但内容不同的文件，则返回复制冲突，不静默覆盖。
 - 正则非法属于配置/编程错误，直接抛异常。
 
 ## 6. 脚本注册与独立运行
@@ -570,7 +574,7 @@ extract_file_from(
 
 ### 14.2 共同规则
 
-- 源包必须已经存在于本次 `packages`。
+- `package()` 和 `extra_file()` 的源包必须已经存在于本次 `packages`；`match(..., search_path=...)` 会先把用户选中的外部文件复制进来。
 - 不自动调用 `download_package()`。
 - 支持 `.run`、`.tar.gz` 和 `.tgz`。
 - 原包保留，临时解包目录最终删除。
@@ -804,7 +808,7 @@ result = target.execute("reboot", expect_disconnect=True)
 - 命令等待超时或中途断连。
 - Telnet 提示符/退出码解析失败。
 - HDFS 查询、下载、校验和本地替换失败。
-- 本地包未找到、选择器匹配歧义。
+- 本地包未找到、`package()` 匹配歧义、`match()` 搜索目录或复制失败。
 - 远端目录创建、上传和 MD5 校验失败。
 - 解包目标不存在或目标重名。
 
@@ -815,7 +819,7 @@ result = target.execute("reboot", expect_disconnect=True)
 - 重复注册脚本名、Host 名或 Telnet 名。
 - 端口不在 `1..65535`，timeout 小于等于 0。
 - 命令为空、参数类型错误。
-- 选择器或提取目标使用绝对路径、`..` 或逃逸目录。
+- `extra_file()`、提取目标使用绝对路径或 `..`，或任一文件操作逃逸其受控目录。`match()` 的 `search_path` 允许绝对目录，但匹配结果不能通过符号链接逃离该目录。
 - `target_file` 和 `target_dir` 同时提供或都未提供。
 - 内部程序逻辑错误。
 
