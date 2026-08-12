@@ -1,6 +1,6 @@
-# AutoEnv Frontend
+# AutoEnv Frontend（历史原型）
 
-这是一个独立的本地界面目录，没有修改 AutoEnv 现有 Python 模块。
+这是早期交互式桥接原型，仅为历史参考。当前支持的 Web 控制台位于 `webPage/`，必须从仓库根目录运行 `python -X utf8 startWeb.py`；使用说明见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)。不要在这里增加新页签或 Tool。
 
 ## 使用方式
 

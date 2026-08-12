@@ -1,6 +1,8 @@
 # AutoEnv
 
-AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 下载、显式文件/目录提取、SCP/SFTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
+本分支提供本地开发者 Web 控制台：运行 `python -X utf8 startWeb.py`，即可注册环境、非交互拉起脚本、使用动态 Tools，以及启动支持文件路径转换的 Agent CLI。快速使用见 `webPage/QUICK_START.md`，后续开发接手见 `docs/WEB_ARCHITECTURE_AND_HANDOFF.md`。
+
+AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 包下载、SCP/SFTP 远端文件下载、显式文件/目录及 ZIP 提取、SCP/SFTP/FTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、结构化非交互启动、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
 
 AutoEnv 不包含工作流 DAG、Step 依赖或并发调度。脚本中的代码顺序就是实际执行顺序。
 
@@ -110,6 +112,8 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 上传和提取不会隐式下载。需要从 HDFS 下载时必须显式调用 `ctx.download_package(package("A1"))`。
 
+SCP/SFTP 下载使用已声明的 SSH Host，可指定精确远端文件，或在一个远端目录中用正则进行唯一匹配。下载成功的 `RemoteDownloadResult` 会注册到本次 `packages/`，可直接传给 SCP、SFTP 或 FTP 上传；远端模糊匹配没有 HDFS `newest` 语义，零匹配和多匹配都会失败。完整示例见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用)。
+
 ## 运行记录
 
 每个注册脚本调用都有独立目录：
@@ -136,6 +140,10 @@ logs/<run_id>/
 - [重构详细设计](docs/AutoEnv-Refactor-Detailed-Design.md)
 - [环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md)
 - [UT 目标与排查指南](tests/README.md)
+- [Web 快速入门](webPage/QUICK_START.md)
+- [Web 架构与接手说明](docs/WEB_ARCHITECTURE_AND_HANDOFF.md)
+- [文档一致性审计](docs/DOCUMENTATION_AUDIT.md)
+- [通用底层软件 SDD 技能包](sdd/README.md)
 
 第一次使用先看快速入门；详细设计是接口语义和验收基线；环境注册指南包含全部可选参数、结果状态、完整示例和提交前检查清单。
 

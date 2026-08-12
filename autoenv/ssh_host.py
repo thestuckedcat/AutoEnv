@@ -8,6 +8,7 @@ import posixpath
 import shlex
 import socket
 import stat
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,7 @@ from .results import (
     CommandResult,
     CommandStatus,
     UploadResult,
+    RemoteDownloadResult,
 )
 from .selectors import (
     LocalFileSelector,
@@ -123,6 +125,13 @@ class SSHConnectionInfo:
 
 class _HostClosedError(RuntimeError):
     pass
+
+
+class _RemoteDownloadError(RuntimeError):
+    def __init__(self, status: str, error_type: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_type = error_type
 
 
 class SSHHost:
@@ -516,6 +525,128 @@ class SSHHost:
         overwrite: bool = True,
     ) -> UploadResult:
         return self._upload("sftp", local_file, remote_dir, overwrite)
+
+    def scp_download(
+        self,
+        remote_dir: str,
+        *,
+        remote_file: str | None = None,
+        pattern: str | None = None,
+        overwrite: bool = True,
+    ) -> RemoteDownloadResult:
+        return self._download("scp", remote_dir, remote_file, pattern, overwrite)
+
+    def sftp_download(
+        self,
+        remote_dir: str,
+        *,
+        remote_file: str | None = None,
+        pattern: str | None = None,
+        overwrite: bool = True,
+    ) -> RemoteDownloadResult:
+        return self._download("sftp", remote_dir, remote_file, pattern, overwrite)
+
+    def _download(
+        self,
+        protocol: str,
+        remote_dir: str,
+        remote_file: str | None,
+        pattern: str | None,
+        overwrite: bool,
+    ) -> RemoteDownloadResult:
+        remote_dir = self._normalize_remote_dir(remote_dir)
+        if (remote_file is None) == (pattern is None):
+            raise ValueError("exactly one of remote_file and pattern must be provided")
+        if remote_file is not None:
+            remote_file = self._remote_basename(remote_file)
+        if pattern is not None:
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ValueError("pattern must be a non-empty regular expression")
+            pattern = pattern.strip()
+            re.compile(pattern)
+        if not isinstance(overwrite, bool):
+            raise TypeError("overwrite must be a boolean")
+
+        operation_id = self.recorder.next_operation_id()
+        started = datetime.now().astimezone()
+        selected_name: str | None = None
+        remote_path: str | None = None
+        local_path: Path | None = None
+        remote_size: int | None = None
+        local_size: int | None = None
+        local_existed = False
+        local_md5: str | None = None
+        success = False
+        status = "download_failed"
+        error_type: str | None = None
+        error_message: str | None = None
+        pending: Path | None = None
+        try:
+            self._ensure_transport()
+            if pattern is not None:
+                names = self._list_remote_files(remote_dir, protocol)
+                matches = sorted(name for name in names if re.search(pattern, name))
+                if not matches:
+                    raise _RemoteDownloadError("remote_file_not_found", "REMOTE_FILE_NOT_FOUND", f"no file in {remote_dir!r} matched {pattern!r}")
+                if len(matches) > 1:
+                    raise _RemoteDownloadError("ambiguous_remote_file", "AMBIGUOUS_REMOTE_FILE", f"multiple files in {remote_dir!r} matched {pattern!r}: {', '.join(matches)}")
+                selected_name = matches[0]
+            else:
+                selected_name = remote_file
+            assert selected_name is not None
+            remote_path = self._remote_file(remote_dir, selected_name)
+            remote_size = self._remote_size(remote_path, protocol)
+            local_path = (self.package_dir / selected_name).resolve()
+            local_path.relative_to(self.package_dir.resolve())
+            local_existed = local_path.exists()
+            if local_existed and not overwrite:
+                raise _RemoteDownloadError("local_file_exists", "LOCAL_FILE_EXISTS", f"local file already exists: {local_path}")
+            pending = local_path.with_name(local_path.name + ".part")
+            pending.unlink(missing_ok=True)
+            if protocol == "scp":
+                scp_client = self._get_scp()
+                try:
+                    scp_client.get(remote_path, local_path=str(pending))
+                finally:
+                    self._close_scp()
+            else:
+                sftp = self._get_sftp()
+                sftp.get(remote_path, str(pending))
+            local_size = pending.stat().st_size
+            if local_size != remote_size:
+                raise _RemoteDownloadError("size_verification_failed", "SIZE_VERIFICATION_FAILED", f"downloaded size mismatch: remote={remote_size}, local={local_size}")
+            local_md5 = self._local_md5(pending)
+            pending.replace(local_path)
+            success, status = True, "success"
+        except _RemoteDownloadError as exc:
+            status, error_type, error_message = exc.status, exc.error_type, str(exc)
+        except FileNotFoundError as exc:
+            status, error_type, error_message = "remote_file_not_found", "REMOTE_FILE_NOT_FOUND", str(exc)
+        except paramiko.AuthenticationException as exc:
+            status, error_type, error_message = "auth_failed", "AUTHENTICATION_FAILED", str(exc) or "SSH authentication failed"
+            self._invalidate_connection()
+        except (socket.timeout, TimeoutError) as exc:
+            status, error_type, error_message = "connection_timeout", "CONNECTION_TIMEOUT", str(exc) or "SSH operation timed out"
+            self._invalidate_connection()
+        except Exception as exc:
+            status, error_type, error_message = "download_failed", type(exc).__name__, str(exc) or repr(exc)
+        finally:
+            if pending is not None and pending.exists():
+                pending.unlink(missing_ok=True)
+        finished = datetime.now().astimezone()
+        result = RemoteDownloadResult(
+            run_id=self.run_id, operation_id=operation_id, protocol=protocol,
+            target_name=self.name, remote_dir=remote_dir, requested_file=remote_file,
+            pattern=pattern, success=success, status=status, overwrite=overwrite,
+            started_at=started, finished_at=finished,
+            duration_ms=max(0, int((finished-started).total_seconds()*1000)),
+            remote_file=remote_path, remote_size=remote_size,
+            local_file=str(local_path) if local_path else None, local_size=local_size,
+            local_existed=local_existed, local_md5=local_md5,
+            size_verified=success, error_type=error_type, error_message=error_message,
+        )
+        self.recorder.record_result(f"{protocol.upper()} DOWNLOAD", result)
+        return result
 
     def close(self) -> None:
         if self._closed:
@@ -939,6 +1070,34 @@ class SSHHost:
         if remote_dir == ".":
             return filename
         return posixpath.join(remote_dir, filename)
+
+    @staticmethod
+    def _remote_basename(value: str) -> str:
+        value = _text(value, "remote_file")
+        if value != posixpath.basename(value) or value in {".", ".."}:
+            raise ValueError("remote_file must be a filename; pass its directory via remote_dir")
+        return value
+
+    def _list_remote_files(self, remote_dir: str, protocol: str) -> list[str]:
+        if protocol == "sftp":
+            entries = self._get_sftp().listdir_attr(remote_dir)
+            return [item.filename for item in entries if stat.S_ISREG(getattr(item, "st_mode", 0))]
+        command = f"find {shlex.quote(remote_dir)} -maxdepth 1 -type f -printf '%f\\n'"
+        result = self.execute(command, timeout=self.info.connect_timeout)
+        if not result.success:
+            raise _RemoteDownloadError("remote_list_failed", "REMOTE_LIST_FAILED", result.error_message or result.output or "failed to list remote directory")
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def _remote_size(self, remote_path: str, protocol: str) -> int:
+        if protocol == "sftp":
+            return int(self._get_sftp().stat(remote_path).st_size)
+        result = self.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=self.info.connect_timeout)
+        if not result.success:
+            raise _RemoteDownloadError("remote_file_not_found", "REMOTE_FILE_NOT_FOUND", result.error_message or result.output or f"cannot read remote file: {remote_path}")
+        try:
+            return int(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError) as exc:
+            raise _RemoteDownloadError("remote_size_failed", "REMOTE_SIZE_FAILED", f"cannot parse remote file size: {result.stdout!r}") from exc
 
     @classmethod
     def _mkdir_recursive(cls, sftp: Any, remote_dir: str) -> None:

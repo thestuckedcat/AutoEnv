@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoEnv Web Tool"
+  short_description: "为 AutoEnv Web 工作台快速新增可测试的工具子页签"
+  default_prompt: "Use $autoenv-web-tool to add a Python utility as an AutoEnv Web Tools tab."

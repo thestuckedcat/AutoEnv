@@ -19,6 +19,7 @@ from .results import (
     ExtractResult,
     ScriptResult,
     UploadResult,
+    RemoteDownloadResult,
     result_to_dict,
 )
 from .runtime import DEFAULT_PACKAGE_CACHE_LIMIT, LastRunNotFoundError, RunContext, RunMode
@@ -34,6 +35,8 @@ class ScriptDefinition:
     description: str
     body: ScriptBody
     entrypoint: Callable[[], ScriptResult]
+    packages: tuple[str, ...] = ()
+    parameters: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -62,10 +65,15 @@ _CURRENT_FUNCS: contextvars.ContextVar[list[FuncDefinition] | None] = (
 def register_script(
     name: str,
     description: str = "",
+    *,
+    packages: tuple[str, ...] | list[str] = (),
+    parameters: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
 ) -> Callable[[ScriptBody], Callable[[], ScriptResult]]:
     normalized = _validate_script_name(name)
     if not isinstance(description, str):
         raise TypeError("script description must be a string")
+    normalized_packages = tuple(_validate_script_name(item) for item in packages)
+    normalized_parameters = tuple(_validate_parameter(item) for item in parameters)
 
     def decorator(body: ScriptBody) -> Callable[[], ScriptResult]:
         if normalized in _REGISTRY:
@@ -87,6 +95,8 @@ def register_script(
             description=description.strip(),
             body=body,
             entrypoint=entrypoint,
+            packages=normalized_packages,
+            parameters=normalized_parameters,
         )
         return entrypoint
 
@@ -188,6 +198,8 @@ def run_script(
     console: TextIO | None = None,
     package_cache_limit: int = DEFAULT_PACKAGE_CACHE_LIMIT,
     hdfs_client: object | None = None,
+    parameters: dict[str, object] | None = None,
+    non_interactive: bool = False,
 ) -> ScriptResult:
     root = Path(root_dir or Path.cwd()).resolve()
     definition = get_script(name, root_dir=root)
@@ -198,6 +210,8 @@ def run_script(
         "console": console,
         "package_cache_limit": package_cache_limit,
         "hdfs_client": hdfs_client,
+        "parameters": parameters,
+        "non_interactive": non_interactive,
     }
     mode_token = _CURRENT_MODE.set(selected_mode)
     root_token = _CURRENT_ROOT.set(root)
@@ -354,7 +368,14 @@ def _validate_body_result(
     *,
     label: str,
 ) -> object | None:
-    allowed = (CommandResult, DownloadResult, UploadResult, ExtractResult, ScriptResult)
+    allowed = (
+        CommandResult,
+        DownloadResult,
+        RemoteDownloadResult,
+        UploadResult,
+        ExtractResult,
+        ScriptResult,
+    )
     if value is None or isinstance(value, allowed):
         return value
     raise TypeError(
@@ -451,6 +472,19 @@ def _validate_func_name(name: str) -> str:
     allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
     if any(character not in allowed for character in normalized):
         raise ValueError("func name may contain letters, digits, '_' and '-' only")
+    return normalized
+
+
+def _validate_parameter(value: dict[str, object]) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError("script parameter metadata must be a dictionary")
+    normalized = dict(value)
+    name = normalized.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("script parameter metadata requires a non-empty name")
+    normalized["name"] = name.strip()
+    normalized.setdefault("type", "string")
+    normalized.setdefault("required", False)
     return normalized
 
 

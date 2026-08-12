@@ -234,3 +234,11 @@ python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name f
 - 执行了哪些静态检查和单元测试，结果如何。
 - 哪些内容尚未在真实 SSH、Telnet 或 HDFS 环境中验证。
 - 用户下一步可运行的 `autoenv run <name>` 命令；不要声称未执行的远端流程已经成功。
+# Current branch additions
+
+- For SCP/SFTP remote downloads, declare the SSH host once and call `host.scp_download()` or `host.sftp_download()`. Pass exactly one of `remote_file` and `pattern`. A pattern searches only the named directory and must match exactly one file; never apply HDFS newest semantics.
+- Reuse a successful `RemoteDownloadResult` directly as the source of `scp_upload()`, `sftp_upload()`, or FTP `upload()` so the actual downloaded basename and operation log remain connected.
+- Register plain FTP independently with `ctx.register_ftp_host()` and `FTPDefaults`; FTP does not reuse SSH credentials unless the script deliberately gives the same defaults.
+- Declare Web-facing HDFS inputs with `packages=(...)` and script inputs with `parameters=(...)` on `register_script()`. Read script inputs with `ctx.argument()`.
+- Keep recursive nested-ZIP expansion and business log-block parsing script-specific until a second confirmed use case justifies a public API.
+- Validate generated scripts offline. Do not run SCP/SFTP downloads, FTP uploads, or registered scripts against real targets without explicit user authorization.

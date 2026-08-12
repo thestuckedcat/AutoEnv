@@ -4,7 +4,7 @@
 
 如果只想先完成安装、最小脚本和快速测试，请先看 [`QUICK_START.md`](QUICK_START.md)。
 
-> 本文描述 `UNIFY_ENV` 新接口。旧版 `ENV/EnvironmentSpec` 接口不再使用。
+> 本文描述 `UNIFY_ENV_WITH_BLOCK` 当前接口；第 1–21 节源于 `UNIFY_ENV` 重构基线，第 22 节起为后续扩展。旧版 `ENV/EnvironmentSpec` 接口不再使用。
 
 ## 1. 最快上手
 
@@ -959,3 +959,30 @@ AutoEnv 第一版面向可信实验室内网。注册和运行环境前请确认
 - SSH 密码会明文保存在本机 `params.json` 和 `state/last_runs/`。请限制仓库目录访问权限，不要提交 `logs/` 或 `state/`。
 - `.run` 提取会实际执行该文件，只能使用可信构建系统生成的 `.run` 包。
 - `TIMEOUT` 或 `DISCONNECTED` 表示命令可能已经执行，除非业务上确认安全，否则不要直接重发。
+## 22. SCP/SFTP 下载与结果复用
+
+当前分支新增以下公共能力，完整架构和限制见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)：
+
+```python
+downloaded = host.sftp_download(
+    "/var/log/device",
+    pattern=r"^device-.*\.zip$",
+)
+if not downloaded.success:
+    return downloaded
+
+# RemoteDownloadResult 本身就是合法本地文件选择器。
+result = host.scp_upload(downloaded, "/tmp/collect")
+```
+
+`scp_download()` 和 `sftp_download()` 的 `remote_file`/`pattern` 必须二选一。pattern 只搜索指定目录且必须唯一匹配，不采用 HDFS 的 newest 逻辑。下载文件落到本次 `packages/`，记录完整操作结果并可直接用于后续上传。
+
+## 23. 独立 FTP 上传
+
+独立 FTP 使用 `ctx.register_ftp_host(name, defaults=FTPDefaults(...))`，上传调用 `ftp.upload(selector, remote_dir)`。FTP 不复用 SSH；默认被动模式并以大小校验完成状态。
+
+## 24. Web 元数据与结构化入口
+
+注册脚本可以在装饰器声明 Web 元数据：`packages=("A1",)` 和 `parameters=({"name": "value", ...},)`。脚本通过 `ctx.argument("value")` 读取参数。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+
+Web 环境档案、LaunchRequest 完整字段和 Agent CLI 限制见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md) 与 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。

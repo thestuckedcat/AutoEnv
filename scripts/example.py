@@ -15,6 +15,7 @@ from autoenv import (
 @register_script(
     name="example_host_environment",
     description="Example: download, extract, upload and run SSH commands",
+    packages=("A1",),
 )
 def example_host_environment(ctx):
     # Declare every file selector and connection object in one place. The ordered
@@ -167,6 +168,7 @@ def example_console_environment(ctx):
 @register_script(
     name="example_combined_environment",
     description="Example: run two registered scripts serially and independently",
+    packages=("A1",),
 )
 def example_combined_environment(ctx):
     host_result = example_host_environment()

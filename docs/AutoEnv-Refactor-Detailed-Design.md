@@ -1,14 +1,14 @@
 # AutoEnv 重构详细设计
 
-> 目标分支：`UNIFY_ENV`
-> 文档状态：已完成需求对齐，作为重构实现与验收基线
+> 目标分支：`UNIFY_ENV_WITH_BLOCK`（原始重构基线来自 `UNIFY_ENV`）
+> 文档状态：当前实现说明；第 1–27 节保留原始重构设计，第 28 节记录后续扩展
 > 兼容范围：只兼容现有 `config.json` 格式和 WebHDFS 查包语义，不兼容旧 Python API
 
 ## 1. 背景与目标
 
 AutoEnv 用于在 Windows 上快速准备和启动一个或多个 Linux/设备环境。它需要完成包下载、文件提取、远端上传、SSH/Telnet 命令执行、结果判断、运行记录和上次参数复用。
 
-当前实现已经包含 WebHDFS、SCP、FTP、SSH、Telnet、`.run`/`.tar.gz` 解包、脚本渲染和组合环境等能力，但 `env_executor.py`、`EnvironmentProcessContext` 和环境配置承担了过多职责。底层接口返回值不统一，日志无法作为结构化运行记录，组合环境也需要额外注册表和特殊执行路径。
+重构前实现已经包含 WebHDFS、SCP、FTP、SSH、Telnet、`.run`/`.tar.gz` 解包、脚本渲染和组合环境等能力，但 `env_executor.py`、`EnvironmentProcessContext` 和环境配置承担了过多职责。底层接口返回值不统一，日志无法作为结构化运行记录，组合环境也需要额外注册表和特殊执行路径。
 
 本次重构的目标不是增加工作流引擎，而是把 AutoEnv 收敛为：
 
@@ -45,6 +45,9 @@ AutoEnv/
 │   ├── package_manager.py           # config.json 与 WebHDFS 下载
 │   ├── extractor.py                 # extract_file_from
 │   ├── ssh_host.py                  # SSH、SCP、SFTP
+│   ├── ftp_host.py                  # 独立普通 FTP 上传
+│   ├── interface.py                 # 结构化非交互启动契约
+│   ├── web_tools.py                 # Web Tool 注册与发现
 │   ├── telnet_client.py             # Telnet 与 Shell 模式探测
 │   └── recorder.py                  # 内部日志和 JSON 写入
 ├── scripts/                         # 脚本注册层
@@ -56,6 +59,10 @@ AutoEnv/
 │   ├── QUICK_START.md               # 快速使用、快速测试和文档导航
 │   ├── AutoEnv-Refactor-Detailed-Design.md
 │   └── ENVIRONMENT_REGISTRATION_GUIDE.md
+├── webPage/                         # 当前本地 Web 控制台
+├── environments/                    # 本机环境档案，默认 Git 忽略
+├── adapt_interface.py               # JSON/参数非交互入口
+├── startWeb.py                      # Web 启动入口
 ├── config.json
 ├── logs/                            # 自动生成，Git 忽略
 ├── state/                           # 自动生成，Git 忽略
@@ -870,13 +877,13 @@ autoenv rerun start_udk
 
 没有指定脚本时显示名称和描述菜单。主流程成功且注册了 func 时，再循环显示该运行的 func 菜单；`rerun` 只跳过参数确认，不跳过这个显式操作菜单。未知脚本名、缺失 last-run 和导入脚本失败需要返回非零退出码和明确错误。
 
-## 23. 第一版明确不支持
+## 23. 原始重构第一版明确不支持
 
 - 工作流 DAG、Step、依赖、自动分支和并发。
 - 后台任务调度器或跨本地重启接管远端任务。
 - SSH 私钥、跳板机、代理和 SSH Agent。
 - Telnet `login:`/`Password:` 登录流程。
-- FTP 上传。
+- FTP 上传（已由第 28 节后续扩展实现）。
 - 上传多文件列表。
 - 上传接口的隐式下载。
 - 下载接口的自动解包或自动提取。
@@ -935,7 +942,7 @@ autoenv rerun start_udk
 - 主流程成功后可循环执行同一上下文中的注册 func，并在退出前保持连接可用。
 - 每次脚本调用都有独立可追溯的目录、参数和结果。
 - 单元测试在无外部服务器条件下通过。
-- 最终变更只提交到 `UNIFY_ENV` 分支。
+- 原始重构变更提交到 `UNIFY_ENV`；后续扩展在 `UNIFY_ENV_WITH_BLOCK` 演进并按发布要求合入默认分支。
 
 ## 27. 安全边界
 
@@ -949,3 +956,15 @@ autoenv rerun start_udk
 - `expect_disconnect=True` 只能用于确认会主动断连的命令；它不能证明重启或关机后的目标最终恢复正常。
 
 这些限制是兼容当前环境所作的明确取舍，不应被理解为适用于互联网或多租户环境的安全默认值。
+## 28. `UNIFY_ENV_WITH_BLOCK` 后续扩展
+
+本分支在原顺序执行模型上增加了结构化入口和本地 Web 控制台，但没有引入 DAG 或隐式并发。新增边界如下：
+
+- `RemoteDownloadResult` 是可记录、可序列化且可直接作为上传源解析的操作结果。
+- SSH Host 同时拥有 SCP/SFTP 下载；远端正则必须在指定目录唯一匹配。
+- 普通 FTP 是独立连接对象，只提供显式上传，不共享 SSH Transport。
+- `LaunchRequest` 把环境档案与请求覆盖合并后注入 `RunContext`；非交互模式中缺参立即失败。
+- Web Tools 使用独立注册表和 JSON 字段 Schema，不能执行环境拉起职责。
+- Agent CLI 文件上传只负责安全落盘和路径转换，Python/ZIP 的适配由仓库 skill 静态审查。
+
+新增模块、目录、数据流、安全边界、已知限制和接手入口见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。新增行为的可操作说明见 [`ENVIRONMENT_REGISTRATION_GUIDE.md`](ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用) 和 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)。

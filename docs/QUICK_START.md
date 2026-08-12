@@ -216,3 +216,10 @@ logs/<run_id>/
 - [`autoenv-script-generator` skill](../.agents/skills/autoenv-script-generator/SKILL.md)：让 agent 交互澄清并生成环境脚本的流程。
 - [Agent 仓库规则](../AGENTS.md)：修改后的关联文件审视和验证要求。
 - [项目 README](../README.md)：安装、入口、安全说明和功能概览。
+- [Web 快速入门](../webPage/QUICK_START.md)：环境档案、结构化启动、Tools 和 Agent CLI。
+- [Web 架构与接手说明](WEB_ARCHITECTURE_AND_HANDOFF.md)：接口边界、安全约束和扩展入口。
+- [通用底层软件 SDD 技能包](../sdd/README.md)：证据驱动的设计、规格、门禁和复盘流程。
+
+## 9. Web 控制台入口
+
+运行 `python -X utf8 startWeb.py` 可使用环境注册、非交互脚本启动、动态 Tools 和 Agent CLI。使用步骤见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)；实现与接手说明见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。

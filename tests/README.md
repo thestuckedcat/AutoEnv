@@ -6,7 +6,8 @@
 
 - `tmp_path`：为每条测试创建隔离的临时项目、`logs`、`state` 和 `packages`。
 - fake HDFS：用内存目录列表和本地字节写入代替 WebHDFS。
-- fake SSH/SFTP/SCP：用内存 Channel、Transport 和远端文件字典代替真实服务器，同时保留连接、上传、MD5、超时和断连行为。
+- fake SSH/SFTP/SCP：用内存 Channel、Transport 和远端文件字典代替真实服务器，同时保留连接、上传、下载、匹配、校验、超时和断连行为。
+- fake FTP：用内存 FTP 客户端代替真实服务器，验证独立连接、覆盖和大小校验。
 - fake Telnet Socket/Clock：预置收发字节并推进虚拟时间，测试提示符、IAC、退出码、超时和重连。
 - `monkeypatch`：替换 UUID、CLI 调用或系统能力，保证结果确定且不产生外部副作用。
 - AST 契约验证器：只解析 `scripts/*.py`，不导入或执行环境函数。
@@ -54,6 +55,7 @@ python -X utf8 -m pytest -q
 | `test_package_extractor.py` | fake HDFS、临时压缩包、注入 `.run` runner | 下载路径、原子文件、提取安全和摘要 | `package_manager.py`、`extractor.py`、临时包内容 |
 | `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏 | `results.py`、`selectors.py`、`recorder.py` |
 | `test_cli.py` | monkeypatch 注册表和执行函数 | 菜单选择、命令模式和退出码 | `autoenv/cli.py` 的参数/输出映射 |
+| `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP、动态模块 | LaunchRequest 合并、下载结果复用、FTP、Web Tool 和导入边界 | `interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
 
 ## 4. `register_func` 每条 UT 的目的
 
@@ -105,3 +107,9 @@ SSH/Telnet 文件中的占位符 UT 进一步证明：只有通过 MD5 校验的
 SSH 和 Telnet 测试都把关键词拆成两个接收分片，证明接口按累计输出匹配而不是只检查单包。成功 case 检查 Ctrl+B 的实际字节 `b"\x02"`，失败 case 检查关键词缺失、命令提前退出或响应发送失败时的状态、阶段和部分输出。
 
 Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 提示符不会带到 Bootloader 会话；对象本身没有永久关闭，后续操作仍可懒重连。SSH 只关闭本次 Channel，Transport 保持可复用。
+## 8. Web、下载和 FTP 扩展 UT
+
+- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、LaunchRequest 合并、动态 Web Tool 发现执行和 ZIP 导入安全限制。
+- `tests/test_ssh_host.py` 新增 SFTP 精确/正则下载、唯一匹配和落盘校验。
+- `tests/test_package_extractor.py` 新增 ZIP 单文件提取与路径穿越拒绝。
+- Web HTTP API 另做本机冒烟测试；不在 UT 中启动真实 SSH、Telnet、FTP、HDFS 或 Agent CLI。

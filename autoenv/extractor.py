@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Protocol, Sequence
@@ -152,7 +153,7 @@ class Extractor:
                     success=False,
                     status="unsupported_archive_type",
                     error=ValueError(
-                        f"supported archive types are .run, .tar.gz, and .tgz: {source_file.name}"
+                        f"supported archive types are .run, .tar.gz, .tgz, and .zip: {source_file.name}"
                     ),
                     error_type="UNSUPPORTED_ARCHIVE_TYPE",
                 )
@@ -163,8 +164,10 @@ class Extractor:
                 ).resolve()
                 if archive_type == "run":
                     self._extract_run(source_file, temporary_root)
-                else:
+                elif archive_type == "tar":
                     _safe_extract_tar(source_file, temporary_root)
+                else:
+                    _safe_extract_zip(source_file, temporary_root)
                 _validate_extracted_tree(temporary_root)
                 selected = _find_target(temporary_root, target, target_type)
 
@@ -245,6 +248,8 @@ def _archive_type(path: Path) -> str | None:
         return "run"
     if name.endswith(".tar.gz") or name.endswith(".tgz"):
         return "tar"
+    if name.endswith(".zip"):
+        return "zip"
     return None
 
 
@@ -284,6 +289,35 @@ def _safe_extract_tar(source: Path, destination: Path) -> None:
                     f"archive special files are not allowed: {member.name!r}",
                 )
         archive.extractall(destination, members=members)
+
+
+def _safe_extract_zip(source: Path, destination: Path) -> None:
+    """Validate ZIP paths and reject links before extracting regular content."""
+
+    with zipfile.ZipFile(source) as archive:
+        for member in archive.infolist():
+            normalized = member.filename.replace("\\", "/")
+            posix_path = PurePosixPath(normalized)
+            windows_path = PureWindowsPath(member.filename)
+            unix_mode = (member.external_attr >> 16) & 0xFFFF
+            if (
+                not normalized
+                or posix_path.is_absolute()
+                or windows_path.is_absolute()
+                or windows_path.drive
+                or ".." in posix_path.parts
+            ):
+                raise _ExtractRuntimeError(
+                    "unsafe_archive", "ARCHIVE_PATH_TRAVERSAL",
+                    f"unsafe archive member path: {member.filename!r}",
+                )
+            if unix_mode and (unix_mode & 0o170000) == 0o120000:
+                raise _ExtractRuntimeError(
+                    "unsafe_archive", "ARCHIVE_LINK_NOT_ALLOWED",
+                    f"archive links are not allowed: {member.filename!r}",
+                )
+            _ensure_inside(destination, (destination / Path(*posix_path.parts)).resolve())
+        archive.extractall(destination)
 
 
 def _validate_extracted_tree(root: Path) -> None:

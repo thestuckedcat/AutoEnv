@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+import posixpath
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Callable, TypeAlias
+
+from .results import RemoteDownloadResult
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,9 @@ class MatchSelector:
     pattern: str
 
 
-LocalFileSelector: TypeAlias = PackageSelector | ExtraFileSelector | MatchSelector
+LocalFileSelector: TypeAlias = (
+    PackageSelector | ExtraFileSelector | MatchSelector | RemoteDownloadResult
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,9 @@ def describe_selector(selector: LocalFileSelector) -> tuple[str, str]:
         return "extra_file", selector.filename
     if isinstance(selector, MatchSelector):
         return "match", selector.pattern
+    if isinstance(selector, RemoteDownloadResult):
+        remote_name = selector.remote_file or selector.requested_file or ""
+        return "remote_download", posixpath.basename(remote_name)
     raise TypeError(f"unsupported local file selector: {type(selector)!r}")
 
 
@@ -93,6 +101,24 @@ def resolve_local_file(
                 f"local file {selector.filename!r} was not found in {package_root}",
             )
         return ResolvedLocalFile(candidate, "extra_file", selector.filename)
+
+    if isinstance(selector, RemoteDownloadResult):
+        if not selector.success or not selector.local_file:
+            raise SelectorResolutionError(
+                "DOWNLOAD_NOT_AVAILABLE",
+                "remote download result is not successful and cannot be uploaded",
+            )
+        candidate = _inside_package_root(package_root, Path(selector.local_file))
+        if not candidate.is_file():
+            raise SelectorResolutionError(
+                "LOCAL_FILE_NOT_FOUND",
+                f"downloaded local file was not found: {candidate}",
+            )
+        return ResolvedLocalFile(
+            candidate,
+            "remote_download",
+            selector.remote_file or candidate.name,
+        )
 
     if isinstance(selector, PackageSelector):
         pattern = image_pattern_for(selector.config_name)

@@ -1,0 +1,4 @@
+/* Small layout overrides kept separate because the base sheet is minified. */
+.repeat-row.telnet {
+  grid-template-columns: 1.1fr 1.5fr .7fr .9fr .8fr .8fr auto;
+}

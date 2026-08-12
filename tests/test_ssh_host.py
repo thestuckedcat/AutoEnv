@@ -153,6 +153,7 @@ class FakeSFTP:
         self.fs = fs
         self.upload_transform = upload_transform or (lambda data: data)
         self.put_calls: list[tuple[str, str]] = []
+        self.get_calls: list[tuple[str, str]] = []
         self.open_calls: list[tuple[str, str]] = []
         self.close_count = 0
 
@@ -161,7 +162,7 @@ class FakeSFTP:
         if path in self.fs.dirs:
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
         if path in self.fs.files:
-            return SimpleNamespace(st_mode=stat.S_IFREG | 0o644)
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_size=len(self.fs.files[path]))
         raise FileNotFoundError(errno.ENOENT, "not found", path)
 
     def mkdir(self, path: str) -> None:
@@ -177,6 +178,15 @@ class FakeSFTP:
         self.put_calls.append((local_path, remote_path))
         data = Path(local_path).read_bytes()
         self.fs.files[remote_path] = self.upload_transform(data)
+
+    def get(self, remote_path: str, local_path: str) -> None:
+        remote_path = self.fs.normalize(remote_path)
+        self.get_calls.append((remote_path, local_path))
+        Path(local_path).write_bytes(self.fs.files[remote_path])
+
+    def listdir_attr(self, remote_dir: str) -> list[SimpleNamespace]:
+        prefix = self.fs.normalize(remote_dir).rstrip("/") + "/"
+        return [SimpleNamespace(filename=path[len(prefix):], st_mode=stat.S_IFREG | 0o644) for path in self.fs.files if path.startswith(prefix) and "/" not in path[len(prefix):]]
 
     def open(self, remote_path: str, mode: str) -> io.BytesIO:
         remote_path = self.fs.normalize(remote_path)
@@ -321,6 +331,7 @@ class FakeSCP:
         self.fs = fs
         self.upload_transform = upload_transform or (lambda data: data)
         self.put_calls: list[tuple[str, str]] = []
+        self.get_calls: list[tuple[str, str]] = []
         self.close_count = 0
 
     def put(self, local_path: str, *, remote_path: str) -> None:
@@ -332,6 +343,10 @@ class FakeSCP:
                 posixpath.join(remote_path, Path(local_path).name)
             )
         self.fs.files[remote_path] = self.upload_transform(data)
+
+    def get(self, remote_path: str, *, local_path: str) -> None:
+        self.get_calls.append((remote_path, local_path))
+        Path(local_path).write_bytes(self.fs.files[self.fs.normalize(remote_path)])
 
     def close(self) -> None:
         self.close_count += 1
@@ -838,6 +853,32 @@ def test_single_file_upload_creates_remote_tree_and_verifies_md5(
         assert sftp.put_calls == [(str(local_file.resolve()), result.remote_file)]
         assert scp_factory.created == []
     assert recorder.results[-1] == (f"{protocol.upper()} UPLOAD", result)
+
+
+def test_sftp_download_exact_file_is_registered_as_local_result(tmp_path: Path) -> None:
+    host, recorder, _, package_dir, fs, sftp, _, _, _ = upload_rig(tmp_path)
+    fs.seed_file("/logs/device.zip", b"zip-data")
+    result = host.sftp_download("/logs", remote_file="device.zip")
+    assert result.success and result.size_verified
+    assert Path(result.local_file or "").read_bytes() == b"zip-data"
+    assert result.remote_file == "/logs/device.zip"
+    assert sftp.get_calls == [("/logs/device.zip", str(package_dir / "device.zip.part"))]
+    assert recorder.results[-1][0] == "SFTP DOWNLOAD"
+
+
+def test_sftp_download_pattern_requires_exactly_one_match(tmp_path: Path) -> None:
+    host, _, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
+    fs.seed_file("/logs/a.zip", b"a"); fs.seed_file("/logs/b.zip", b"b")
+    ambiguous = host.sftp_download("/logs", pattern=r"\.zip$")
+    missing = host.sftp_download("/logs", pattern=r"\.log$")
+    assert (ambiguous.status, ambiguous.error_type) == ("ambiguous_remote_file", "AMBIGUOUS_REMOTE_FILE")
+    assert (missing.status, missing.error_type) == ("remote_file_not_found", "REMOTE_FILE_NOT_FOUND")
+
+
+def test_sftp_download_exact_missing_file_has_specific_status(tmp_path: Path) -> None:
+    host, _, _, _, _, _, _, _, _ = upload_rig(tmp_path)
+    result = host.sftp_download("/logs", remote_file="missing.zip")
+    assert (result.status, result.error_type) == ("remote_file_not_found", "REMOTE_FILE_NOT_FOUND")
 
 
 def test_scp_upload_does_not_require_or_open_sftp(tmp_path: Path) -> None:

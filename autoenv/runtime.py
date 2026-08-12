@@ -65,12 +65,18 @@ class RunContext:
         console: TextIO | None = None,
         package_cache_limit: int = DEFAULT_PACKAGE_CACHE_LIMIT,
         hdfs_client: object | None = None,
+        parameters: dict[str, object] | None = None,
+        non_interactive: bool = False,
     ) -> None:
         self.root_dir = root_dir.resolve()
         self.script_name = script_name
         self.mode = RunMode(mode)
         self.input_func = input_func
         self.password_input = password_input
+        if parameters is not None and not isinstance(parameters, dict):
+            raise TypeError("parameters must be a dictionary")
+        self.supplied_params = dict(parameters or {})
+        self.non_interactive = bool(non_interactive)
         if isinstance(package_cache_limit, bool) or not isinstance(package_cache_limit, int):
             raise TypeError("package_cache_limit must be an integer")
         if package_cache_limit < 0:
@@ -93,10 +99,13 @@ class RunContext:
             "script_name": self.script_name,
             "ssh_hosts": {},
             "telnet_connections": {},
+            "ftp_hosts": {},
             "packages": {},
+            "arguments": {},
         }
         self._ssh_hosts: dict[str, object] = {}
         self._telnet_clients: dict[str, object] = {}
+        self._ftp_hosts: dict[str, object] = {}
         self._hdfs_client = hdfs_client
         self._package_manager: object | None = None
         self._extractor: object | None = None
@@ -190,6 +199,7 @@ class RunContext:
             object_label=f"SSH {normalized_name}",
             defaults=asdict(defaults),
             history=history,
+            supplied=self._supplied_section("ssh_hosts", normalized_name),
             fields=(
                 ("host", str, False),
                 ("port", int, False),
@@ -256,6 +266,7 @@ class RunContext:
             object_label=f"Telnet {normalized_name}",
             defaults=asdict(defaults),
             history=history,
+            supplied=self._supplied_section("telnet_connections", normalized_name),
             fields=(
                 ("host", str, False),
                 ("port", int, False),
@@ -285,6 +296,37 @@ class RunContext:
             f"uploaded_files_from={uploaded_files_from!r}"
         )
         return client
+
+    def register_ftp_host(self, name: str, *, defaults: object | None = None):
+        from .ftp_host import FTPConnectionInfo, FTPDefaults, FTPHost
+
+        normalized_name = self._validate_object_name(name, "FTP host")
+        if normalized_name in self._ssh_hosts or normalized_name in self._telnet_clients or normalized_name in self._ftp_hosts:
+            raise ValueError(f"connection object already registered in this run: {normalized_name}")
+        defaults = defaults or FTPDefaults()
+        if not isinstance(defaults, FTPDefaults):
+            raise TypeError("defaults must be FTPDefaults")
+        values = self._collect_values(
+            object_label=f"FTP {normalized_name}",
+            defaults=asdict(defaults),
+            history=self._history_for("ftp_hosts", normalized_name),
+            supplied=self._supplied_section("ftp_hosts", normalized_name),
+            fields=(("host", str, False), ("port", int, False), ("username", str, False), ("password", str, True), ("timeout", float, False), ("passive", bool, False)),
+        )
+        info = FTPConnectionInfo(**values)
+        host = FTPHost(
+            name=normalized_name,
+            info=info,
+            run_id=self.run_id,
+            package_dir=self.package_dir,
+            recorder=self.recorder,
+            image_pattern_for=self.image_pattern_for,
+        )
+        self._ftp_hosts[normalized_name] = host
+        self.params["ftp_hosts"][normalized_name] = dict(values)  # type: ignore[index]
+        self._save_params()
+        self.recorder.log(f"REGISTER FTP name={normalized_name} values={mask_sensitive(values)}")
+        return host
 
     def download_package(self, selector: PackageSelector):
         if not isinstance(selector, PackageSelector):
@@ -318,6 +360,21 @@ class RunContext:
                     f"last-run selected base_link for {selector.config_name!r}, "
                     "but config.json no longer defines base_link"
                 )
+        elif self.non_interactive:
+            supplied = self._supplied_section("packages", selector.config_name)
+            raw_override = supplied.get("path_override", supplied.get("link"))
+            override = str(raw_override).strip() if raw_override not in (None, "") else None
+            requested_mode = supplied.get("path_mode")
+            if requested_mode:
+                path_mode = str(requested_mode)
+            elif override:
+                path_mode = "override"
+            elif spec.link:
+                path_mode = "link"
+            elif spec.base_link:
+                path_mode = "base_link_newest"
+            else:
+                raise ValueError(f"package {selector.config_name} requires a remote directory")
         else:
             historical_override = history.get("path_override") if history else None
             default_override = str(historical_override).strip() if historical_override else None
@@ -363,6 +420,27 @@ class RunContext:
         return self.package_manager.download(
             selector, path_override=override, path_mode=path_mode
         )
+
+    def argument(self, name: str, *, default: object = None, required: bool = False) -> object:
+        normalized = self._validate_object_name(name, "argument")
+        supplied = self.supplied_params.get("arguments", {})
+        if not isinstance(supplied, dict):
+            raise ValueError("parameters.arguments must be an object")
+        history = self._history_for("arguments", normalized)
+        value = supplied.get(normalized, history.get("value", default))
+        if self.non_interactive:
+            if required and value in (None, ""):
+                raise ValueError(f"required script argument is missing: {normalized}")
+        else:
+            shown = "" if value is None else str(value)
+            entered = self.input_func(f"Argument {normalized} [default: {shown}]: ")
+            if entered != "":
+                value = entered
+            if required and value in (None, ""):
+                raise ValueError(f"required script argument is missing: {normalized}")
+        self.params["arguments"][normalized] = {"value": value}  # type: ignore[index]
+        self._save_params()
+        return value
 
     def extract_file_from(
         self,
@@ -427,7 +505,7 @@ class RunContext:
         if self._closed:
             return
         self._closed = True
-        for connection in [*self._ssh_hosts.values(), *self._telnet_clients.values()]:
+        for connection in [*self._ssh_hosts.values(), *self._telnet_clients.values(), *self._ftp_hosts.values()]:
             try:
                 connection.close()  # type: ignore[attr-defined]
             except Exception as exc:  # pragma: no cover - defensive cleanup
@@ -449,9 +527,11 @@ class RunContext:
         object_label: str,
         defaults: dict[str, object],
         history: dict[str, object],
+        supplied: dict[str, object] | None = None,
         fields: tuple[tuple[str, type, bool], ...],
     ) -> dict[str, object]:
         values: dict[str, object] = {}
+        supplied = supplied or {}
         for field_name, converter, secret in fields:
             default = history.get(field_name, defaults.get(field_name))
             if self.mode == RunMode.RERUN:
@@ -460,6 +540,10 @@ class RunContext:
                         f"last-run is missing {object_label}.{field_name}"
                     )
                 raw = history[field_name]
+            elif self.non_interactive:
+                raw = supplied.get(field_name, default)
+                if raw is None:
+                    raise LastRunParameterError(f"non-interactive input is missing {object_label}.{field_name}")
             else:
                 display = "saved value" if secret and default not in (None, "") else str(default or "")
                 prompt = f"{object_label} {field_name} [default: {display}]: "
@@ -468,11 +552,33 @@ class RunContext:
             try:
                 if converter is str:
                     values[field_name] = "" if raw is None else str(raw)
+                elif converter is bool:
+                    if isinstance(raw, bool):
+                        values[field_name] = raw
+                    elif str(raw).strip().lower() in {"1", "true", "yes", "on"}:
+                        values[field_name] = True
+                    elif str(raw).strip().lower() in {"0", "false", "no", "off"}:
+                        values[field_name] = False
+                    else:
+                        raise ValueError("expected a boolean")
                 else:
                     values[field_name] = converter(raw)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"invalid value for {object_label}.{field_name}: {raw!r}") from exc
         return values
+
+    def _supplied_section(self, section: str, name: str) -> dict[str, object]:
+        raw_section = self.supplied_params.get(section, {})
+        if not isinstance(raw_section, dict):
+            raise ValueError(f"parameters.{section} must be an object")
+        raw = raw_section.get(name, {})
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            if section == "packages":
+                return {"path_override": raw}
+            raise ValueError(f"parameters.{section}.{name} must be an object")
+        return raw
 
     @staticmethod
     def _validate_object_name(name: str, label: str) -> str:
