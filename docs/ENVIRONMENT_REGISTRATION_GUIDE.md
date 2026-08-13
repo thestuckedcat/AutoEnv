@@ -16,11 +16,17 @@
 from autoenv import SSHDefaults, package, register_script
 
 
-@register_script(name="start_demo", description="下载并安装演示环境")
+@register_script(
+    name="start_demo",
+    description="下载并安装演示环境",
+    packages=("A1",),
+    resources=({"name": "demo_server", "label": "1260网口", "protocol": "ssh"},),
+)
 def start_demo(ctx):
     demo_package = package("A1")
     host = ctx.register_ssh_host(
         "demo_server",
+        resource_label="1260网口",
         defaults=SSHDefaults(
             host="192.168.1.100",
             port=22,
@@ -116,7 +122,9 @@ def start_ubengine(ctx):
     ubengine_run = package("UBEngine")
     ubengine_testcase = match(r"^UBEngine-testcase-.*\.tgz$")
     install_script = extra_file("install.sh")
-    host_1260 = ctx.register_ssh_host("host_1260", defaults=SSHDefaults(...))
+    host_1260 = ctx.register_ssh_host(
+        "host_1260", resource_label="1260网口", defaults=SSHDefaults(...)
+    )
 
     result = ctx.download_package(ubengine_run)
     if not result.success:
@@ -139,9 +147,15 @@ def start_ubengine(ctx):
 from autoenv import register_func, register_script
 
 
-@register_script(name="start_demo", description="启动演示环境")
+@register_script(
+    name="start_demo",
+    description="启动演示环境",
+    resources=({"name": "demo", "label": "1260网口", "protocol": "ssh"},),
+)
 def start_demo(ctx):
-    host = ctx.register_ssh_host("demo", defaults=SSHDefaults(...))
+    host = ctx.register_ssh_host(
+        "demo", resource_label="1260网口", defaults=SSHDefaults(...)
+    )
     result = host.execute("/root/start.sh", timeout=600)
     if not result.success:
         return result
@@ -225,6 +239,7 @@ extra_file("../driver.run")
 ```python
 host = ctx.register_ssh_host(
     "main_server",
+    resource_label="1260网口",
     defaults=SSHDefaults(
         host="192.168.1.100",
         port=22,
@@ -250,8 +265,12 @@ host = ctx.register_ssh_host(
 ### 4.2 一个脚本注册多个 Host
 
 ```python
-server_a = ctx.register_ssh_host("server_a", defaults=SSHDefaults(host="10.0.0.10"))
-server_b = ctx.register_ssh_host("server_b", defaults=SSHDefaults(host="10.0.0.11"))
+server_a = ctx.register_ssh_host(
+    "server_a", resource_label="1260网口", defaults=SSHDefaults(host="10.0.0.10")
+)
+server_b = ctx.register_ssh_host(
+    "server_b", resource_label="1712网口", defaults=SSHDefaults(host="10.0.0.11")
+)
 ```
 
 名称在本次脚本内必须唯一。不同脚本可以使用相同名称，它们仍是独立对象并分别询问。
@@ -261,6 +280,7 @@ server_b = ctx.register_ssh_host("server_b", defaults=SSHDefaults(host="10.0.0.1
 ```python
 console = ctx.register_telnet(
     "board_console",
+    resource_label="1260串口",
     defaults=TelnetDefaults(
         host="192.168.1.200",
         port=23,
@@ -273,9 +293,12 @@ console = ctx.register_telnet(
 `uploaded_files_from` 是可选的已注册 SSH Host 名称。只有 Telnet 命令需要使用 `S{file_name}` 时才需要配置；SSH Host 必须先注册：
 
 ```python
-host_1260 = ctx.register_ssh_host("host_1260", defaults=SSHDefaults(...))
+host_1260 = ctx.register_ssh_host(
+    "host_1260", resource_label="1260网口", defaults=SSHDefaults(...)
+)
 console = ctx.register_telnet(
     "board_console",
+    resource_label="1260串口",
     defaults=TelnetDefaults(...),
     uploaded_files_from="host_1260",
 )
@@ -743,6 +766,11 @@ from autoenv import (
 @register_script(
     name="example_environment",
     description="AutoEnv 完整接口示例",
+    packages=("A1",),
+    resources=(
+        {"name": "example_host", "label": "1260网口", "protocol": "ssh"},
+        {"name": "example_console", "label": "1260串口", "protocol": "telnet"},
+    ),
 )
 def example_environment(ctx):
     a1_package = package("A1")
@@ -752,6 +780,7 @@ def example_environment(ctx):
     install_script = extra_file("install.sh")
     host_1260 = ctx.register_ssh_host(
         "example_host",
+        resource_label="1260网口",
         defaults=SSHDefaults(
             host="192.168.1.100",
             port=22,
@@ -763,6 +792,7 @@ def example_environment(ctx):
 
     console_1260 = ctx.register_telnet(
         "example_console",
+        resource_label="1260串口",
         defaults=TelnetDefaults(
             host="192.168.1.200",
             port=23,
@@ -979,10 +1009,12 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 
 ## 23. 独立 FTP 上传
 
-独立 FTP 使用 `ctx.register_ftp_host(name, defaults=FTPDefaults(...))`，上传调用 `ftp.upload(selector, remote_dir)`。FTP 不复用 SSH；默认被动模式并以大小校验完成状态。
+独立 FTP 使用 `ctx.register_ftp_host(name, resource_label="1260网口", defaults=FTPDefaults(...))`，上传调用 `ftp.upload(selector, remote_dir)`。FTP 不复用 SSH；默认被动模式并以大小校验完成状态。
 
 ## 24. Web 元数据与结构化入口
 
-注册脚本可以在装饰器声明 Web 元数据：`packages=("A1",)` 和 `parameters=({"name": "value", ...},)`。脚本通过 `ctx.argument("value")` 读取参数。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+注册脚本在装饰器声明三类 Web 元数据：HDFS 输入 `packages=("A1",)`、普通输入 `parameters=({"name": "value", ...},)`，以及资源交互点 `resources=({"name": "host_1260", "label": "1260网口", "protocol": "ssh"},)`。每个 `register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 必须传入对应的 `resource_label`。脚本通过 `ctx.argument("value")` 读取普通输入。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+
+静态资源标签固定为：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境档案中的每个 IP 必须绑定其中一个与协议类型相符的标签；同一环境不能重复占用标签。Web 启动时按脚本的每个资源交互点分别选择包含匹配标签的环境，因此一个脚本可绑定多个环境；包链接作为独立输入逐项填写。
 
 Web 环境档案、LaunchRequest 完整字段和 Agent CLI 限制见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md) 与 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。

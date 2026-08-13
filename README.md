@@ -61,12 +61,18 @@ autoenv rerun example_host_environment
 from autoenv import SSHDefaults, package, register_func, register_script
 
 
-@register_script(name="start_demo", description="启动演示环境")
+@register_script(
+    name="start_demo",
+    description="启动演示环境",
+    packages=("A1",),
+    resources=({"name": "server", "label": "1260网口", "protocol": "ssh"},),
+)
 def start_demo(ctx):
     # 文件选择器和连接对象集中声明，后续流程只复用这些变量。
     demo_package = package("A1")
     host = ctx.register_ssh_host(
         "server",
+        resource_label="1260网口",
         defaults=SSHDefaults(
             host="192.168.1.100",
             username="root",
@@ -164,7 +170,9 @@ SSH、Telnet 命令和 `generate_sh_file()` 支持 `S{file_name}`。`file_name` 
 ```python
 a1_package = package("A1")
 install_script = extra_file("install.sh")
-host = ctx.register_ssh_host("server", defaults=SSHDefaults(...))
+host = ctx.register_ssh_host(
+    "server", resource_label="1260网口", defaults=SSHDefaults(...)
+)
 
 result = host.sftp_upload(a1_package, "/root/autoEnv")
 if not result.success:

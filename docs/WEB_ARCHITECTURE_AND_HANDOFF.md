@@ -17,7 +17,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 ## 2. 结构化参数
 
-`LaunchRequest` 包含 `script`、`mode`、`environment`、`parameters`。参数分区：
+`LaunchRequest` 包含 `script`、`mode`、`environments`、`parameters`；兼容入口仍接受单个 `environment`。`environments` 以脚本资源逻辑名为键，每项选择一个环境档案。启动时只取该档案中标签和协议均匹配的唯一连接，映射到脚本注册名。参数分区：
 
 - `ssh_hosts`：映射 `register_ssh_host()` 的逻辑名；
 - `telnet_connections`：映射现有串口/Telnet；
@@ -26,6 +26,8 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 - `arguments`：脚本通过 `ctx.argument()` 读取。
 
 非交互模式缺少必填参数时立即失败，不回退到 `input()`。
+
+资源标签来自 `autoenv/resources.py` 的固定目录：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。脚本通过 `register_script(resources=...)` 声明所需交互点，连接注册调用必须带同一 `resource_label`；Web 对每个交互点独立选择环境，同时对 `packages` 中每个包独立收集 HDFS 链接。
 
 环境页保存的 `baud_rate` 是网络串口的档案元数据；当前 Telnet 客户端连接 TCP 端口，不能直接修改串口服务器的物理波特率。若设备要求下发频率，应在对应环境脚本中用已确认的设备命令完成。
 
@@ -56,7 +58,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 ## 6. Agent CLI 与文件导入
 
-Agent 页签启动设置中的 `codeagent` 或 `nga` 可执行文件，并提供 stdin/stdout 控制台。它不是完整 PTY：依赖光标寻址、全屏 TUI 或终端尺寸的 CLI 后续需要改为 Windows ConPTY + xterm.js。
+Agent 页签通过 `pywinpty` 在 Windows ConPTY 中启动设置里的 `codeagent` 或 `nga`，按原始终端块持续读取，并保留回车覆盖、清屏和常用 ANSI 光标移动语义。终端区域可直接接收方向键、翻页键、Home/End、Tab、Escape、Backspace 和 Ctrl 字母组合。页面使用仓库内轻量屏幕渲染器，不依赖 CDN；复杂颜色、鼠标模式和少见控制序列仍不等价于完整 xterm.js。
 
 拖入图片、`.py` 或 `.zip` 时，文件以随机前缀保存到设置目录，绝对路径插入输入框，但不会自动导入或执行。Python/ZIP 应由 `.agents/skills/import-python-web-tool/SKILL.md` 静态审查并适配。
 
@@ -83,7 +85,7 @@ python -X utf8 -m pytest
 
 ## 9. 已知限制与后续优先级
 
-1. Agent CLI 当前是 stdin/stdout 行模式，不是 ConPTY；全屏 TUI、光标定位和终端尺寸事件不保证可用。
+1. Agent CLI 已使用 ConPTY 和固定启动尺寸；页面尚未提供完整 xterm.js 颜色/鼠标/动态尺寸能力。
 2. `download_and_parse_logs` 的日志块规则等待真实样例，当前只生成明确 TODO 文件。
 3. 错误码工具仅有动态 Tool 契约示例，尚无业务规则。
 4. 环境密码按已确认需求允许明文保存；若未来允许远程访问 Web，必须先增加鉴权、CSRF/来源限制、传输保护和密钥存储方案。

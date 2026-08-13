@@ -240,5 +240,6 @@ python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name f
 - Reuse a successful `RemoteDownloadResult` directly as the source of `scp_upload()`, `sftp_upload()`, or FTP `upload()` so the actual downloaded basename and operation log remain connected.
 - Register plain FTP independently with `ctx.register_ftp_host()` and `FTPDefaults`; FTP does not reuse SSH credentials unless the script deliberately gives the same defaults.
 - Declare Web-facing HDFS inputs with `packages=(...)` and script inputs with `parameters=(...)` on `register_script()`. Read script inputs with `ctx.argument()`.
+- Declare every Web-facing connection in `register_script(resources=...)` with literal `name`, fixed `label`, and `protocol`. Pass the identical `resource_label` to `register_ssh_host()`, `register_telnet()`, or `register_ftp_host()`. Valid labels are `1260网口`, `1260串口`, `1712网口`, `1712串口`, `udie1网口`, and `udie1串口`; network labels are for SSH/FTP and serial labels are for Telnet.
 - Keep recursive nested-ZIP expansion and business log-block parsing script-specific until a second confirmed use case justifies a public API.
 - Validate generated scripts offline. Do not run SCP/SFTP downloads, FTP uploads, or registered scripts against real targets without explicit user authorization.

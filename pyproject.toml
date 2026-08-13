@@ -12,6 +12,7 @@ dependencies = [
   "requests>=2.28",
   "scp>=0.14",
   "urllib3>=1.26",
+  "pywinpty>=2.0.10; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]

@@ -1,4 +1,30 @@
 /* Small layout overrides kept separate because the base sheet is minified. */
 .repeat-row.telnet {
-  grid-template-columns: 1.1fr 1.5fr .7fr .9fr .8fr .8fr auto;
+  grid-template-columns: 1.1fr 1.25fr 1.5fr .7fr .9fr .8fr .8fr auto;
+}
+
+.repeat-row.ssh,
+.repeat-row.ftp {
+  grid-template-columns: 1.1fr 1.25fr 1.5fr .7fr 1fr 1fr .7fr auto;
+}
+
+.field-group {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.field-group-title {
+  color: var(--cyan);
+  font: 800 10px var(--mono);
+  letter-spacing: .12em;
+}
+
+.terminal-screen {
+  margin: 0;
+  white-space: pre;
+  overflow: auto;
+  outline: none;
+  tab-size: 4;
 }

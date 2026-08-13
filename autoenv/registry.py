@@ -37,6 +37,7 @@ class ScriptDefinition:
     entrypoint: Callable[[], ScriptResult]
     packages: tuple[str, ...] = ()
     parameters: tuple[dict[str, object], ...] = ()
+    resources: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,12 +69,16 @@ def register_script(
     *,
     packages: tuple[str, ...] | list[str] = (),
     parameters: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
+    resources: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
 ) -> Callable[[ScriptBody], Callable[[], ScriptResult]]:
     normalized = _validate_script_name(name)
     if not isinstance(description, str):
         raise TypeError("script description must be a string")
     normalized_packages = tuple(_validate_script_name(item) for item in packages)
     normalized_parameters = tuple(_validate_parameter(item) for item in parameters)
+    normalized_resources = tuple(_validate_resource(item) for item in resources)
+    if len({item["name"] for item in normalized_resources}) != len(normalized_resources):
+        raise ValueError("script resource names must be unique")
 
     def decorator(body: ScriptBody) -> Callable[[], ScriptResult]:
         if normalized in _REGISTRY:
@@ -97,6 +102,7 @@ def register_script(
             entrypoint=entrypoint,
             packages=normalized_packages,
             parameters=normalized_parameters,
+            resources=normalized_resources,
         )
         return entrypoint
 
@@ -486,6 +492,19 @@ def _validate_parameter(value: dict[str, object]) -> dict[str, object]:
     normalized.setdefault("type", "string")
     normalized.setdefault("required", False)
     return normalized
+
+
+def _validate_resource(value: dict[str, object]) -> dict[str, str]:
+    from .resources import validate_resource_label
+
+    if not isinstance(value, dict):
+        raise TypeError("script resource metadata must be a dictionary")
+    name = _validate_script_name(value.get("name"))  # type: ignore[arg-type]
+    protocol = str(value.get("protocol", "")).strip().lower()
+    if protocol not in {"ssh", "telnet", "ftp"}:
+        raise ValueError("script resource protocol must be ssh, telnet or ftp")
+    label = validate_resource_label(value.get("label"), protocol=protocol)
+    return {"name": name, "label": label, "protocol": protocol}
 
 
 def _duration_ms(started_at: datetime, finished_at: datetime) -> int:

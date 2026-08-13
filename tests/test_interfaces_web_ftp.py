@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import stat
+import sys
+import time
+import types
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from autoenv.ftp_host import FTPConnectionInfo, FTPHost
-from autoenv.interface import LaunchRequest, merge_parameters
+from autoenv.interface import LaunchRequest, bind_environments, merge_parameters
+from autoenv.resources import describe_resource_labels, validate_resource_label
 from autoenv.results import RemoteDownloadResult
 from autoenv.selectors import extra_file, resolve_local_file
 from autoenv.web_tools import describe_tools, run_web_tool
@@ -56,6 +60,123 @@ def test_launch_request_and_environment_override_merge():
     merged=merge_parameters({"ssh_hosts":{"dut":{"host":"old","port":22}}},request.parameters or {})
     assert merged["ssh_hosts"]=={"dut":{"host":"new","port":22}}
     with pytest.raises(ValueError): LaunchRequest.from_dict({"script":"demo","mode":"bad"})
+
+
+def test_multi_environment_resource_bindings_are_independent_from_packages(tmp_path: Path):
+    environments = tmp_path / "environments"
+    environments.mkdir()
+    (environments / "rack-a.json").write_text(
+        '{"ssh_hosts":{"host":{"host":"192.0.2.10","port":22,"resource_label":"1260网口"}}}',
+        encoding="utf-8",
+    )
+    (environments / "rack-b.json").write_text(
+        '{"telnet_connections":{"console":{"host":"192.0.2.20","port":23,"resource_label":"1712串口"}}}',
+        encoding="utf-8",
+    )
+    resources = (
+        {"name": "primary", "label": "1260网口", "protocol": "ssh"},
+        {"name": "secondary_console", "label": "1712串口", "protocol": "telnet"},
+    )
+    bound = bind_environments(
+        tmp_path,
+        {
+            "primary": {"environment": "rack-a"},
+            "secondary_console": {"environment": "rack-b"},
+        },
+        resources,
+    )
+    merged = merge_parameters(
+        bound,
+        {
+            "packages": {
+                "A1": {"path_override": "/hdfs/build/a1"},
+                "A2": {"path_override": "/hdfs/build/a2"},
+            }
+        },
+    )
+    assert merged["ssh_hosts"]["primary"]["host"] == "192.0.2.10"
+    assert merged["telnet_connections"]["secondary_console"]["host"] == "192.0.2.20"
+    assert set(merged["packages"]) == {"A1", "A2"}
+
+
+def test_resource_labels_are_static_and_protocol_checked():
+    labels = {item["label"] for item in describe_resource_labels()}
+    assert labels == {"1260网口", "1260串口", "1712网口", "1712串口", "udie1网口", "udie1串口"}
+    assert validate_resource_label("1260网口", protocol="ssh") == "1260网口"
+    with pytest.raises(ValueError, match="not valid for telnet"):
+        validate_resource_label("1260网口", protocol="telnet")
+
+
+def test_web_environment_validation_requires_unique_known_labels():
+    from webPage.server import _validate_environment
+
+    valid = _validate_environment({
+        "name": "lab-a",
+        "ssh_hosts": {
+            "dut": {"host": "192.0.2.1", "resource_label": "1260网口"}
+        },
+        "telnet_connections": {
+            "console": {"host": "192.0.2.2", "resource_label": "1260串口"}
+        },
+    })
+    assert valid["ssh_hosts"]["dut"]["resource_label"] == "1260网口"
+    with pytest.raises(ValueError, match="must be unique"):
+        _validate_environment({
+            "name": "lab-a",
+            "ssh_hosts": {
+                "first": {"host": "192.0.2.1", "resource_label": "1260网口"},
+                "second": {"host": "192.0.2.2", "resource_label": "1260网口"},
+            },
+        })
+
+
+def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from webPage.server import TerminalSession
+
+    class FakePty:
+        def __init__(self):
+            self.chunks = iter(["loading 1%\rloading 100%", "\x1b[2Jready", None])
+            self.writes = []
+            self.exitstatus = 0
+
+        def read(self, _size):
+            value = next(self.chunks)
+            if value is None:
+                raise EOFError
+            return value
+
+        def wait(self): return 0
+        def isalive(self): return True
+        def write(self, value): self.writes.append(value)
+        def setwinsize(self, rows, cols): self.size = (rows, cols)
+        def terminate(self, force=False): self.terminated = force
+
+    process = FakePty()
+    class FakeProcessFactory:
+        @staticmethod
+        def spawn(command, **kwargs):
+            process.command = command
+            process.options = kwargs
+            return process
+
+    monkeypatch.setitem(sys.modules, "winpty", types.SimpleNamespace(PtyProcess=FakeProcessFactory))
+    session = TerminalSession()
+    session.start(["agent.exe"], cwd=tmp_path, rows=40, cols=120)
+    for _ in range(100):
+        with session.lock:
+            if any(event["type"] == "complete" for event in session.events):
+                break
+        time.sleep(0.01)
+    with session.lock:
+        terminal_data = "".join(
+            str(event["data"]) for event in session.events if event["type"] == "terminal"
+        )
+    assert terminal_data == "loading 1%\rloading 100%\x1b[2Jready"
+    assert process.options["dimensions"] == (40, 120)
+    session.input("hello\r")
+    assert process.writes == ["hello\r"]
 
 
 def test_web_tool_discovery_and_execution():

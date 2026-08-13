@@ -84,8 +84,81 @@ class ProcessSession:
                 process.kill()
 
 
+class TerminalSession:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.events: list[dict[str, object]] = []
+        self.process: object | None = None
+        self.generation = 0
+
+    def start(self, command: list[str], *, cwd: Path, rows: int = 30, cols: int = 100) -> None:
+        self.stop()
+        try:
+            from winpty import PtyProcess
+        except ImportError as exc:
+            raise RuntimeError(
+                "Agent CLI requires pywinpty on Windows; reinstall AutoEnv dependencies"
+            ) from exc
+        env = os.environ.copy()
+        env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        process = PtyProcess.spawn(
+            command,
+            cwd=str(cwd),
+            env=env,
+            dimensions=(max(2, rows), max(10, cols)),
+        )
+        with self.lock:
+            self.events = []
+            self.generation += 1
+            generation = self.generation
+            self.process = process
+        threading.Thread(
+            target=self._read, args=(process, generation), daemon=True
+        ).start()
+
+    def _read(self, process: object, generation: int) -> None:
+        try:
+            while True:
+                try:
+                    value = process.read(4096)  # type: ignore[attr-defined]
+                except EOFError:
+                    break
+                if value:
+                    self.append({"type": "terminal", "data": value}, generation)
+        finally:
+            try:
+                code = process.wait()  # type: ignore[attr-defined]
+            except Exception:
+                code = getattr(process, "exitstatus", None)
+            self.append(
+                {"type": "complete", "success": code == 0, "status": f"exit_{code}"},
+                generation,
+            )
+
+    def append(self, event: dict[str, object], generation: int) -> None:
+        with self.lock:
+            if generation == self.generation:
+                self.events.append(event)
+
+    def input(self, value: str) -> None:
+        process = self.process
+        if process is None or not process.isalive():  # type: ignore[attr-defined]
+            raise RuntimeError("terminal is not running")
+        process.write(value)  # type: ignore[attr-defined]
+
+    def resize(self, rows: int, cols: int) -> None:
+        process = self.process
+        if process is not None and process.isalive():  # type: ignore[attr-defined]
+            process.setwinsize(max(2, rows), max(10, cols))  # type: ignore[attr-defined]
+
+    def stop(self) -> None:
+        process, self.process = self.process, None
+        if process is not None and process.isalive():  # type: ignore[attr-defined]
+            process.terminate(force=True)  # type: ignore[attr-defined]
+
+
 AUTOENV_SESSION = ProcessSession()
-AGENT_SESSION = ProcessSession()
+AGENT_SESSION = TerminalSession()
 
 
 def _json_file(path: Path, default: object) -> object:
@@ -108,6 +181,37 @@ def _safe_name(value: object, label: str) -> str:
     if not name or Path(name).name != name or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in name):
         raise ValueError(f"{label} may contain letters, digits, '_' and '-' only")
     return name
+
+
+def _validate_environment(value: dict[str, object]) -> dict[str, object]:
+    from autoenv.resources import validate_resource_label
+
+    normalized = dict(value)
+    normalized["name"] = _safe_name(value.get("name"), "environment name")
+    seen_labels: set[str] = set()
+    for section_name, protocol in (
+        ("ssh_hosts", "ssh"),
+        ("telnet_connections", "telnet"),
+        ("ftp_hosts", "ftp"),
+    ):
+        section = value.get(section_name, {})
+        if not isinstance(section, dict):
+            raise ValueError(f"environment {section_name} must be an object")
+        clean_section: dict[str, object] = {}
+        for logical_name, raw in section.items():
+            name = _safe_name(logical_name, f"{section_name} logical name")
+            if not isinstance(raw, dict):
+                raise ValueError(f"environment resource {name!r} must be an object")
+            host = str(raw.get("host", "")).strip()
+            if not host:
+                raise ValueError(f"environment resource {name!r} requires host")
+            label = validate_resource_label(raw.get("resource_label"), protocol=protocol)
+            if label in seen_labels:
+                raise ValueError(f"environment resource_label must be unique: {label}")
+            seen_labels.add(label)
+            clean_section[name] = {**raw, "host": host, "resource_label": label}
+        normalized[section_name] = clean_section
+    return normalized
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -143,9 +247,12 @@ class Handler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/environments":
                 ENV_DIR.mkdir(parents=True, exist_ok=True)
                 self.json({"environments": [_json_file(path, {}) for path in sorted(ENV_DIR.glob("*.json"))]})
+            elif parsed.path == "/api/resource-labels":
+                from autoenv.resources import describe_resource_labels
+                self.json({"resource_labels": describe_resource_labels()})
             elif parsed.path == "/api/scripts":
                 from autoenv.registry import list_scripts
-                self.json({"scripts": [{"name": item.name, "description": item.description, "packages": list(item.packages), "parameters": list(item.parameters)} for item in list_scripts(root_dir=ROOT_DIR)]})
+                self.json({"scripts": [{"name": item.name, "description": item.description, "packages": list(item.packages), "parameters": list(item.parameters), "resources": list(item.resources)} for item in list_scripts(root_dir=ROOT_DIR)]})
             elif parsed.path == "/api/tools":
                 from autoenv.web_tools import describe_tools
                 self.json({"tools": describe_tools(ROOT_DIR)})
@@ -167,9 +274,9 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             data = self.body()
             if self.path == "/api/environments":
-                name = _safe_name(data.get("name"), "environment name")
-                data["name"] = name
-                _write_json(ENV_DIR / f"{name}.json", data)
+                environment = _validate_environment(data)
+                name = str(environment["name"])
+                _write_json(ENV_DIR / f"{name}.json", environment)
                 self.json({"ok": True})
             elif self.path == "/api/run/start":
                 request_path = WEB_DIR / ".runtime" / f"request-{uuid.uuid4().hex}.json"
@@ -222,10 +329,14 @@ class Handler(SimpleHTTPRequestHandler):
                 command_line = [executable]
                 if Path(executable).suffix.lower() in {".cmd", ".bat"}:
                     command_line = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", executable]
-                AGENT_SESSION.start(command_line, cwd=ROOT_DIR)
+                rows = int(data.get("rows", 30)); cols = int(data.get("cols", 100))
+                AGENT_SESSION.start(command_line, cwd=ROOT_DIR, rows=rows, cols=cols)
                 self.json({"ok": True})
             elif self.path == "/api/agent/input":
                 AGENT_SESSION.input(str(data.get("value", ""))); self.json({"ok": True})
+            elif self.path == "/api/agent/resize":
+                AGENT_SESSION.resize(int(data.get("rows", 30)), int(data.get("cols", 100)))
+                self.json({"ok": True})
             elif self.path == "/api/agent/stop":
                 AGENT_SESSION.stop(); self.json({"ok": True})
             else:

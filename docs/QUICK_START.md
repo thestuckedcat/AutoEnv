@@ -50,12 +50,18 @@ python main.py rerun example_host_environment
 from autoenv import SSHDefaults, package, register_func, register_script
 
 
-@register_script(name="start_demo", description="启动演示环境")
+@register_script(
+    name="start_demo",
+    description="启动演示环境",
+    packages=("A1",),
+    resources=({"name": "demo_host", "label": "1260网口", "protocol": "ssh"},),
+)
 def start_demo(ctx):
     # 1. 文件选择器和连接对象集中声明。
     demo_package = package("A1")
     host = ctx.register_ssh_host(
         "demo_host",
+        resource_label="1260网口",
         defaults=SSHDefaults(
             host="192.168.1.100",
             port=22,
@@ -107,7 +113,7 @@ def start_demo(ctx):
 ```python
 # demo_package = package("A1")
 # install_script = extra_file("install.sh")
-# host = ctx.register_ssh_host(...)
+# host = ctx.register_ssh_host("demo_host", resource_label="1260网口", ...)
 
 result = host.sftp_upload(demo_package, "/root/autoEnv")
 if not result.success:

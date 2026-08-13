@@ -14,6 +14,12 @@ from pathlib import Path
 SELECTOR_FACTORIES = {"package", "extra_file", "match"}
 UPLOAD_METHODS = {"scp_upload", "sftp_upload"}
 PLACEHOLDER = re.compile(r"S\{([^{}]+)\}")
+CONNECTION_METHODS = {"register_ssh_host", "register_telnet", "register_ftp_host"}
+RESOURCE_PROTOCOLS = {
+    "register_ssh_host": "ssh",
+    "register_telnet": "telnet",
+    "register_ftp_host": "ftp",
+}
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,58 @@ def _registered_func(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
+def _declared_resources(
+    path: Path, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> tuple[dict[str, dict[str, str]], list[Violation]]:
+    violations: list[Violation] = []
+    decorator = next(
+        item
+        for item in function.decorator_list
+        if _call_name(item.func if isinstance(item, ast.Call) else item) == "register_script"
+    )
+    if not isinstance(decorator, ast.Call):
+        return {}, violations
+    resources_node = next(
+        (keyword.value for keyword in decorator.keywords if keyword.arg == "resources"),
+        None,
+    )
+    if resources_node is None:
+        return {}, violations
+    try:
+        raw_resources = ast.literal_eval(resources_node)
+    except (ValueError, TypeError, SyntaxError):
+        violations.append(
+            Violation(path, decorator.lineno, "register_script resources must be literal metadata")
+        )
+        return {}, violations
+    declared: dict[str, dict[str, str]] = {}
+    if not isinstance(raw_resources, (tuple, list)):
+        violations.append(
+            Violation(path, decorator.lineno, "register_script resources must be a tuple or list")
+        )
+        return {}, violations
+    for item in raw_resources:
+        if not isinstance(item, dict):
+            violations.append(
+                Violation(path, decorator.lineno, "each script resource must be a dictionary")
+            )
+            continue
+        name = item.get("name")
+        label = item.get("label")
+        protocol = item.get("protocol")
+        if not all(isinstance(value, str) and value for value in (name, label, protocol)):
+            violations.append(
+                Violation(path, decorator.lineno, "script resource requires name, label and protocol")
+            )
+            continue
+        if name in declared:
+            violations.append(
+                Violation(path, decorator.lineno, f"script resource name {name!r} is duplicated")
+            )
+        declared[name] = {"name": name, "label": label, "protocol": protocol}
+    return declared, violations
+
+
 def _function_violations(
     path: Path, function: ast.FunctionDef | ast.AsyncFunctionDef
 ) -> list[Violation]:
@@ -87,6 +145,8 @@ def _function_violations(
     telnet_source_by_var: dict[str, str | None] = {}
     declaration_lines: set[int] = set()
     registered_func_names: set[str] = set()
+    declared_resources, resource_violations = _declared_resources(path, function)
+    violations.extend(resource_violations)
 
     func_indexes = [
         index
@@ -183,31 +243,64 @@ def _function_violations(
                 )
             selector_var_by_key[key] = variable
             declaration_lines.add(statement.lineno)
-        elif name == "register_ssh_host":
+        elif name in CONNECTION_METHODS:
             logical_name = _literal_text(call.args[0] if call.args else None)
             if logical_name is None:
                 violations.append(
-                    Violation(path, statement.lineno, "SSH host name must be a literal string")
+                    Violation(path, statement.lineno, "connection name must be a literal string")
                 )
                 continue
-            ssh_by_var[variable] = logical_name
-            declaration_lines.add(statement.lineno)
-        elif name == "register_telnet":
-            source = None
-            for keyword in call.keywords:
-                if keyword.arg == "uploaded_files_from":
-                    source = _literal_text(keyword.value)
-                    if source is None:
-                        violations.append(
-                            Violation(
-                                path,
-                                statement.lineno,
-                                "uploaded_files_from must be a literal SSH host name",
+            resource_label = next(
+                (
+                    _literal_text(keyword.value)
+                    for keyword in call.keywords
+                    if keyword.arg == "resource_label"
+                ),
+                None,
+            )
+            if resource_label is None:
+                violations.append(
+                    Violation(
+                        path,
+                        statement.lineno,
+                        f"{name} requires one literal resource_label",
+                    )
+                )
+            declared = declared_resources.get(logical_name)
+            protocol = RESOURCE_PROTOCOLS[name]
+            if declared is None:
+                violations.append(
+                    Violation(
+                        path,
+                        statement.lineno,
+                        f"connection {logical_name!r} must be declared in register_script resources",
+                    )
+                )
+            elif declared["protocol"] != protocol or declared["label"] != resource_label:
+                violations.append(
+                    Violation(
+                        path,
+                        statement.lineno,
+                        f"connection {logical_name!r} must match its script resource protocol and label",
+                    )
+                )
+            if name == "register_ssh_host":
+                ssh_by_var[variable] = logical_name
+            if name == "register_telnet":
+                source = None
+                for keyword in call.keywords:
+                    if keyword.arg == "uploaded_files_from":
+                        source = _literal_text(keyword.value)
+                        if source is None:
+                            violations.append(
+                                Violation(
+                                    path,
+                                    statement.lineno,
+                                    "uploaded_files_from must be a literal SSH host name",
+                                )
                             )
-                        )
-            telnet_source_by_var[variable] = source
+                telnet_source_by_var[variable] = source
             declaration_lines.add(statement.lineno)
-
     ssh_var_by_name = {name: variable for variable, name in ssh_by_var.items()}
     for variable, source in telnet_source_by_var.items():
         if source is not None and source not in ssh_var_by_name:
@@ -253,13 +346,13 @@ def _function_violations(
         for statement in function.body
         if (assigned := _assigned_call(statement)) is not None
         and _call_name(assigned[1].func)
-        in SELECTOR_FACTORIES | {"register_ssh_host", "register_telnet"}
+        in SELECTOR_FACTORIES | CONNECTION_METHODS
     }
     for node in ast.walk(function):
         if isinstance(node, ast.Call):
             name = _call_name(node.func)
             if (
-                name in SELECTOR_FACTORIES | {"register_ssh_host", "register_telnet"}
+                name in SELECTOR_FACTORIES | CONNECTION_METHODS
                 and id(node) not in direct_declaration_calls
             ):
                 violations.append(

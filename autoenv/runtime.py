@@ -183,10 +183,14 @@ class RunContext:
             raise LastRunParameterError("last-run parameters must be a JSON object")
         return value
 
-    def register_ssh_host(self, name: str, *, defaults: object | None = None):
+    def register_ssh_host(
+        self, name: str, *, resource_label: str, defaults: object | None = None
+    ):
         from .ssh_host import SSHConnectionInfo, SSHDefaults, SSHHost
+        from .resources import validate_resource_label
 
         normalized_name = self._validate_object_name(name, "SSH host")
+        normalized_label = validate_resource_label(resource_label, protocol="ssh")
         if normalized_name in self._ssh_hosts or normalized_name in self._telnet_clients:
             raise ValueError(f"connection object already registered in this run: {normalized_name}")
         if defaults is None:
@@ -218,7 +222,9 @@ class RunContext:
         values["connect_timeout"] = _validate_timeout(
             float(values["connect_timeout"]), "SSH connect_timeout"
         )
-        info = SSHConnectionInfo(**values)
+        values["resource_label"] = normalized_label
+        connection_values = {key: value for key, value in values.items() if key != "resource_label"}
+        info = SSHConnectionInfo(**connection_values)
         host = SSHHost(
             name=normalized_name,
             info=info,
@@ -240,12 +246,15 @@ class RunContext:
         self,
         name: str,
         *,
+        resource_label: str,
         defaults: object | None = None,
         uploaded_files_from: str | None = None,
     ):
         from .telnet_client import TelnetClient, TelnetConnectionInfo, TelnetDefaults
+        from .resources import validate_resource_label
 
         normalized_name = self._validate_object_name(name, "Telnet")
+        normalized_label = validate_resource_label(resource_label, protocol="telnet")
         if normalized_name in self._telnet_clients or normalized_name in self._ssh_hosts:
             raise ValueError(f"connection object already registered in this run: {normalized_name}")
         if defaults is None:
@@ -279,7 +288,9 @@ class RunContext:
             raise ValueError(f"Telnet {normalized_name} host must not be empty")
         values["port"] = _validate_port(int(values["port"]), "Telnet port")
         values["timeout"] = _validate_timeout(float(values["timeout"]), "Telnet timeout")
-        info = TelnetConnectionInfo(**values)
+        values["resource_label"] = normalized_label
+        connection_values = {key: value for key, value in values.items() if key != "resource_label"}
+        info = TelnetConnectionInfo(**connection_values)
         client = TelnetClient(
             name=normalized_name,
             info=info,
@@ -297,10 +308,14 @@ class RunContext:
         )
         return client
 
-    def register_ftp_host(self, name: str, *, defaults: object | None = None):
+    def register_ftp_host(
+        self, name: str, *, resource_label: str, defaults: object | None = None
+    ):
         from .ftp_host import FTPConnectionInfo, FTPDefaults, FTPHost
+        from .resources import validate_resource_label
 
         normalized_name = self._validate_object_name(name, "FTP host")
+        normalized_label = validate_resource_label(resource_label, protocol="ftp")
         if normalized_name in self._ssh_hosts or normalized_name in self._telnet_clients or normalized_name in self._ftp_hosts:
             raise ValueError(f"connection object already registered in this run: {normalized_name}")
         defaults = defaults or FTPDefaults()
@@ -313,7 +328,9 @@ class RunContext:
             supplied=self._supplied_section("ftp_hosts", normalized_name),
             fields=(("host", str, False), ("port", int, False), ("username", str, False), ("password", str, True), ("timeout", float, False), ("passive", bool, False)),
         )
-        info = FTPConnectionInfo(**values)
+        values["resource_label"] = normalized_label
+        connection_values = {key: value for key, value in values.items() if key != "resource_label"}
+        info = FTPConnectionInfo(**connection_values)
         host = FTPHost(
             name=normalized_name,
             info=info,

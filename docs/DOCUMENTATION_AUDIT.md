@@ -53,7 +53,6 @@
 ## 5. 尚未由本审计证明
 
 - 未连接真实 HDFS、SSH、SFTP、SCP、FTP 或 Telnet 环境。
-- 未用真实 `codeagent`/`nga` 验证全屏终端行为；当前只承诺行式 stdin/stdout。
+- 未用真实 `codeagent`/`nga` 验证全部 TUI 控制序列；当前已使用 Windows ConPTY，并在离线 UT 中验证分块输出、回车覆盖与 ANSI 控制序列透传。
 - 未实现业务日志块 pattern 和错误码解释规则，因为缺少用户样例/规则。
 - 明文密码是已确认项目取舍，不代表适合公网或多用户部署。
-

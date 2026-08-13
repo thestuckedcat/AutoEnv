@@ -98,9 +98,12 @@ from autoenv import (
 package_a1 = package("A1")
 driver = extra_file("driver.bin")
 install_script = extra_file("install.sh")
-host = ctx.register_ssh_host("server", defaults=SSHDefaults(...))
+host = ctx.register_ssh_host(
+    "server", resource_label="1260网口", defaults=SSHDefaults(...)
+)
 console = ctx.register_telnet(
     "console",
+    resource_label="1260串口",
     defaults=TelnetDefaults(...),
     uploaded_files_from="server",
 )
@@ -159,7 +162,11 @@ match(r"^firmware-.*\.bin$")
 ## 6. 脚本注册与独立运行
 
 ```python
-@register_script(name="start_udk", description="启动 UDK 环境")
+@register_script(
+    name="start_udk",
+    description="启动 UDK 环境",
+    resources=({"name": "udk", "label": "1260网口", "protocol": "ssh"},),
+)
 def start_udk(ctx):
     ...
 ```
@@ -208,7 +215,9 @@ class ScriptResult:
 ```python
 @register_script(name="start_udk", description="启动 UDK 环境")
 def start_udk(ctx):
-    host = ctx.register_ssh_host("udk", defaults=SSHDefaults(...))
+    host = ctx.register_ssh_host(
+        "udk", resource_label="1260网口", defaults=SSHDefaults(...)
+    )
     result = host.execute("/root/start.sh", timeout=600)
     if not result.success:
         return result
@@ -400,6 +409,7 @@ state/last_runs/<script_name>.json
 ```python
 host = ctx.register_ssh_host(
     "main_server",
+    resource_label="1260网口",
     defaults=SSHDefaults(
         host="192.168.1.100",
         port=22,
@@ -421,6 +431,7 @@ SSH Host 负责：
 ```python
 console = ctx.register_telnet(
     "board_console",
+    resource_label="1260串口",
     defaults=TelnetDefaults(
         host="192.168.1.200",
         port=23,

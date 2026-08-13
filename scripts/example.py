@@ -16,6 +16,7 @@ from autoenv import (
     name="example_host_environment",
     description="Example: download, extract, upload and run SSH commands",
     packages=("A1",),
+    resources=({"name": "example_host", "label": "1260网口", "protocol": "ssh"},),
 )
 def example_host_environment(ctx):
     # Declare every file selector and connection object in one place. The ordered
@@ -27,6 +28,7 @@ def example_host_environment(ctx):
     install_script = extra_file("install.sh")
     host_1260 = ctx.register_ssh_host(
         "example_host",
+        resource_label="1260网口",
         defaults=SSHDefaults(
             host="192.168.1.100",
             port=22,
@@ -135,10 +137,12 @@ chmod +x "S{A1}"
 @register_script(
     name="example_console_environment",
     description="Example: Telnet auto detection and a timed Ctrl+B response",
+    resources=({"name": "example_console", "label": "1260串口", "protocol": "telnet"},),
 )
 def example_console_environment(ctx):
     console = ctx.register_telnet(
         "example_console",
+        resource_label="1260串口",
         defaults=TelnetDefaults(
             host="192.168.1.200",
             port=23,
@@ -169,6 +173,10 @@ def example_console_environment(ctx):
     name="example_combined_environment",
     description="Example: run two registered scripts serially and independently",
     packages=("A1",),
+    resources=(
+        {"name": "example_host", "label": "1260网口", "protocol": "ssh"},
+        {"name": "example_console", "label": "1260串口", "protocol": "telnet"},
+    ),
 )
 def example_combined_environment(ctx):
     host_result = example_host_environment()

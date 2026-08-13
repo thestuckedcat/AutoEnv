@@ -62,7 +62,7 @@ from autoenv import SSHDefaults, extra_file, package, register_script
 def bad(ctx):
     archive = package("api")
     generated = extra_file("install.sh")
-    host = ctx.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
+    host = ctx.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
     ctx.download_package(package("api"))
     ctx.generate_sh_file("install.sh", "tar -xf S{api}")
     host.sftp_upload(local_file=archive, remote_dir="/tmp")
@@ -82,8 +82,8 @@ from autoenv import SSHDefaults, extra_file, register_script
 @register_script("bad")
 def bad(ctx):
     archive = extra_file("api.tgz")
-    first = ctx.register_ssh_host("first", defaults=SSHDefaults(host="192.0.2.1"))
-    second = ctx.register_ssh_host("second", defaults=SSHDefaults(host="192.0.2.2"))
+    first = ctx.register_ssh_host("first", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
+    second = ctx.register_ssh_host("second", resource_label="1712网口", defaults=SSHDefaults(host="192.0.2.2"))
     first.sftp_upload(local_file=archive, remote_dir="/tmp")
     return second.execute("tar -xf S{api.tgz}")
 ''',
@@ -100,8 +100,8 @@ from autoenv import SSHDefaults, extra_file, register_script
 @register_script("bad")
 def bad(ctx):
     archive = extra_file("api.tgz")
-    first = ctx.register_ssh_host("first", defaults=SSHDefaults(host="192.0.2.1"))
-    second = ctx.register_ssh_host("second", defaults=SSHDefaults(host="192.0.2.2"))
+    first = ctx.register_ssh_host("first", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
+    second = ctx.register_ssh_host("second", resource_label="1712网口", defaults=SSHDefaults(host="192.0.2.2"))
     first.sftp_upload(local_file=archive, remote_dir="/tmp")
     return second.execute_on_output(
         "tar -xf S{api.tgz}",
@@ -119,10 +119,10 @@ def test_contract_accepts_an_exact_regex_selector_with_braces(tmp_path) -> None:
         r'''
 from autoenv import SSHDefaults, match, register_script
 
-@register_script("regex")
+@register_script("regex", resources=({"name": "dut", "label": "1260网口", "protocol": "ssh"},))
 def regex(ctx):
     archive = match(r"^api-\d{2}\.tgz$")
-    host = ctx.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
+    host = ctx.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
     result = host.sftp_upload(local_file=archive, remote_dir="/tmp")
     if not result.success:
         return result
@@ -130,6 +130,22 @@ def regex(ctx):
 ''',
     )
     assert violations == [], "\n".join(map(str, violations))
+
+
+def test_contract_requires_resource_metadata_on_each_connection(tmp_path) -> None:
+    violations = _validate_source(
+        tmp_path,
+        '''
+from autoenv import SSHDefaults, register_script
+
+@register_script("bad")
+def bad(ctx):
+    host = ctx.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
+''',
+    )
+    messages = [item.message for item in violations]
+    assert any("literal resource_label" in item for item in messages)
+    assert any("register_script resources" in item for item in messages)
 
 
 def test_contract_rejects_module_level_and_non_final_registered_funcs(tmp_path) -> None:

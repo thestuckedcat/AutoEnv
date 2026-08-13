@@ -106,6 +106,7 @@ def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp
         contexts.append(ctx)
         ctx.register_ssh_host(
             "dut",
+            resource_label="1260网口",
             defaults=SSHDefaults(
                 host="192.0.2.10",
                 port=2222,
@@ -116,6 +117,7 @@ def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp
         )
         ctx.register_telnet(
             "console",
+            resource_label="1260串口",
             defaults=TelnetDefaults(
                 host="192.0.2.20", port=2323, timeout=15, shell_mode="posix"
             ),
@@ -145,11 +147,13 @@ def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp
         "host": "192.0.2.10",
         "password": "default-password",
         "port": 2222,
+        "resource_label": "1260网口",
         "username": "root",
     }
     assert first_params["telnet_connections"]["console"] == {
         "host": "192.0.2.20",
         "port": 2323,
+        "resource_label": "1260串口",
         "shell_mode": "posix",
         "timeout": 15.0,
     }
@@ -317,7 +321,9 @@ def test_exception_after_operation_keeps_collected_parameters_as_last_run(tmp_pa
 
     @register_script("crashes_after_operation")
     def crashes_after_operation(ctx: RunContext):
-        ctx.register_telnet("console", defaults=TelnetDefaults(host="192.0.2.2"))
+        ctx.register_telnet(
+            "console", resource_label="1260串口", defaults=TelnetDefaults(host="192.0.2.2")
+        )
         ctx.recorder.next_operation_id()
         raise RuntimeError("after operation")
 
@@ -359,14 +365,14 @@ def test_duplicate_registration_is_rejected_for_scripts_and_runtime_objects(tmp_
         console=io.StringIO(),
     )
     try:
-        context.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
+        context.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
         with pytest.raises(ValueError, match="already registered"):
-            context.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
-        context.register_telnet("console", defaults=TelnetDefaults(host="192.0.2.2"))
+            context.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
+        context.register_telnet("console", resource_label="1260串口", defaults=TelnetDefaults(host="192.0.2.2"))
         with pytest.raises(ValueError, match="already registered"):
-            context.register_telnet("console", defaults=TelnetDefaults(host="192.0.2.2"))
+            context.register_telnet("console", resource_label="1260串口", defaults=TelnetDefaults(host="192.0.2.2"))
         with pytest.raises(ValueError, match="already registered"):
-            context.register_telnet("dut", defaults=TelnetDefaults(host="192.0.2.2"))
+            context.register_telnet("dut", resource_label="1260串口", defaults=TelnetDefaults(host="192.0.2.2"))
     finally:
         context.close()
         context.finish_recording()
@@ -384,7 +390,7 @@ def test_run_context_shares_uploaded_files_with_hosts_and_generated_scripts(tmp_
     )
     try:
         host = context.register_ssh_host(
-            "dut", defaults=SSHDefaults(host="192.0.2.1")
+            "dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1")
         )
         host.uploaded_files.record(
             "api", "/release/api-2.4.tgz", target_name=host.name
@@ -415,13 +421,15 @@ def test_telnet_upload_source_must_be_a_registered_ssh_host(tmp_path):
         with pytest.raises(ValueError, match="SSH host is not registered"):
             context.register_telnet(
                 "console",
+                resource_label="1260串口",
                 defaults=TelnetDefaults(host="192.0.2.2"),
                 uploaded_files_from="dut",
             )
 
-        context.register_ssh_host("dut", defaults=SSHDefaults(host="192.0.2.1"))
+        context.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
         console = context.register_telnet(
             "console",
+            resource_label="1260串口",
             defaults=TelnetDefaults(host="192.0.2.2"),
             uploaded_files_from="dut",
         )
@@ -488,6 +496,7 @@ def test_registered_funcs_reuse_context_and_loop_until_exit(tmp_path):
     def interactive_funcs(ctx: RunContext):
         host = ctx.register_ssh_host(
             "dut",
+            resource_label="1260网口",
             defaults=SSHDefaults(
                 host="192.0.2.1",
                 username="root",
@@ -657,7 +666,7 @@ def test_telnet_only_context_does_not_require_config_json(tmp_path):
     )
     try:
         client = context.register_telnet(
-            "console", defaults=TelnetDefaults(host="192.0.2.2")
+            "console", resource_label="1260串口", defaults=TelnetDefaults(host="192.0.2.2")
         )
         assert client.info.host == "192.0.2.2"
     finally:

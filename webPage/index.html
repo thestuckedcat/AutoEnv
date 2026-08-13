@@ -35,7 +35,7 @@
 
     <section class="page" id="page-launch">
       <div class="page-head"><div><span class="kicker">02 / ORCHESTRATE</span><h1>一次选择，完整拉起</h1><p>包链接留空时沿用已有 HDFS 最新包逻辑；填写时使用指定链接。</p></div><div class="actions"><button class="ghost" id="openLog">打开 run.log</button><button class="ghost" id="openRun">打开 runtime</button></div></div>
-      <div class="launch-grid"><form class="panel launch-form" id="launchForm"><label>环境<select id="launchEnvironment" required></select></label><label>脚本<select id="launchScript" required></select></label><label>模式<select id="launchMode"><option value="run">RUN</option><option value="rerun">RERUN</option></select></label><div id="packageFields"></div><div id="argumentFields"></div><div class="actions"><button type="button" class="danger" id="stopRun">终止</button><button class="primary" type="submit">▶ 拉起环境</button></div></form>
+      <div class="launch-grid"><form class="panel launch-form" id="launchForm"><label>脚本<select id="launchScript" required></select></label><label>模式<select id="launchMode"><option value="run">RUN</option><option value="rerun">RERUN</option></select></label><div id="resourceFields"></div><div id="packageFields"></div><div id="argumentFields"></div><div class="actions"><button type="button" class="danger" id="stopRun">终止</button><button class="primary" type="submit">▶ 拉起环境</button></div></form>
       <div class="panel console-panel"><div class="console-head"><span><i></i> LIVE TASK OUTPUT</span><input id="consoleFilter" placeholder="筛选输出"><button class="ghost small" id="clearConsole">清空</button></div><div class="console" id="console"></div></div></div>
     </section>
 
@@ -47,7 +47,7 @@
     <section class="page" id="page-agent">
       <div class="page-head"><div><span class="kicker">04 / AGENT TERMINAL</span><h1>把文件路径带进 Agent CLI</h1><p>拖入图片、Python 脚本或项目 ZIP，文件会保存到指定位置，并将绝对路径插入输入框。</p></div><button class="ghost" id="agentSettings">设置</button></div>
       <div class="agent-grid"><div class="panel agent-side"><div class="dropzone" id="dropzone"><strong>DROP FILES HERE</strong><span>PNG / JPG / PY / ZIP · 单文件不超过 48 MiB</span><input type="file" id="agentFiles" multiple accept="image/*,.py,.zip"></div><label>Agent 命令<input id="agentCommand" placeholder="codeagent 或 nga"></label><div class="actions"><button class="danger" id="agentStop">停止</button><button class="primary" id="agentStart">启动 CLI</button></div><div class="settings" id="settingsPanel"><label>文件保存目录<input id="uploadDir"></label><button class="ghost" id="saveSettings">保存设置</button></div></div>
-      <div class="panel console-panel agent-console"><div class="console-head"><span><i></i> AGENT CLI</span></div><div class="console" id="agentConsole"></div><form class="agent-input" id="agentInputForm"><textarea id="agentInput" placeholder="输入消息，或拖入文件后编辑自动生成的路径引用…"></textarea><button class="primary">发送</button></form></div></div>
+      <div class="panel console-panel agent-console"><div class="console-head"><span><i></i> AGENT CLI · CONPTY</span></div><pre class="console terminal-screen" id="agentConsole" tabindex="0"></pre><form class="agent-input" id="agentInputForm"><textarea id="agentInput" placeholder="输入消息，或拖入文件后编辑自动生成的路径引用…"></textarea><button class="primary">发送</button></form></div></div>
     </section>
   </main>
   <div class="toast" id="toast"></div>

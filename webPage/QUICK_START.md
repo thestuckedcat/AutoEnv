@@ -10,10 +10,10 @@ python -X utf8 startWeb.py
 
 服务默认只监听 `127.0.0.1:8765`。依次使用四个页签：
 
-1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。
-2. **环境启动**：选择环境和脚本。包框留空时使用 `config.json` 已有 link/base_link 最新包逻辑；填写时覆盖为指定 HDFS 路径。
+1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。每个 IP 必须从固定目录选择唯一资源标签（1260/1712/udie1 的网口或串口）。JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。
+2. **环境启动**：先选脚本，再为脚本声明的每个资源交互点选择一个包含匹配标签的环境/IP，因此一次启动可组合多个环境。每个所需包都有独立链接输入；留空使用 `config.json` 的 link/base_link 逻辑，填写则覆盖为指定 HDFS 路径。
 3. **Tools**：工具由 `webPage/tools/*.py` 动态发现。不要修改核心页面来增加工具。
-4. **Agent CLI**：配置 `codeagent` 或 `nga`，拖入图片、`.py` 或 `.zip` 后把落盘绝对路径插入消息。
+4. **Agent CLI**：通过 Windows ConPTY 启动 `codeagent` 或 `nga`，持续渲染页面刷新输出；拖入图片、`.py` 或 `.zip` 后把落盘绝对路径插入消息。
 
 ## 非交互启动
 

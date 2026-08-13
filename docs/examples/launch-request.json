@@ -1,7 +1,11 @@
 {
   "script": "download_and_parse_logs",
   "mode": "run",
-  "environment": "lab-a",
+  "environments": {
+    "log_server": {
+      "environment": "lab-a"
+    }
+  },
   "parameters": {
     "arguments": {
       "remote_dir": "/var/log/device",
