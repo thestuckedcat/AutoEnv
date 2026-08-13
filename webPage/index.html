@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AutoEnv Developer Deck</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./overrides.css">
+</head>
+<body>
+  <div class="glow glow-a"></div><div class="glow glow-b"></div>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">A</span><div><strong>AutoEnv</strong><small>DEVELOPER VALIDATION DECK</small></div></div>
+    <nav id="tabs" aria-label="主导航">
+      <button class="active" data-page="environments">环境库</button>
+      <button data-page="launch">环境启动</button>
+      <button data-page="tools">Tools</button>
+      <button data-page="agent">Agent CLI</button>
+    </nav>
+    <span class="status"><i></i><span id="health">CONNECTING</span></span>
+  </header>
+  <main>
+    <section class="page active" id="page-environments">
+      <div class="page-head"><div><span class="kicker">01 / TARGET INVENTORY</span><h1>把实验环境变成可复用的档案</h1><p>网口对应 SSH 主机，串口沿用现有 Telnet 实现。信息保存在本机 JSON，可直接传给启动任务。</p></div><button class="primary" id="newEnvironment">＋ 新建环境</button></div>
+      <div class="split"><div class="card-list" id="environmentList"></div><form class="panel form-panel" id="environmentForm">
+        <div class="panel-title"><div><span class="kicker">ENVIRONMENT PROFILE</span><h2>环境配置</h2></div><span class="tag">LOCAL JSON</span></div>
+        <div class="grid two"><label>环境标识<input name="name" required placeholder="lab-a"></label><label>显示名称<input name="title" placeholder="Torino 验证环境"></label></div>
+        <div class="section-title"><span>网口 / SSH</span><button type="button" class="ghost small" id="addSsh">＋ 添加</button></div><div id="sshRows" class="repeat"></div>
+        <div class="section-title"><span>串口 / Telnet</span><button type="button" class="ghost small" id="addTelnet">＋ 添加</button></div><div id="telnetRows" class="repeat"></div>
+        <div class="section-title"><span>FTP（独立协议，可选）</span><button type="button" class="ghost small" id="addFtp">＋ 添加</button></div><div id="ftpRows" class="repeat"></div>
+        <div class="actions"><span id="envSaveState" class="muted">密码将按你的确认明文保存</span><button class="primary" type="submit">保存环境</button></div>
+      </form></div>
+    </section>
+
+    <section class="page" id="page-launch">
+      <div class="page-head"><div><span class="kicker">02 / ORCHESTRATE</span><h1>一次选择，完整拉起</h1><p>包链接留空时沿用已有 HDFS 最新包逻辑；填写时使用指定链接。</p></div><div class="actions"><button class="ghost" id="openLog">打开 run.log</button><button class="ghost" id="openRun">打开 runtime</button></div></div>
+      <div class="launch-grid"><form class="panel launch-form" id="launchForm"><label>环境<select id="launchEnvironment" required></select></label><label>脚本<select id="launchScript" required></select></label><label>模式<select id="launchMode"><option value="run">RUN</option><option value="rerun">RERUN</option></select></label><div id="packageFields"></div><div id="argumentFields"></div><div class="actions"><button type="button" class="danger" id="stopRun">终止</button><button class="primary" type="submit">▶ 拉起环境</button></div></form>
+      <div class="panel console-panel"><div class="console-head"><span><i></i> LIVE TASK OUTPUT</span><input id="consoleFilter" placeholder="筛选输出"><button class="ghost small" id="clearConsole">清空</button></div><div class="console" id="console"></div></div></div>
+    </section>
+
+    <section class="page" id="page-tools">
+      <div class="page-head"><div><span class="kicker">03 / EXTENSIBLE UTILITIES</span><h1>Tools 工作台</h1><p>每个子页签来自一个独立 Python 工具；字段、排版和结果都通过注册契约生成。</p></div></div>
+      <div class="tools-layout"><aside class="tool-nav" id="toolNav"></aside><div class="panel tool-stage" id="toolStage"><div class="empty">正在发现工具…</div></div></div>
+    </section>
+
+    <section class="page" id="page-agent">
+      <div class="page-head"><div><span class="kicker">04 / AGENT TERMINAL</span><h1>把文件路径带进 Agent CLI</h1><p>拖入图片、Python 脚本或项目 ZIP，文件会保存到指定位置，并将绝对路径插入输入框。</p></div><button class="ghost" id="agentSettings">设置</button></div>
+      <div class="agent-grid"><div class="panel agent-side"><div class="dropzone" id="dropzone"><strong>DROP FILES HERE</strong><span>PNG / JPG / PY / ZIP · 单文件不超过 48 MiB</span><input type="file" id="agentFiles" multiple accept="image/*,.py,.zip"></div><label>Agent 命令<input id="agentCommand" placeholder="codeagent 或 nga"></label><div class="actions"><button class="danger" id="agentStop">停止</button><button class="primary" id="agentStart">启动 CLI</button></div><div class="settings" id="settingsPanel"><label>文件保存目录<input id="uploadDir"></label><button class="ghost" id="saveSettings">保存设置</button></div></div>
+      <div class="panel console-panel agent-console"><div class="console-head"><span><i></i> AGENT CLI</span></div><div class="console" id="agentConsole"></div><form class="agent-input" id="agentInputForm"><textarea id="agentInput" placeholder="输入消息，或拖入文件后编辑自动生成的路径引用…"></textarea><button class="primary">发送</button></form></div></div>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

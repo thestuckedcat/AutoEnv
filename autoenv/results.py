@@ -115,6 +115,34 @@ class DownloadResult:
 
 
 @dataclass(frozen=True)
+class RemoteDownloadResult:
+    """Result of downloading one file from a registered SSH target."""
+
+    run_id: str
+    operation_id: str
+    protocol: str
+    target_name: str
+    remote_dir: str
+    requested_file: str | None
+    pattern: str | None
+    success: bool
+    status: str
+    overwrite: bool
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    remote_file: str | None = None
+    remote_size: int | None = None
+    local_file: str | None = None
+    local_size: int | None = None
+    local_existed: bool = False
+    local_md5: str | None = None
+    size_verified: bool = False
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class UploadResult:
     run_id: str
     operation_id: str
@@ -138,6 +166,8 @@ class UploadResult:
     remote_md5_after: str | None = None
     md5_changed: bool | None = None
     md5_verified: bool = False
+    remote_size: int | None = None
+    size_verified: bool = False
     error_type: str | None = None
     error_message: str | None = None
 
@@ -186,7 +216,9 @@ class ScriptResult:
     error_message: str | None = None
 
 
-OperationResult = CommandResult | DownloadResult | UploadResult | ExtractResult
+OperationResult = (
+    CommandResult | DownloadResult | RemoteDownloadResult | UploadResult | ExtractResult
+)
 
 
 def result_to_dict(value: Any) -> Any:

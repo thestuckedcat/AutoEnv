@@ -1,0 +1,4 @@
+interface:
+  display_name: "run-sdd-checkpoint"
+  short_description: "Reusable low-level software SDD workflow"
+  default_prompt: "Use this skill to run its documented SDD workflow with evidence and hard gates."

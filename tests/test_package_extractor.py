@@ -883,25 +883,45 @@ def test_extractor_validates_target_shape_before_recording(tmp_path: Path) -> No
     assert recorder.records == []
 
 
-def test_unsupported_archive_type_and_missing_source_are_recorded(tmp_path: Path) -> None:
+def test_invalid_zip_and_missing_source_are_recorded(tmp_path: Path) -> None:
     package_dir = tmp_path / "packages"
     package_dir.mkdir()
     (package_dir / "plain.zip").write_bytes(b"zip")
     extractor, recorder, _ = make_extractor(package_dir)
 
-    unsupported = extractor.extract(
+    invalid_zip = extractor.extract(
         ExtraFileSelector("plain.zip"), target_file="payload"
     )
     missing = extractor.extract(
         ExtraFileSelector("missing.tgz"), target_file="payload"
     )
 
-    assert (unsupported.status, unsupported.error_type) == (
-        "unsupported_archive_type",
-        "UNSUPPORTED_ARCHIVE_TYPE",
+    assert (invalid_zip.status, invalid_zip.error_type) == (
+        "extraction_failed",
+        "EXTRACTION_FAILED",
     )
     assert (missing.status, missing.error_type) == (
         "local_file_not_found",
         "LOCAL_FILE_NOT_FOUND",
     )
     assert len(recorder.records) == 2
+
+
+def test_zip_extracts_one_file_and_rejects_traversal(tmp_path: Path) -> None:
+    import zipfile
+
+    package_dir = tmp_path / "packages"
+    package_dir.mkdir()
+    archive = package_dir / "logs.zip"
+    with zipfile.ZipFile(archive, "w") as value:
+        value.writestr("nested/device.log", "ready")
+    extractor, _, _ = make_extractor(package_dir)
+    result = extractor.extract(ExtraFileSelector("logs.zip"), target_file="nested/device.log")
+    assert result.success
+    assert (package_dir / "device.log").read_text() == "ready"
+
+    unsafe = package_dir / "unsafe.zip"
+    with zipfile.ZipFile(unsafe, "w") as value:
+        value.writestr("../escape.log", "bad")
+    failed = extractor.extract(ExtraFileSelector("unsafe.zip"), target_file="escape.log")
+    assert (failed.status, failed.error_type) == ("unsafe_archive", "ARCHIVE_PATH_TRAVERSAL")

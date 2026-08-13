@@ -1,0 +1,13 @@
+{
+  "script": "download_and_parse_logs",
+  "mode": "run",
+  "environment": "lab-a",
+  "parameters": {
+    "arguments": {
+      "remote_dir": "/var/log/device",
+      "remote_file": "device-logs.zip",
+      "remote_pattern": "",
+      "log_pattern": ""
+    }
+  }
+}

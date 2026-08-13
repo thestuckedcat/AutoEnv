@@ -91,6 +91,28 @@ def bad(ctx):
     assert any("command target" in item.message for item in violations)
 
 
+def test_contract_checks_execute_on_output_upload_target(tmp_path) -> None:
+    violations = _validate_source(
+        tmp_path,
+        '''
+from autoenv import SSHDefaults, extra_file, register_script
+
+@register_script("bad")
+def bad(ctx):
+    archive = extra_file("api.tgz")
+    first = ctx.register_ssh_host("first", defaults=SSHDefaults(host="192.0.2.1"))
+    second = ctx.register_ssh_host("second", defaults=SSHDefaults(host="192.0.2.2"))
+    first.sftp_upload(local_file=archive, remote_dir="/tmp")
+    return second.execute_on_output(
+        "tar -xf S{api.tgz}",
+        keyword="Continue?",
+        send_data=b"y\\n",
+    )
+''',
+    )
+    assert any("command target" in item.message for item in violations)
+
+
 def test_contract_accepts_an_exact_regex_selector_with_braces(tmp_path) -> None:
     violations = _validate_source(
         tmp_path,

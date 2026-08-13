@@ -1,6 +1,8 @@
 # AutoEnv
 
-AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 下载、显式文件/目录提取、SCP/SFTP 单文件上传、SSH/Telnet 命令执行、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
+本分支提供本地开发者 Web 控制台：运行 `python -X utf8 startWeb.py`，即可注册环境、非交互拉起脚本、使用动态 Tools，以及启动支持文件路径转换的 Agent CLI。快速使用见 `webPage/QUICK_START.md`，后续开发接手见 `docs/WEB_ARCHITECTURE_AND_HANDOFF.md`。
+
+AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 包下载、SCP/SFTP 远端文件下载、显式文件/目录及 ZIP 提取、SCP/SFTP/FTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、结构化非交互启动、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
 
 AutoEnv 不包含工作流 DAG、Step 依赖或并发调度。脚本中的代码顺序就是实际执行顺序。
 
@@ -34,6 +36,8 @@ python main.py
 ```powershell
 python main.py run example_host_environment
 ```
+
+确认 package 远端目录时，直接回车沿用显示的上次值；只要对应 `config.json` 项定义了 `base_link`，提示中就始终提供 `!newest`，输入它会忽略上次手工路径并立即按 `base_link` 重新解析 automatic newest 包。
 
 无参数确认地复用该脚本的上次参数；如果脚本注册了启动后 func，主流程成功后仍会显示 func 菜单：
 
@@ -108,6 +112,8 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 上传和提取不会隐式下载。需要从 HDFS 下载时必须显式调用 `ctx.download_package(package("A1"))`。
 
+SCP/SFTP 下载使用已声明的 SSH Host，可指定精确远端文件，或在一个远端目录中用正则进行唯一匹配。下载成功的 `RemoteDownloadResult` 会注册到本次 `packages/`，可直接传给 SCP、SFTP 或 FTP 上传；远端模糊匹配没有 HDFS `newest` 语义，零匹配和多匹配都会失败。完整示例见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用)。
+
 ## 运行记录
 
 每个注册脚本调用都有独立目录：
@@ -122,6 +128,8 @@ logs/<run_id>/
 
 `state/last_runs/<script>.json` 保存该脚本上一次完整参数。密码按项目需求允许明文存档，但终端和 `run.log` 会脱敏。请保护本机的 `state/` 和 `logs/` 访问权限。
 
+终端面向人工阅读，会用带空行的摘要块突出操作状态、源/目标、命令结果和错误；`run.log` 仍保留单行 JSON 操作记录，方便搜索和自动分析。SSH/Telnet 长短命令都在接收时实时显示远端输出，并将清理后的完整正文保存在 `result.output`；`execute()` 结束摘要不重复打印正文。
+
 ## 安全说明
 
 当前版本面向可信实验室内网：WebHDFS 默认不校验 TLS 证书，SSH 自动接受未知主机密钥，Telnet 使用明文传输，`.run` 提取会执行包内程序。只应连接可信目标并使用可信构建产物；详细边界见重构设计文档。
@@ -132,6 +140,10 @@ logs/<run_id>/
 - [重构详细设计](docs/AutoEnv-Refactor-Detailed-Design.md)
 - [环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md)
 - [UT 目标与排查指南](tests/README.md)
+- [Web 快速入门](webPage/QUICK_START.md)
+- [Web 架构与接手说明](docs/WEB_ARCHITECTURE_AND_HANDOFF.md)
+- [文档一致性审计](docs/DOCUMENTATION_AUDIT.md)
+- [通用底层软件 SDD 技能包](sdd/README.md)
 
 第一次使用先看快速入门；详细设计是接口语义和验收基线；环境注册指南包含全部可选参数、结果状态、完整示例和提交前检查清单。
 
@@ -187,3 +199,18 @@ return host.execute("sh /root/autoEnv/S{install.sh}")
 python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py
 python -X utf8 -m pytest tests/test_generated_script_contract.py
 ```
+
+## 按输出关键词发送数据
+
+SSH Host 和 Telnet 对象均提供阻塞式 `execute_on_output()`。它先执行命令，再持续读取输出；关键词出现后立即向同一通道发送原始字节并返回：
+
+```python
+result = console.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+```
+
+`b"\x02"` 是 Ctrl+B 的实际字节，不是文本 `b"ctrl+b"`。`send_data` 不会自动追加回车或换行；普通命令需显式写成例如 `b"boot\r\n"`。完整状态语义、串口连接重置规则和常用控制字符对照见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#121-按输出关键词发送数据)。普通 SSH 在 reboot 后通常断开，无法观察 BIOS、BootROM 或 Bootloader 输出；进入启动模式的场景通常应使用串口映射的 Telnet 连接。

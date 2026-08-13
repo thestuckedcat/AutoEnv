@@ -1,0 +1,4 @@
+interface:
+  display_name: "导入 Python Web 工具"
+  short_description: "安全解析 Python 文件或 ZIP 并注册工具页签"
+  default_prompt: "Use $import-python-web-tool to inspect this Python file or project ZIP and register it as an AutoEnv Web tool."

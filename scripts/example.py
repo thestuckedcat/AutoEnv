@@ -15,6 +15,7 @@ from autoenv import (
 @register_script(
     name="example_host_environment",
     description="Example: download, extract, upload and run SSH commands",
+    packages=("A1",),
 )
 def example_host_environment(ctx):
     # Declare every file selector and connection object in one place. The ordered
@@ -133,7 +134,7 @@ chmod +x "S{A1}"
 
 @register_script(
     name="example_console_environment",
-    description="Example: Telnet auto detection and an expected reboot disconnect",
+    description="Example: Telnet auto detection and a timed Ctrl+B response",
 )
 def example_console_environment(ctx):
     console = ctx.register_telnet(
@@ -156,16 +157,18 @@ def example_console_environment(ctx):
     elif not result.success:
         return result
 
-    return console.execute(
+    return console.execute_on_output(
         "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
         timeout=60,
-        expect_disconnect=True,
     )
 
 
 @register_script(
     name="example_combined_environment",
     description="Example: run two registered scripts serially and independently",
+    packages=("A1",),
 )
 def example_combined_environment(ctx):
     host_result = example_host_environment()

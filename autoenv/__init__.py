@@ -5,12 +5,14 @@ from .results import (
     CommandResult,
     CommandStatus,
     DownloadResult,
+    RemoteDownloadResult,
     ExtractResult,
     ScriptResult,
     UploadResult,
 )
 from .selectors import extra_file, match, package
 from .ssh_host import SSHDefaults
+from .ftp_host import FTPDefaults
 from .telnet_client import TelnetDefaults
 
 __all__ = [
@@ -19,8 +21,10 @@ __all__ = [
     "CommandResult",
     "CommandStatus",
     "DownloadResult",
+    "RemoteDownloadResult",
     "ExtractResult",
     "SSHDefaults",
+    "FTPDefaults",
     "ScriptResult",
     "TelnetDefaults",
     "UploadResult",

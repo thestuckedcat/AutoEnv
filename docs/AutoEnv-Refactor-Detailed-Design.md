@@ -1,14 +1,14 @@
 # AutoEnv 重构详细设计
 
-> 目标分支：`UNIFY_ENV`
-> 文档状态：已完成需求对齐，作为重构实现与验收基线
+> 目标分支：`UNIFY_ENV_WITH_BLOCK`（原始重构基线来自 `UNIFY_ENV`）
+> 文档状态：当前实现说明；第 1–27 节保留原始重构设计，第 28 节记录后续扩展
 > 兼容范围：只兼容现有 `config.json` 格式和 WebHDFS 查包语义，不兼容旧 Python API
 
 ## 1. 背景与目标
 
 AutoEnv 用于在 Windows 上快速准备和启动一个或多个 Linux/设备环境。它需要完成包下载、文件提取、远端上传、SSH/Telnet 命令执行、结果判断、运行记录和上次参数复用。
 
-当前实现已经包含 WebHDFS、SCP、FTP、SSH、Telnet、`.run`/`.tar.gz` 解包、脚本渲染和组合环境等能力，但 `env_executor.py`、`EnvironmentProcessContext` 和环境配置承担了过多职责。底层接口返回值不统一，日志无法作为结构化运行记录，组合环境也需要额外注册表和特殊执行路径。
+重构前实现已经包含 WebHDFS、SCP、FTP、SSH、Telnet、`.run`/`.tar.gz` 解包、脚本渲染和组合环境等能力，但 `env_executor.py`、`EnvironmentProcessContext` 和环境配置承担了过多职责。底层接口返回值不统一，日志无法作为结构化运行记录，组合环境也需要额外注册表和特殊执行路径。
 
 本次重构的目标不是增加工作流引擎，而是把 AutoEnv 收敛为：
 
@@ -45,6 +45,9 @@ AutoEnv/
 │   ├── package_manager.py           # config.json 与 WebHDFS 下载
 │   ├── extractor.py                 # extract_file_from
 │   ├── ssh_host.py                  # SSH、SCP、SFTP
+│   ├── ftp_host.py                  # 独立普通 FTP 上传
+│   ├── interface.py                 # 结构化非交互启动契约
+│   ├── web_tools.py                 # Web Tool 注册与发现
 │   ├── telnet_client.py             # Telnet 与 Shell 模式探测
 │   └── recorder.py                  # 内部日志和 JSON 写入
 ├── scripts/                         # 脚本注册层
@@ -56,6 +59,10 @@ AutoEnv/
 │   ├── QUICK_START.md               # 快速使用、快速测试和文档导航
 │   ├── AutoEnv-Refactor-Detailed-Design.md
 │   └── ENVIRONMENT_REGISTRATION_GUIDE.md
+├── webPage/                         # 当前本地 Web 控制台
+├── environments/                    # 本机环境档案，默认 Git 忽略
+├── adapt_interface.py               # JSON/参数非交互入口
+├── startWeb.py                      # Web 启动入口
 ├── config.json
 ├── logs/                            # 自动生成，Git 忽略
 ├── state/                           # 自动生成，Git 忽略
@@ -256,6 +263,7 @@ autoenv run start_udk
 - 没有历史值时使用脚本中的 `SSHDefaults`、`TelnetDefaults` 和 `config.json` 默认路径。
 - 逐项展示并允许修改。
 - 直接回车使用当前显示的默认值。
+- package 定义 `base_link` 时始终显示 `!newest` 快捷方式；输入后忽略历史手工覆盖并切换为 `base_link_newest`。
 
 ### 8.2 `rerun`
 
@@ -479,14 +487,15 @@ result = ctx.download_package(package("A1"))
 
 - `name`：唯一配置名。
 - `link`：明确远端目录。
-- `base_link`：`link` 为空时用于执行现有的 `newest` 候选查找流程。
+- `base_link`：`link` 为空时作为默认的 `newest` 候选查找根目录；即使同时定义了 `link`，普通 `run` 也始终可以通过 `!newest` 明确选择它。
 - `image_name`：匹配远端文件名的正则。
 - `target_file`：为兼容旧配置继续允许和解析，但新流程不使用它进行下载或自动提取。
 
 远端目录优先级：
 
 ```text
-本次交互路径覆盖
+本次输入 !newest（明确选择 base_link/newest）
+    > 本次交互路径覆盖
     > config.json.link
     > config.json.base_link 下最新日期目录/newest
 ```
@@ -623,6 +632,7 @@ result = host.sftp_upload(
 - 即使覆盖前 MD5 与本地相同，也仍执行明确请求的覆盖。
 - `overwrite=False` 且远端文件存在时不上传，返回 `remote_file_exists`。
 - 上传后 MD5 不一致返回 `md5_verification_failed`。
+- SCP 不依赖 SFTP：目录创建、覆盖检查和前后 MD5 通过普通 SSH 命令完成，文件传输只使用 SCP。SCP 的远端参数使用 `remote_dir`，由远端按本地 basename 落盘，与 main 分支行为一致，也支持未启用 SFTP subsystem 的精简 SSH Server。
 
 ### 15.3 `UploadResult`
 
@@ -682,7 +692,24 @@ result = console.execute(
 )
 ```
 
-默认实时显示并记录远端输出。命令结束后，完整输出仍保存在 `CommandResult` 中。超时或断连也保留已经收到的部分输出。
+命令运行期间持续读取并实时显示远端输出；清理后的完整正文同时保存在 `CommandResult.output` 中。结束摘要不重复打印正文，超时或断连也保留已经收到的部分输出。
+
+### 16.1.1 按输出触发原始字节
+
+SSH Host 与 Telnet 对象提供相同的阻塞式契约：
+
+```python
+result = target.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+```
+
+接口在一个操作内完成初始命令发送、持续输出读取、跨接收分片的大小写敏感关键词匹配和一次性原始字节发送。`send_data` 必须是非空 `bytes`，且不隐式追加换行。成功只表示匹配和发送完成；超时使用 `KEYWORD_NOT_FOUND`，响应发送失败使用 `RESPONSE_SEND_FAILED`，所有失败均保留部分输出且不自动重放命令。
+
+SSH 复用现有 Transport，但每次操作仍使用独立 Channel。Telnet 在响应发送后丢弃当前 Socket 及旧 Shell 提示符状态，下一次操作懒重连，避免设备进入 Bootloader 后仍按原 POSIX Shell 解析。Ctrl+A 到 Ctrl+Z 对应 `0x01` 到 `0x1A`；常用字节写法和 Enter/Backspace 差异以环境注册指南为准。
 
 ### 16.2 `CommandResult`
 
@@ -801,7 +828,7 @@ result = target.execute("reboot", expect_disconnect=True)
 
 ## 20. 实时输出与日志
 
-SSH 必须并行读取 stdout/stderr，避免大输出填满 Paramiko Channel 缓冲区造成死锁。Telnet 按接收顺序实时读取原始字节并保留完整 `raw_output`。
+SSH 必须在命令运行期间并行读取并实时显示 stdout/stderr，避免大输出填满 Paramiko Channel 缓冲区造成死锁。Telnet 按接收顺序持续读取并实时显示原始字节，同时保留完整 `raw_output`。
 
 `run.log` 自动记录：
 
@@ -813,6 +840,13 @@ SSH 必须并行读取 stdout/stderr，避免大输出填满 Paramiko Channel �
 - MD5、目录 tree MD5、文件大小和耗时。
 - 运行期错误和未捕获异常堆栈。
 - 最终脚本状态。
+
+终端与 `run.log` 使用不同的展示格式，但内容来自同一结果：
+
+- `run.log` 中的操作结果保持单行 JSON，便于检索和程序解析。
+- 终端将脚本开始/结束和每个操作结果显示为带空行的摘要块，突出成功或失败状态。
+- 下载、提取和上传摘要分行显示源、目标、校验值及耗时。
+- SSH/Telnet 长短命令都实时显示远端输出并累计到 `result.output`；结束摘要分行显示 command、status、phase、exit code、耗时和错误，不重复整段正文。
 
 脚本层不公开 `ctx.logger`，避免日志内容和结构失控。
 
@@ -843,13 +877,13 @@ autoenv rerun start_udk
 
 没有指定脚本时显示名称和描述菜单。主流程成功且注册了 func 时，再循环显示该运行的 func 菜单；`rerun` 只跳过参数确认，不跳过这个显式操作菜单。未知脚本名、缺失 last-run 和导入脚本失败需要返回非零退出码和明确错误。
 
-## 23. 第一版明确不支持
+## 23. 原始重构第一版明确不支持
 
 - 工作流 DAG、Step、依赖、自动分支和并发。
 - 后台任务调度器或跨本地重启接管远端任务。
 - SSH 私钥、跳板机、代理和 SSH Agent。
 - Telnet `login:`/`Password:` 登录流程。
-- FTP 上传。
+- FTP 上传（已由第 28 节后续扩展实现）。
 - 上传多文件列表。
 - 上传接口的隐式下载。
 - 下载接口的自动解包或自动提取。
@@ -889,10 +923,11 @@ autoenv rerun start_udk
 4. 迁移 `.run`/tar 解包为显式 `extract_file_from()`。
 5. 实现 SSH Host、实时命令、SFTP 和 SCP 单文件上传。
 6. 实现 Telnet 自动 Shell 探测和统一命令结果。
-7. 添加 `scripts/example.py` 和注册指南。
-8. 添加完整单元测试并修复边界问题。
-9. 更新 README、依赖和 Git 忽略规则。
-10. 删除旧 Python API 和失效文档，保留 `config.json`。
+7. 为 SSH/Telnet 增加按输出关键词发送原始字节的阻塞接口。
+8. 添加 `scripts/example.py` 和注册指南。
+9. 添加完整单元测试并修复边界问题。
+10. 更新 README、依赖和 Git 忽略规则。
+11. 删除旧 Python API 和失效文档，保留 `config.json`。
 
 ## 26. 验收标准
 
@@ -900,13 +935,14 @@ autoenv rerun start_udk
 - 所有基础接口都有明确类型、统一结果和自动日志。
 - `run`、`rerun` 和组合脚本符合本文语义。
 - 下载、提取、上传严格分离。
-- SSH/Telnet 输出实时可见，所有失败情况可由结果对象区分。
+- SSH/Telnet 长短命令输出实时可见，完整清理正文保存在 `result.output`，所有失败情况可由结果对象区分。
+- SSH/Telnet 可在同一次阻塞操作中匹配跨分片输出并发送一次原始响应字节，超时、断连和发送失败均保留部分输出。
 - 命令与完整 shell 文本中的 `S{file_name}` 只解析本次运行中对正确目标成功上传的文件，并替换为实际文件名。
 - 新增环境脚本可通过统一离线契约 UT 检查，不连接 HDFS、SSH 或 Telnet。
 - 主流程成功后可循环执行同一上下文中的注册 func，并在退出前保持连接可用。
 - 每次脚本调用都有独立可追溯的目录、参数和结果。
 - 单元测试在无外部服务器条件下通过。
-- 最终变更只提交到 `UNIFY_ENV` 分支。
+- 原始重构变更提交到 `UNIFY_ENV`；后续扩展在 `UNIFY_ENV_WITH_BLOCK` 演进并按发布要求合入默认分支。
 
 ## 27. 安全边界
 
@@ -920,3 +956,15 @@ autoenv rerun start_udk
 - `expect_disconnect=True` 只能用于确认会主动断连的命令；它不能证明重启或关机后的目标最终恢复正常。
 
 这些限制是兼容当前环境所作的明确取舍，不应被理解为适用于互联网或多租户环境的安全默认值。
+## 28. `UNIFY_ENV_WITH_BLOCK` 后续扩展
+
+本分支在原顺序执行模型上增加了结构化入口和本地 Web 控制台，但没有引入 DAG 或隐式并发。新增边界如下：
+
+- `RemoteDownloadResult` 是可记录、可序列化且可直接作为上传源解析的操作结果。
+- SSH Host 同时拥有 SCP/SFTP 下载；远端正则必须在指定目录唯一匹配。
+- 普通 FTP 是独立连接对象，只提供显式上传，不共享 SSH Transport。
+- `LaunchRequest` 把环境档案与请求覆盖合并后注入 `RunContext`；非交互模式中缺参立即失败。
+- Web Tools 使用独立注册表和 JSON 字段 Schema，不能执行环境拉起职责。
+- Agent CLI 文件上传只负责安全落盘和路径转换，Python/ZIP 的适配由仓库 skill 静态审查。
+
+新增模块、目录、数据流、安全边界、已知限制和接手入口见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。新增行为的可操作说明见 [`ENVIRONMENT_REGISTRATION_GUIDE.md`](ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用) 和 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)。

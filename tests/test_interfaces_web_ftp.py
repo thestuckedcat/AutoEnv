@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import stat
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from autoenv.ftp_host import FTPConnectionInfo, FTPHost
+from autoenv.interface import LaunchRequest, merge_parameters
+from autoenv.results import RemoteDownloadResult
+from autoenv.selectors import extra_file, resolve_local_file
+from autoenv.web_tools import describe_tools, run_web_tool
+from scripts.download_and_parse_logs import _unpack_all_zips
+
+
+class Recorder:
+    def __init__(self): self.index=0; self.results=[]
+    def next_operation_id(self): self.index+=1; return f"{self.index:04d}"
+    def record_result(self, name, result): self.results.append((name,result))
+
+
+class FakeFTP:
+    def __init__(self): self.files={}; self.dirs=set(); self.passive=None
+    def connect(self,*args,**kwargs): self.connect_args=(args,kwargs)
+    def login(self,*args): self.login_args=args
+    def set_pasv(self,value): self.passive=value
+    def mkd(self,path): self.dirs.add(path)
+    def size(self,path):
+        if path not in self.files: raise __import__("ftplib").error_perm("550 missing")
+        return len(self.files[path])
+    def storbinary(self,command,handle): self.files[command.split(" ",1)[1]]=handle.read()
+    def quit(self): pass
+
+
+def test_remote_download_result_is_directly_uploadable_selector(tmp_path: Path):
+    package_dir=tmp_path/"packages";package_dir.mkdir();local=package_dir/"matched.zip";local.write_bytes(b"zip")
+    from datetime import datetime, timezone
+    now=datetime.now(timezone.utc)
+    result=RemoteDownloadResult("run","1","sftp","dut","/logs",None,r".*zip",True,"success",True,now,now,0,"/logs/matched.zip",3,str(local),3,False,"abc",True)
+    resolved=resolve_local_file(result,package_dir,lambda _:"")
+    assert resolved.path==local.resolve() and resolved.selector_type=="remote_download"
+
+
+def test_plain_ftp_upload_uses_independent_connection_and_size_check(tmp_path: Path):
+    package_dir=tmp_path/"packages";package_dir.mkdir();(package_dir/"data.bin").write_bytes(b"data")
+    fake=FakeFTP(); recorder=Recorder()
+    host=FTPHost(name="ftp",info=FTPConnectionInfo("127.0.0.1"),run_id="run",package_dir=package_dir,recorder=recorder,image_pattern_for=lambda _:"",ftp_factory=lambda:fake)
+    result=host.upload(extra_file("data.bin"),"/incoming")
+    assert result.success and result.protocol=="ftp" and result.size_verified
+    assert fake.files["/incoming/data.bin"]==b"data" and fake.passive is True
+
+
+def test_launch_request_and_environment_override_merge():
+    request=LaunchRequest.from_dict({"script":"demo","environment":"lab","parameters":{"ssh_hosts":{"dut":{"host":"new"}}}})
+    merged=merge_parameters({"ssh_hosts":{"dut":{"host":"old","port":22}}},request.parameters or {})
+    assert merged["ssh_hosts"]=={"dut":{"host":"new","port":22}}
+    with pytest.raises(ValueError): LaunchRequest.from_dict({"script":"demo","mode":"bad"})
+
+
+def test_web_tool_discovery_and_execution():
+    root=Path(__file__).resolve().parents[1]
+    tools=describe_tools(root)
+    assert any(item["name"]=="tool-contract-preview" for item in tools)
+    result=run_web_tool(root,"tool-contract-preview",{"value":"0x1"})
+    assert result["status"]=="contract_ready"
+
+
+def test_import_skill_safe_extract_rejects_traversal(tmp_path: Path):
+    archive=tmp_path/"bad.zip"
+    with zipfile.ZipFile(archive,"w") as value: value.writestr("../bad.py","x=1")
+    script=Path(__file__).resolve().parents[1]/".agents/skills/import-python-web-tool/scripts/safe_extract.py"
+    import subprocess, sys
+    completed=subprocess.run([sys.executable,str(script),str(archive),str(tmp_path/"out")],capture_output=True,text=True)
+    assert completed.returncode != 0 and "unsafe archive path" in completed.stderr
+
+
+@pytest.mark.parametrize("member", ["../outside.log", "C:/outside.log", "/outside.log"])
+def test_log_script_rejects_unsafe_zip_paths(tmp_path: Path, member: str):
+    archive = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive, "w") as value:
+        value.writestr(member, "bad")
+
+    with pytest.raises(ValueError, match="unsafe ZIP member"):
+        _unpack_all_zips(archive, tmp_path / "output")
+
+
+def test_log_script_rejects_zip_links(tmp_path: Path):
+    archive = tmp_path / "link.zip"
+    member = zipfile.ZipInfo("linked.log")
+    member.create_system = 3
+    member.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "w") as value:
+        value.writestr(member, "target.log")
+
+    with pytest.raises(ValueError, match="ZIP links are not allowed"):
+        _unpack_all_zips(archive, tmp_path / "output")

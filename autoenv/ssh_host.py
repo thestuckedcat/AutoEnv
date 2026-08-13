@@ -5,8 +5,10 @@ import errno
 import hashlib
 import math
 import posixpath
+import shlex
 import socket
 import stat
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +25,7 @@ from .results import (
     CommandResult,
     CommandStatus,
     UploadResult,
+    RemoteDownloadResult,
 )
 from .selectors import (
     LocalFileSelector,
@@ -124,6 +127,13 @@ class _HostClosedError(RuntimeError):
     pass
 
 
+class _RemoteDownloadError(RuntimeError):
+    def __init__(self, status: str, error_type: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_type = error_type
+
+
 class SSHHost:
     """A lazily connected SSH target owned by one RunContext."""
 
@@ -181,6 +191,46 @@ class SSHHost:
         timeout: float = 300.0,
         expect_disconnect: bool = False,
     ) -> CommandResult:
+        return self._execute(
+            command,
+            timeout=timeout,
+            expect_disconnect=expect_disconnect,
+        )
+
+    def execute_on_output(
+        self,
+        command: str,
+        *,
+        keyword: str,
+        send_data: bytes,
+        timeout: float = 300.0,
+    ) -> CommandResult:
+        """Run a command, then block until output matches and send raw bytes."""
+        if not isinstance(keyword, str):
+            raise TypeError("keyword must be a string")
+        if not keyword:
+            raise ValueError("keyword must not be empty")
+        if not isinstance(send_data, bytes):
+            raise TypeError("send_data must be bytes")
+        if not send_data:
+            raise ValueError("send_data must not be empty")
+        return self._execute(
+            command,
+            timeout=timeout,
+            expect_disconnect=False,
+            keyword=keyword,
+            send_data=send_data,
+        )
+
+    def _execute(
+        self,
+        command: str,
+        *,
+        timeout: float,
+        expect_disconnect: bool,
+        keyword: str | None = None,
+        send_data: bytes | None = None,
+    ) -> CommandResult:
         command = self.uploaded_files.resolve(command, target_name=self.name)
         timeout = _timeout(timeout, "SSH command timeout")
         if not isinstance(expect_disconnect, bool):
@@ -203,8 +253,12 @@ class SSHHost:
         raw_parts: list[str] = []
         stdout_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         stderr_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        match_tails = {"stdout": "", "stderr": ""}
+        response_send_attempted = False
+        response_sent = False
 
         def receive(stream: str, data: bytes) -> None:
+            nonlocal response_send_attempted, response_sent
             decoder = stdout_decoder if stream == "stdout" else stderr_decoder
             text = decoder.decode(data, final=False)
             if not text:
@@ -215,6 +269,15 @@ class SSHHost:
                 stderr_parts.append(text)
             raw_parts.append(text)
             self.recorder.stream(f"SSH {self.name} {stream.upper()}", text)
+            if keyword is not None and not response_sent:
+                candidate = match_tails[stream] + text
+                if keyword in candidate:
+                    response_send_attempted = True
+                    assert channel is not None and send_data is not None
+                    channel.sendall(send_data)
+                    response_sent = True
+                keep = max(0, len(keyword) - 1)
+                match_tails[stream] = candidate[-keep:] if keep else ""
 
         try:
             transport = self._ensure_transport()
@@ -243,18 +306,31 @@ class SSHHost:
                         receive("stderr", chunk)
                         made_progress = True
 
+                if response_sent:
+                    phase = CommandPhase.COMPLETE
+                    status = CommandStatus.SUCCESS
+                    break
+
                 if channel.exit_status_ready():
                     # Paramiko may announce exit before the caller has drained all data.
                     if channel.recv_ready() or channel.recv_stderr_ready():
                         continue
                     phase = CommandPhase.PARSE_RESULT
                     exit_code = channel.recv_exit_status()
-                    status = (
-                        CommandStatus.SUCCESS
-                        if exit_code == 0
-                        else CommandStatus.COMMAND_FAILED
-                    )
-                    if exit_code != 0:
+                    if keyword is not None:
+                        status = CommandStatus.COMMAND_FAILED
+                        error_type = "KEYWORD_NOT_FOUND"
+                        error_message = (
+                            f"SSH command exited before output keyword {keyword!r} "
+                            "was found"
+                        )
+                    else:
+                        status = (
+                            CommandStatus.SUCCESS
+                            if exit_code == 0
+                            else CommandStatus.COMMAND_FAILED
+                        )
+                    if keyword is None and exit_code != 0:
                         error_type = "NON_ZERO_EXIT_CODE"
                         error_message = f"remote command exited with code {exit_code}"
                     phase = CommandPhase.COMPLETE
@@ -268,8 +344,15 @@ class SSHHost:
                     raise EOFError("SSH transport disconnected while command was running")
                 if time.monotonic() - started_clock >= timeout:
                     status = CommandStatus.TIMEOUT
-                    error_type = "COMMAND_TIMEOUT"
-                    error_message = f"SSH command timed out after {timeout:g} seconds"
+                    if keyword is None:
+                        error_type = "COMMAND_TIMEOUT"
+                        error_message = f"SSH command timed out after {timeout:g} seconds"
+                    else:
+                        error_type = "KEYWORD_NOT_FOUND"
+                        error_message = (
+                            f"SSH output keyword {keyword!r} was not found within "
+                            f"{timeout:g} seconds"
+                        )
                     break
                 if not made_progress:
                     time.sleep(_POLL_INTERVAL)
@@ -280,10 +363,16 @@ class SSHHost:
             error_message = str(exc) or "SSH authentication failed"
             self._invalidate_connection()
         except (socket.timeout, TimeoutError) as exc:
-            if command_sent:
+            if response_send_attempted and not response_sent:
+                status = CommandStatus.PROTOCOL_ERROR
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+            elif command_sent:
                 status = CommandStatus.TIMEOUT
                 phase = CommandPhase.WAIT_OUTPUT
-                error_type = "COMMAND_TIMEOUT"
+                error_type = (
+                    "KEYWORD_NOT_FOUND" if keyword is not None else "COMMAND_TIMEOUT"
+                )
             elif connected:
                 status = CommandStatus.TIMEOUT
                 phase = CommandPhase.SEND_COMMAND
@@ -311,7 +400,12 @@ class SSHHost:
                 error_message = str(exc) or "SSH connection was lost"
             self._invalidate_connection()
         except (paramiko.ssh_exception.NoValidConnectionsError, OSError) as exc:
-            if command_sent:
+            if response_send_attempted and not response_sent:
+                status = CommandStatus.PROTOCOL_ERROR
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+                error_message = str(exc) or "SSH response bytes could not be sent"
+            elif command_sent:
                 if self._is_disconnect_exception(exc) or self._looks_disconnected(exc):
                     disconnected = True
                     if expect_disconnect:
@@ -341,7 +435,12 @@ class SSHHost:
                 error_message = str(exc) or "SSH connection failed"
             self._invalidate_connection()
         except paramiko.SSHException as exc:
-            if command_sent and self._looks_disconnected(exc):
+            if response_send_attempted and not response_sent:
+                status = CommandStatus.PROTOCOL_ERROR
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+                error_message = str(exc) or "SSH response bytes could not be sent"
+            elif command_sent and self._looks_disconnected(exc):
                 disconnected = True
                 if expect_disconnect:
                     status = CommandStatus.SUCCESS
@@ -364,7 +463,11 @@ class SSHHost:
             error_message = str(exc)
         except Exception as exc:  # A malformed/failed channel is a protocol failure.
             status = CommandStatus.PROTOCOL_ERROR
-            error_type = type(exc).__name__
+            if response_send_attempted and not response_sent:
+                phase = CommandPhase.SEND_COMMAND
+                error_type = "RESPONSE_SEND_FAILED"
+            else:
+                error_type = type(exc).__name__
             error_message = str(exc) or repr(exc)
             self._invalidate_connection()
         finally:
@@ -423,6 +526,128 @@ class SSHHost:
     ) -> UploadResult:
         return self._upload("sftp", local_file, remote_dir, overwrite)
 
+    def scp_download(
+        self,
+        remote_dir: str,
+        *,
+        remote_file: str | None = None,
+        pattern: str | None = None,
+        overwrite: bool = True,
+    ) -> RemoteDownloadResult:
+        return self._download("scp", remote_dir, remote_file, pattern, overwrite)
+
+    def sftp_download(
+        self,
+        remote_dir: str,
+        *,
+        remote_file: str | None = None,
+        pattern: str | None = None,
+        overwrite: bool = True,
+    ) -> RemoteDownloadResult:
+        return self._download("sftp", remote_dir, remote_file, pattern, overwrite)
+
+    def _download(
+        self,
+        protocol: str,
+        remote_dir: str,
+        remote_file: str | None,
+        pattern: str | None,
+        overwrite: bool,
+    ) -> RemoteDownloadResult:
+        remote_dir = self._normalize_remote_dir(remote_dir)
+        if (remote_file is None) == (pattern is None):
+            raise ValueError("exactly one of remote_file and pattern must be provided")
+        if remote_file is not None:
+            remote_file = self._remote_basename(remote_file)
+        if pattern is not None:
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ValueError("pattern must be a non-empty regular expression")
+            pattern = pattern.strip()
+            re.compile(pattern)
+        if not isinstance(overwrite, bool):
+            raise TypeError("overwrite must be a boolean")
+
+        operation_id = self.recorder.next_operation_id()
+        started = datetime.now().astimezone()
+        selected_name: str | None = None
+        remote_path: str | None = None
+        local_path: Path | None = None
+        remote_size: int | None = None
+        local_size: int | None = None
+        local_existed = False
+        local_md5: str | None = None
+        success = False
+        status = "download_failed"
+        error_type: str | None = None
+        error_message: str | None = None
+        pending: Path | None = None
+        try:
+            self._ensure_transport()
+            if pattern is not None:
+                names = self._list_remote_files(remote_dir, protocol)
+                matches = sorted(name for name in names if re.search(pattern, name))
+                if not matches:
+                    raise _RemoteDownloadError("remote_file_not_found", "REMOTE_FILE_NOT_FOUND", f"no file in {remote_dir!r} matched {pattern!r}")
+                if len(matches) > 1:
+                    raise _RemoteDownloadError("ambiguous_remote_file", "AMBIGUOUS_REMOTE_FILE", f"multiple files in {remote_dir!r} matched {pattern!r}: {', '.join(matches)}")
+                selected_name = matches[0]
+            else:
+                selected_name = remote_file
+            assert selected_name is not None
+            remote_path = self._remote_file(remote_dir, selected_name)
+            remote_size = self._remote_size(remote_path, protocol)
+            local_path = (self.package_dir / selected_name).resolve()
+            local_path.relative_to(self.package_dir.resolve())
+            local_existed = local_path.exists()
+            if local_existed and not overwrite:
+                raise _RemoteDownloadError("local_file_exists", "LOCAL_FILE_EXISTS", f"local file already exists: {local_path}")
+            pending = local_path.with_name(local_path.name + ".part")
+            pending.unlink(missing_ok=True)
+            if protocol == "scp":
+                scp_client = self._get_scp()
+                try:
+                    scp_client.get(remote_path, local_path=str(pending))
+                finally:
+                    self._close_scp()
+            else:
+                sftp = self._get_sftp()
+                sftp.get(remote_path, str(pending))
+            local_size = pending.stat().st_size
+            if local_size != remote_size:
+                raise _RemoteDownloadError("size_verification_failed", "SIZE_VERIFICATION_FAILED", f"downloaded size mismatch: remote={remote_size}, local={local_size}")
+            local_md5 = self._local_md5(pending)
+            pending.replace(local_path)
+            success, status = True, "success"
+        except _RemoteDownloadError as exc:
+            status, error_type, error_message = exc.status, exc.error_type, str(exc)
+        except FileNotFoundError as exc:
+            status, error_type, error_message = "remote_file_not_found", "REMOTE_FILE_NOT_FOUND", str(exc)
+        except paramiko.AuthenticationException as exc:
+            status, error_type, error_message = "auth_failed", "AUTHENTICATION_FAILED", str(exc) or "SSH authentication failed"
+            self._invalidate_connection()
+        except (socket.timeout, TimeoutError) as exc:
+            status, error_type, error_message = "connection_timeout", "CONNECTION_TIMEOUT", str(exc) or "SSH operation timed out"
+            self._invalidate_connection()
+        except Exception as exc:
+            status, error_type, error_message = "download_failed", type(exc).__name__, str(exc) or repr(exc)
+        finally:
+            if pending is not None and pending.exists():
+                pending.unlink(missing_ok=True)
+        finished = datetime.now().astimezone()
+        result = RemoteDownloadResult(
+            run_id=self.run_id, operation_id=operation_id, protocol=protocol,
+            target_name=self.name, remote_dir=remote_dir, requested_file=remote_file,
+            pattern=pattern, success=success, status=status, overwrite=overwrite,
+            started_at=started, finished_at=finished,
+            duration_ms=max(0, int((finished-started).total_seconds()*1000)),
+            remote_file=remote_path, remote_size=remote_size,
+            local_file=str(local_path) if local_path else None, local_size=local_size,
+            local_existed=local_existed, local_md5=local_md5,
+            size_verified=success, error_type=error_type, error_message=error_message,
+        )
+        self.recorder.record_result(f"{protocol.upper()} DOWNLOAD", result)
+        return result
+
     def close(self) -> None:
         if self._closed:
             return
@@ -467,11 +692,19 @@ class SSHHost:
 
             self._ensure_transport()
             connected = True
-            sftp = self._get_sftp()
-            self._mkdir_recursive(sftp, remote_dir)
-            remote_existed = self._remote_exists(sftp, remote_file)
+            if protocol == "scp":
+                self._mkdir_via_ssh(remote_dir)
+                remote_existed = self._remote_exists_via_ssh(remote_file)
+            else:
+                sftp = self._get_sftp()
+                self._mkdir_recursive(sftp, remote_dir)
+                remote_existed = self._remote_exists(sftp, remote_file)
             if remote_existed:
-                remote_md5_before = self._remote_md5(sftp, remote_file)
+                remote_md5_before = (
+                    self._remote_md5_via_ssh(remote_file)
+                    if protocol == "scp"
+                    else self._remote_md5(sftp, remote_file)
+                )
                 if not overwrite:
                     status = "remote_file_exists"
                     error_type = "REMOTE_FILE_EXISTS"
@@ -500,11 +733,15 @@ class SSHHost:
 
             if protocol == "scp":
                 scp_client = self._get_scp()
-                scp_client.put(str(resolved_path), remote_path=remote_file)
+                try:
+                    scp_client.put(str(resolved_path), remote_path=remote_dir)
+                finally:
+                    self._close_scp()
+                remote_md5_after = self._remote_md5_via_ssh(remote_file)
             else:
                 sftp.put(str(resolved_path), remote_file)
+                remote_md5_after = self._remote_md5(sftp, remote_file)
 
-            remote_md5_after = self._remote_md5(sftp, remote_file)
             md5_changed = remote_md5_before != remote_md5_after
             md5_verified = remote_md5_after == local_md5
             if md5_verified:
@@ -712,13 +949,104 @@ class SSHHost:
             self._scp = self._scp_factory(transport)
         return self._scp
 
+    def _exec_remote_checked(self, command: str) -> str:
+        """Run a short SSH command without opening or depending on SFTP."""
+        self._ensure_transport()
+        assert self._client is not None
+        stdin = stdout = stderr = None
+        try:
+            stdin, stdout, stderr = self._client.exec_command(
+                command,
+                timeout=self.info.connect_timeout,
+            )
+            stdout_data = stdout.read()
+            stderr_data = stderr.read()
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                detail = self._decode_remote_output(stderr_data).strip()
+                raise paramiko.SSHException(
+                    f"remote command failed with code {exit_code}"
+                    + (f": {detail}" if detail else "")
+                )
+            return self._decode_remote_output(stdout_data)
+        finally:
+            for stream in (stdin, stdout, stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+
+    @staticmethod
+    def _decode_remote_output(data: Any) -> str:
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+
+    @staticmethod
+    def _quoted_remote_path(remote_path: str) -> str:
+        # Avoid treating a relative path beginning with '-' as a command option.
+        safe_path = f"./{remote_path}" if remote_path.startswith("-") else remote_path
+        return shlex.quote(safe_path)
+
+    def _mkdir_via_ssh(self, remote_dir: str) -> None:
+        if remote_dir in ("", ".", "/"):
+            return
+        self._exec_remote_checked(
+            f"mkdir -p {self._quoted_remote_path(remote_dir)}"
+        )
+
+    def _remote_exists_via_ssh(self, remote_path: str) -> bool:
+        output = self._exec_remote_checked(
+            "if [ -e {path} ]; then printf 1; else printf 0; fi".format(
+                path=self._quoted_remote_path(remote_path)
+            )
+        )
+        value = output.strip()
+        if value not in {"0", "1"}:
+            raise paramiko.SSHException(
+                f"unexpected remote file existence response: {value!r}"
+            )
+        return value == "1"
+
+    def _remote_md5_via_ssh(self, remote_path: str) -> str:
+        output = self._exec_remote_checked(
+            f"md5sum {self._quoted_remote_path(remote_path)}"
+        )
+        digest = output.strip().split(maxsplit=1)[0] if output.strip() else ""
+        if len(digest) != 32 or any(
+            char not in "0123456789abcdefABCDEF" for char in digest
+        ):
+            raise paramiko.SSHException(
+                f"unexpected md5sum response for {remote_path}: {output.strip()!r}"
+            )
+        return digest.lower()
+
     def _invalidate_connection(self) -> None:
         self._discard_connection()
 
-    def _discard_connection(self) -> None:
-        resources = (self._scp, self._sftp, self._client, self._transport)
+    def _close_scp(self) -> None:
+        resource = self._scp
         self._scp = None
+        if resource is not None:
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def _close_sftp(self) -> None:
+        resource = self._sftp
         self._sftp = None
+        if resource is not None:
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+    def _discard_connection(self) -> None:
+        self._close_scp()
+        self._close_sftp()
+        resources = (self._client, self._transport)
         self._client = None
         self._transport = None
         for resource in resources:
@@ -742,6 +1070,34 @@ class SSHHost:
         if remote_dir == ".":
             return filename
         return posixpath.join(remote_dir, filename)
+
+    @staticmethod
+    def _remote_basename(value: str) -> str:
+        value = _text(value, "remote_file")
+        if value != posixpath.basename(value) or value in {".", ".."}:
+            raise ValueError("remote_file must be a filename; pass its directory via remote_dir")
+        return value
+
+    def _list_remote_files(self, remote_dir: str, protocol: str) -> list[str]:
+        if protocol == "sftp":
+            entries = self._get_sftp().listdir_attr(remote_dir)
+            return [item.filename for item in entries if stat.S_ISREG(getattr(item, "st_mode", 0))]
+        command = f"find {shlex.quote(remote_dir)} -maxdepth 1 -type f -printf '%f\\n'"
+        result = self.execute(command, timeout=self.info.connect_timeout)
+        if not result.success:
+            raise _RemoteDownloadError("remote_list_failed", "REMOTE_LIST_FAILED", result.error_message or result.output or "failed to list remote directory")
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def _remote_size(self, remote_path: str, protocol: str) -> int:
+        if protocol == "sftp":
+            return int(self._get_sftp().stat(remote_path).st_size)
+        result = self.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=self.info.connect_timeout)
+        if not result.success:
+            raise _RemoteDownloadError("remote_file_not_found", "REMOTE_FILE_NOT_FOUND", result.error_message or result.output or f"cannot read remote file: {remote_path}")
+        try:
+            return int(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError) as exc:
+            raise _RemoteDownloadError("remote_size_failed", "REMOTE_SIZE_FAILED", f"cannot parse remote file size: {result.stdout!r}") from exc
 
     @classmethod
     def _mkdir_recursive(cls, sftp: Any, remote_dir: str) -> None:

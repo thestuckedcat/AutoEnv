@@ -37,9 +37,14 @@ class FakeClock:
 
 
 class FakeSocket:
-    def __init__(self, *recv_events: bytes | BaseException) -> None:
+    def __init__(
+        self,
+        *recv_events: bytes | BaseException,
+        send_error_at: int | None = None,
+    ) -> None:
         self.recv_events = deque(recv_events)
         self.sent: list[bytes] = []
+        self.send_error_at = send_error_at
         self.timeouts: list[float | None] = []
         self.close_calls = 0
 
@@ -53,6 +58,8 @@ class FakeSocket:
     def sendall(self, data: bytes) -> None:
         if self.closed:
             raise OSError("socket is closed")
+        if self.send_error_at == len(self.sent) + 1:
+            raise OSError("scripted send failure")
         self.sent.append(data)
 
     def recv(self, size: int) -> bytes:
@@ -406,6 +413,132 @@ def test_posix_reports_zero_and_nonzero_exit_codes(
         assert result.error_message is None
     assert RESULT_MARKER.encode() in sock.sent[-1]
     assert recorder.streamed
+
+
+def test_execute_on_output_matches_across_chunks_and_sends_ctrl_b() -> None:
+    sock = FakeSocket(
+        initial_prompt(),
+        b"reboot\r\nPress Ctrl",
+        b"+B to enter menu",
+    )
+    client, recorder, _ = make_client(
+        FakeSocketFactory(sock), shell_mode="prompt_only"
+    )
+
+    result = client.execute_on_output(
+        "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
+        timeout=1,
+    )
+
+    assert result.status is CommandStatus.SUCCESS
+    assert result.phase is CommandPhase.COMPLETE
+    assert result.stdout == "Press Ctrl+B to enter menu"
+    assert sock.sent == [b"\r\n", b"reboot\r\n", b"\x02"]
+    assert sock.closed
+    assert not client.connected
+    assert recorder.streamed
+    assert recorder.recorded == [("TELNET EXECUTE", result)]
+
+
+def test_execute_on_output_reconnects_before_the_next_telnet_command() -> None:
+    first = FakeSocket(
+        initial_prompt(),
+        b"reboot\r\nPress Ctrl+B",
+    )
+    second = FakeSocket(
+        initial_prompt("boot>"),
+        b"help\r\ncommands\r\nboot> ",
+    )
+    factory = FakeSocketFactory(first, second)
+    client, _, _ = make_client(factory, shell_mode="prompt_only")
+
+    triggered = client.execute_on_output(
+        "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
+    )
+    follow_up = client.execute("help")
+
+    assert triggered.success
+    assert follow_up.status is CommandStatus.RESULT_UNKNOWN
+    assert follow_up.stdout == "commands"
+    assert len(factory.calls) == 2
+    assert first.closed
+    assert client.connected
+
+
+def test_execute_on_output_timeout_keeps_partial_output() -> None:
+    clock = FakeClock()
+    sock = FakeSocket(
+        initial_prompt(),
+        b"reboot\r\nbooting without requested marker",
+    )
+    client, _, _ = make_client(
+        FakeSocketFactory(sock), shell_mode="prompt_only", clock=clock
+    )
+
+    result = client.execute_on_output(
+        "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
+        timeout=0.025,
+    )
+
+    assert result.status is CommandStatus.TIMEOUT
+    assert result.phase is CommandPhase.WAIT_OUTPUT
+    assert result.error_type == "KEYWORD_NOT_FOUND"
+    assert result.stdout == "booting without requested marker"
+    assert result.duration_ms == 25
+    assert sock.sent == [b"\r\n", b"reboot\r\n"]
+    assert sock.closed
+
+
+def test_execute_on_output_reports_response_send_failure() -> None:
+    sock = FakeSocket(
+        initial_prompt(),
+        b"reboot\r\nPress Ctrl+B",
+        send_error_at=3,
+    )
+    client, _, _ = make_client(
+        FakeSocketFactory(sock), shell_mode="prompt_only"
+    )
+
+    result = client.execute_on_output(
+        "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
+    )
+
+    assert result.status is CommandStatus.PROTOCOL_ERROR
+    assert result.phase is CommandPhase.SEND_COMMAND
+    assert result.error_type == "RESPONSE_SEND_FAILED"
+    assert "scripted send failure" in (result.error_message or "")
+    assert sock.closed
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    [
+        ({"keyword": 1, "send_data": b"x"}, TypeError),
+        ({"keyword": "", "send_data": b"x"}, ValueError),
+        ({"keyword": "ready", "send_data": "x"}, TypeError),
+        ({"keyword": "ready", "send_data": b""}, ValueError),
+        ({"keyword": "ready", "send_data": b"x", "timeout": 0}, ValueError),
+    ],
+)
+def test_execute_on_output_validates_trigger_inputs(
+    kwargs: dict[str, Any],
+    error: type[Exception],
+) -> None:
+    factory = FakeSocketFactory()
+    client, _, _ = make_client(factory, shell_mode="prompt_only")
+
+    with pytest.raises(error):
+        client.execute_on_output("command", **kwargs)  # type: ignore[arg-type]
+
+    assert factory.calls == []
 
 
 def test_timeout_preserves_partial_output_and_drops_the_connection() -> None:

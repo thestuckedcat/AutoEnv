@@ -4,7 +4,7 @@
 
 如果只想先完成安装、最小脚本和快速测试，请先看 [`QUICK_START.md`](QUICK_START.md)。
 
-> 本文描述 `UNIFY_ENV` 新接口。旧版 `ENV/EnvironmentSpec` 接口不再使用。
+> 本文描述 `UNIFY_ENV_WITH_BLOCK` 当前接口；第 1–21 节源于 `UNIFY_ENV` 重构基线，第 22 节起为后续扩展。旧版 `ENV/EnvironmentSpec` 接口不再使用。
 
 ## 1. 最快上手
 
@@ -319,6 +319,14 @@ if not result.success:
 本次输入 > 上次运行值 > config.link > config.base_link/newest 候选解析
 ```
 
+只要该 package 在 `config.json` 中定义了 `base_link`，确认提示就始终包含：
+
+```text
+!newest: <base_link> (automatic newest)
+```
+
+输入 `!newest` 会忽略显示的上次手工目录，保存 `path_mode=base_link_newest`、`path_override=null`，并立即从 `base_link` 重新解析 newest 候选；该快捷方式不受同时存在的 `config.link` 影响。直接回车仍沿用显示的默认值，输入其他内容仍表示本次手工目录覆盖。
+
 `rerun` 不询问，复用上次路径选择。如果是 `base_link` 模式，仍会按 WebHDFS 修改时间重新选择最新子目录及其中名称含 `newest` 的候选目录，再选择最新匹配包；不会绑定上次下载的具体文件。
 
 ### 6.2 下载不会解包
@@ -424,6 +432,8 @@ SCP 和 SFTP 规则一致：
 - 自动记录本地、覆盖前远端和上传后远端 MD5。
 - 上传后校验远端 MD5 与本地一致。
 
+`scp_upload()` 不依赖 SFTP：远端目录创建、覆盖状态和 MD5 检查使用普通 SSH 命令通道，文件传输只使用 SCP。因而可以用于支持 SSH/SCP、但未启用 SFTP subsystem 的精简设备。`sftp_upload()` 才会打开 SFTP 会话。
+
 ### 10.1 禁止覆盖
 
 ```python
@@ -487,7 +497,7 @@ host.execute("./install.sh")
 host.execute("cd /root/autoEnv && ./install.sh")
 ```
 
-远端 stdout/stderr 会实时显示并写入日志。
+远端 stdout/stderr 会在命令运行期间实时显示并累计，清理后的完整正文保存在 `result.output`。结束摘要只显示状态元数据，不重复打印正文；长短命令使用相同契约。
 
 ## 12. 执行 Telnet 命令
 
@@ -506,6 +516,75 @@ result = console.execute("./start_slave.sh")
 ```
 
 意外断连后下一条命令会重新连接；新会话不保证保留之前状态。
+
+### 12.1 按输出关键词发送数据
+
+SSH Host 和 Telnet 对象都提供阻塞式 `execute_on_output()`：它先发送初始命令，然后持续读取并实时显示输出。累计输出中第一次出现大小写敏感的 `keyword` 后，接口立即向同一通道原样发送 `send_data`；已收集内容同时保存在 `result.output`，结束摘要不重复打印。
+
+```python
+result = console.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+
+if not result.success:
+    return result
+```
+
+关键词可以被拆在多个网络包中，例如先收到 `Press Ctrl`、再收到 `+B`，仍然能够匹配。`send_data` 必须是非空 `bytes`，不会自动增加 `\r`、`\n` 或 `\r\n`：
+
+```python
+# 发送一个控制字符
+send_data=b"\x02"          # Ctrl+B
+
+# 发送一条需要回车确认的命令
+send_data=b"boot recovery\r\n"
+```
+
+返回规则：
+
+| 情况 | `status` | `phase` | `error_type` |
+|---|---|---|---|
+| 命中并成功发送 | `SUCCESS` | `COMPLETE` | `None` |
+| 超时仍未命中 | `TIMEOUT` | `WAIT_OUTPUT` | `KEYWORD_NOT_FOUND` |
+| 命中前断连 | `DISCONNECTED` | `WAIT_OUTPUT` | `CONNECTION_LOST` |
+| 命中但响应发送失败 | `PROTOCOL_ERROR` | `SEND_COMMAND` | `RESPONSE_SEND_FAILED` |
+| SSH 命令正常退出但从未命中 | `COMMAND_FAILED` | `COMPLETE` | `KEYWORD_NOT_FOUND` |
+
+`SUCCESS` 只证明关键词已经出现且响应字节已经交给连接通道，不证明设备一定进入了目标模式。接口不会自动重发初始命令或响应。完整的匹配前输出保留在 `stdout` 和 `raw_output` 中。
+
+发送响应后，SSH 本次独立命令 Channel 会关闭，但 SSH Transport 仍可复用。Telnet 响应通常会让设备从 Linux Shell 切换到 Bootloader，因此接口会断开当前 Telnet Socket，清除旧提示符和 Shell 模式；同一个 Telnet 对象下次调用时会自动重新连接。
+
+普通 SSH 在执行 `reboot` 后通常会断开，无法继续观察 BIOS、BootROM 或 Bootloader 输出。卡启动时点进入模式应使用串口，或者使用串口服务器映射出来的 Telnet 连接。SSH 上的该接口更适合安装器确认、交互式脚本输入等场景。
+
+#### 常用控制字符对照
+
+控制字符必须发送实际字节，不能发送它们的文字名称。Ctrl+A 到 Ctrl+Z 的 ASCII 值依次为 `0x01` 到 `0x1A`，可用 `bytes([ord(letter.upper()) & 0x1F])` 计算。
+
+| 按键/字符 | 十六进制 | Python `bytes` | 常见含义 |
+|---|---:|---|---|
+| Ctrl+A | `0x01` | `b"\x01"` | SOH，部分终端的行首 |
+| Ctrl+B | `0x02` | `b"\x02"` | STX，常用于进入 Bootloader 菜单 |
+| Ctrl+C | `0x03` | `b"\x03"` | ETX，通常中断前台程序 |
+| Ctrl+D | `0x04` | `b"\x04"` | EOT，终端中常表示输入结束 |
+| Ctrl+H / Backspace | `0x08` | `b"\x08"` 或 `b"\b"` | 退格；部分终端使用 DEL |
+| Ctrl+I / Tab | `0x09` | `b"\x09"` 或 `b"\t"` | 水平制表符 |
+| Ctrl+J / LF | `0x0A` | `b"\x0a"` 或 `b"\n"` | Unix 换行 |
+| Ctrl+L / FF | `0x0C` | `b"\x0c"` 或 `b"\f"` | 终端中常用于清屏 |
+| Ctrl+M / CR | `0x0D` | `b"\x0d"` 或 `b"\r"` | 回车 |
+| Ctrl+Q / XON | `0x11` | `b"\x11"` | 恢复软件流控 |
+| Ctrl+S / XOFF | `0x13` | `b"\x13"` | 暂停软件流控 |
+| Ctrl+Z | `0x1A` | `b"\x1a"` | POSIX 终端中常挂起前台程序 |
+| Esc | `0x1B` | `b"\x1b"` | 转义键/ANSI 序列起始符 |
+| Space | `0x20` | `b" "` | 空格，有些启动菜单要求按任意键 |
+| DEL | `0x7F` | `b"\x7f"` | 删除；部分终端把它作为 Backspace |
+| Enter（CR） | `0x0D` | `b"\r"` | 串口/终端常用回车 |
+| Enter（LF） | `0x0A` | `b"\n"` | Linux 管道或部分程序使用 |
+| Enter（CRLF） | `0x0D 0x0A` | `b"\r\n"` | Telnet 和部分串口命令行常用 |
+
+实际设备需要哪一种 Enter/Backspace 取决于串口程序、终端服务器和目标固件配置，应以人工终端抓包或设备说明为准。
 
 ## 13. 判断命令结果
 
@@ -779,11 +858,12 @@ chmod +x "S{A1}"
     elif not telnet_result.success:
         return telnet_result
 
-    # 示例：命令会主动导致连接断开。
-    reboot_result = console_1260.execute(
+    # 示例：监控串口启动输出，并在时点出现时发送 Ctrl+B。
+    reboot_result = console_1260.execute_on_output(
         "reboot",
+        keyword="Press Ctrl+B",
+        send_data=b"\x02",
         timeout=60,
-        expect_disconnect=True,
     )
     if not reboot_result.success:
         return reboot_result
@@ -817,6 +897,7 @@ chmod +x "S{A1}"
 - [ ] 每个运行期结果都检查 `success` 或明确检查 `status`。
 - [ ] `TIMEOUT`/`DISCONNECTED` 操作不会被危险地自动重发。
 - [ ] 主动断连命令使用 `expect_disconnect=True`。
+- [ ] 按输出响应使用同一次 `execute_on_output()`，关键词、原始字节、回车形式和超时均已确认。
 - [ ] 组合脚本直接调用已注册脚本，不传递 `ctx`。
 - [ ] 可选 `register_func()` 位于主流程末尾，名称唯一，接收一个 `ctx` 参数。
 - [ ] 子 func 复用主流程上下文和已注册对象，失败条件与返回结果明确。
@@ -878,3 +959,30 @@ AutoEnv 第一版面向可信实验室内网。注册和运行环境前请确认
 - SSH 密码会明文保存在本机 `params.json` 和 `state/last_runs/`。请限制仓库目录访问权限，不要提交 `logs/` 或 `state/`。
 - `.run` 提取会实际执行该文件，只能使用可信构建系统生成的 `.run` 包。
 - `TIMEOUT` 或 `DISCONNECTED` 表示命令可能已经执行，除非业务上确认安全，否则不要直接重发。
+## 22. SCP/SFTP 下载与结果复用
+
+当前分支新增以下公共能力，完整架构和限制见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)：
+
+```python
+downloaded = host.sftp_download(
+    "/var/log/device",
+    pattern=r"^device-.*\.zip$",
+)
+if not downloaded.success:
+    return downloaded
+
+# RemoteDownloadResult 本身就是合法本地文件选择器。
+result = host.scp_upload(downloaded, "/tmp/collect")
+```
+
+`scp_download()` 和 `sftp_download()` 的 `remote_file`/`pattern` 必须二选一。pattern 只搜索指定目录且必须唯一匹配，不采用 HDFS 的 newest 逻辑。下载文件落到本次 `packages/`，记录完整操作结果并可直接用于后续上传。
+
+## 23. 独立 FTP 上传
+
+独立 FTP 使用 `ctx.register_ftp_host(name, defaults=FTPDefaults(...))`，上传调用 `ftp.upload(selector, remote_dir)`。FTP 不复用 SSH；默认被动模式并以大小校验完成状态。
+
+## 24. Web 元数据与结构化入口
+
+注册脚本可以在装饰器声明 Web 元数据：`packages=("A1",)` 和 `parameters=({"name": "value", ...},)`。脚本通过 `ctx.argument("value")` 读取参数。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+
+Web 环境档案、LaunchRequest 完整字段和 Agent CLI 限制见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md) 与 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。

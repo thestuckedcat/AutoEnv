@@ -40,6 +40,8 @@ python main.py rerun example_host_environment
 
 `run` 会逐项确认参数；`rerun` 不重新确认参数。如果环境注册了启动后 func，两种模式都会在主流程成功后显示 func 菜单。以上命令可能下载包、连接设备、上传文件并执行远端命令，只能在确认目标地址和包来源后运行。
 
+确认 package 远端目录时，回车沿用默认值；若 `config.json` 中该项定义了 `base_link`，提示会一直显示 `!newest`。输入 `!newest` 可忽略上次手工路径，直接按 `base_link` 重新选择 automatic newest 包。
+
 ## 3. 快速创建一个环境脚本
 
 在 `scripts/` 下创建 `start_demo.py`。下面示例展示推荐顺序：集中声明、下载、上传、执行、注册启动后检查。
@@ -129,6 +131,19 @@ if not result.success:
 return host.execute("bash /root/autoEnv/S{install.sh}", timeout=600)
 ```
 
+需要卡启动时点输入控制字符时，把触发命令、关键词和响应放在同一次阻塞操作中：
+
+```python
+return console.execute_on_output(
+    "reboot",
+    keyword="Press Ctrl+B",
+    send_data=b"\x02",
+    timeout=90,
+)
+```
+
+`b"\x02"` 才是 Ctrl+B。接口不会给 `send_data` 自动加回车；普通命令应显式使用例如 `b"boot\r\n"`。常用控制字符完整对照见环境注册指南。
+
 关键规则：
 
 - `S{file_name}` 使用 `package()`、`extra_file()` 或 `match()` 中的字符串，不是 Python 变量名。
@@ -201,3 +216,10 @@ logs/<run_id>/
 - [`autoenv-script-generator` skill](../.agents/skills/autoenv-script-generator/SKILL.md)：让 agent 交互澄清并生成环境脚本的流程。
 - [Agent 仓库规则](../AGENTS.md)：修改后的关联文件审视和验证要求。
 - [项目 README](../README.md)：安装、入口、安全说明和功能概览。
+- [Web 快速入门](../webPage/QUICK_START.md)：环境档案、结构化启动、Tools 和 Agent CLI。
+- [Web 架构与接手说明](WEB_ARCHITECTURE_AND_HANDOFF.md)：接口边界、安全约束和扩展入口。
+- [通用底层软件 SDD 技能包](../sdd/README.md)：证据驱动的设计、规格、门禁和复盘流程。
+
+## 9. Web 控制台入口
+
+运行 `python -X utf8 startWeb.py` 可使用环境注册、非交互脚本启动、动态 Tools 和 Agent CLI。使用步骤见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)；实现与接手说明见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。
