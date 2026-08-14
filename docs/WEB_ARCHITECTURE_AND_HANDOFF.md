@@ -2,6 +2,8 @@
 
 本文面向下一位本地 Agent 或开发者。实现以当前代码和 UT 为准。
 
+需要逐步了解页面按钮、`adapt_interface.py` 和环境参数绑定时，见 [`web_usage.md`](web_usage.md)。
+
 > 当前入口是 `webPage/`；`frontend/` 仅保留为历史交互原型。Web 只在 Windows 本机开发场景验证，真实 SSH/SFTP/SCP/FTP/HDFS、设备串口和 Agent CLI 仍需在目标网络按明确授权验收。
 
 ## 1. 入口与数据流

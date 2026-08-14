@@ -8,6 +8,9 @@
 python -X utf8 startWeb.py
 ```
 
+Web 框架、按钮触发 Python 子进程和环境到脚本参数的完整说明见
+[`../docs/web_usage.md`](../docs/web_usage.md)。
+
 服务默认只监听 `127.0.0.1:8765`。依次使用四个页签：
 
 1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。每个 IP 必须从固定目录选择唯一资源标签（1260/1712/udie1 的网口或串口）。JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。

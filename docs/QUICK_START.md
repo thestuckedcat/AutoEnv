@@ -233,6 +233,7 @@ logs/<run_id>/
 - [Agent 仓库规则](../AGENTS.md)：修改后的关联文件审视和验证要求。
 - [项目 README](../README.md)：安装、入口、安全说明和功能概览。
 - [Web 快速入门](../webPage/QUICK_START.md)：环境档案、结构化启动、Tools 和 Agent CLI。
+- [Web 与 adapt interface 使用说明](web_usage.md)：Web 框架、按钮触发 Python 和环境参数绑定完整调用链。
 - [Web 架构与接手说明](WEB_ARCHITECTURE_AND_HANDOFF.md)：接口边界、安全约束和扩展入口。
 - [通用底层软件 SDD 技能包](../sdd/README.md)：证据驱动的设计、规格、门禁和复盘流程。
 

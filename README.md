@@ -161,6 +161,7 @@ logs/<run_id>/
 - [环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md)
 - [UT 目标与排查指南](tests/README.md)
 - [Web 快速入门](webPage/QUICK_START.md)
+- [Web 与 adapt interface 使用说明](docs/web_usage.md)
 - [Web 架构与接手说明](docs/WEB_ARCHITECTURE_AND_HANDOFF.md)
 - [文档一致性审计](docs/DOCUMENTATION_AUDIT.md)
 - [通用底层软件 SDD 技能包](sdd/README.md)
