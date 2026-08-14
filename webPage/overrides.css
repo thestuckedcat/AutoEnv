@@ -21,6 +21,48 @@
   letter-spacing: .12em;
 }
 
+.resource-card {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid #263746;
+  border-radius: 11px;
+  background: #090e13;
+}
+
+.resource-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.resource-card-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.resource-card-head span,
+.resource-card small {
+  color: var(--muted);
+  font: 700 9px var(--mono);
+}
+
+.resource-card p {
+  margin: 0;
+  color: #9fadb8;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.interaction-empty {
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .terminal-screen {
   margin: 0;
   white-space: pre;

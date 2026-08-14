@@ -15,8 +15,18 @@ from autoenv import (
 @register_script(
     name="example_host_environment",
     description="Example: download, extract, upload and run SSH commands",
-    packages=("A1",),
-    resources=({"name": "example_host", "label": "1260网口", "protocol": "ssh"},),
+    packages=({
+        "name": "A1",
+        "alias": "A1 主安装包",
+        "description": "从 HDFS 下载并上传到 1260 主机的安装包。",
+    },),
+    resources=({
+        "name": "example_host",
+        "alias": "1260 管理网口",
+        "description": "用于上传安装包、执行安装命令并检查 READY 状态。",
+        "label": "1260网口",
+        "protocol": "ssh",
+    },),
 )
 def example_host_environment(ctx):
     # Declare every file selector and connection object in one place. The ordered
@@ -137,7 +147,13 @@ chmod +x "S{A1}"
 @register_script(
     name="example_console_environment",
     description="Example: Telnet auto detection and a timed Ctrl+B response",
-    resources=({"name": "example_console", "label": "1260串口", "protocol": "telnet"},),
+    resources=({
+        "name": "example_console",
+        "alias": "1260 调试串口",
+        "description": "用于启动从环境并在启动提示出现时发送 Ctrl+B。",
+        "label": "1260串口",
+        "protocol": "telnet",
+    },),
 )
 def example_console_environment(ctx):
     console = ctx.register_telnet(
@@ -172,10 +188,26 @@ def example_console_environment(ctx):
 @register_script(
     name="example_combined_environment",
     description="Example: run two registered scripts serially and independently",
-    packages=("A1",),
+    packages=({
+        "name": "A1",
+        "alias": "A1 主安装包",
+        "description": "组合环境中 example_host_environment 使用的 HDFS 安装包。",
+    },),
     resources=(
-        {"name": "example_host", "label": "1260网口", "protocol": "ssh"},
-        {"name": "example_console", "label": "1260串口", "protocol": "telnet"},
+        {
+            "name": "example_host",
+            "alias": "1260 管理网口",
+            "description": "组合流程中负责文件上传、安装和状态检查的 SSH 网口。",
+            "label": "1260网口",
+            "protocol": "ssh",
+        },
+        {
+            "name": "example_console",
+            "alias": "1260 调试串口",
+            "description": "组合流程中负责从环境启动和 Ctrl+B 交互的串口。",
+            "label": "1260串口",
+            "protocol": "telnet",
+        },
     ),
 )
 def example_combined_environment(ctx):

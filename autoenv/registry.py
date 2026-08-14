@@ -36,6 +36,7 @@ class ScriptDefinition:
     body: ScriptBody
     entrypoint: Callable[[], ScriptResult]
     packages: tuple[str, ...] = ()
+    package_inputs: tuple[dict[str, str], ...] = ()
     parameters: tuple[dict[str, object], ...] = ()
     resources: tuple[dict[str, str], ...] = ()
 
@@ -67,14 +68,17 @@ def register_script(
     name: str,
     description: str = "",
     *,
-    packages: tuple[str, ...] | list[str] = (),
+    packages: tuple[str | dict[str, object], ...] | list[str | dict[str, object]] = (),
     parameters: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
     resources: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
 ) -> Callable[[ScriptBody], Callable[[], ScriptResult]]:
     normalized = _validate_script_name(name)
     if not isinstance(description, str):
         raise TypeError("script description must be a string")
-    normalized_packages = tuple(_validate_script_name(item) for item in packages)
+    normalized_package_inputs = tuple(_validate_package_input(item) for item in packages)
+    normalized_packages = tuple(item["name"] for item in normalized_package_inputs)
+    if len(set(normalized_packages)) != len(normalized_packages):
+        raise ValueError("script package names must be unique")
     normalized_parameters = tuple(_validate_parameter(item) for item in parameters)
     normalized_resources = tuple(_validate_resource(item) for item in resources)
     if len({item["name"] for item in normalized_resources}) != len(normalized_resources):
@@ -101,6 +105,7 @@ def register_script(
             body=body,
             entrypoint=entrypoint,
             packages=normalized_packages,
+            package_inputs=normalized_package_inputs,
             parameters=normalized_parameters,
             resources=normalized_resources,
         )
@@ -504,7 +509,37 @@ def _validate_resource(value: dict[str, object]) -> dict[str, str]:
     if protocol not in {"ssh", "telnet", "ftp"}:
         raise ValueError("script resource protocol must be ssh, telnet or ftp")
     label = validate_resource_label(value.get("label"), protocol=protocol)
-    return {"name": name, "label": label, "protocol": protocol}
+    alias = _validate_prompt_text(value.get("alias"), "script resource alias")
+    description = _validate_prompt_text(
+        value.get("description"), "script resource description"
+    )
+    return {
+        "name": name,
+        "alias": alias,
+        "description": description,
+        "label": label,
+        "protocol": protocol,
+    }
+
+
+def _validate_package_input(value: str | dict[str, object]) -> dict[str, str]:
+    if isinstance(value, str):
+        name = _validate_script_name(value)
+        return {"name": name, "alias": name, "description": ""}
+    if not isinstance(value, dict):
+        raise TypeError("script package metadata must be a string or dictionary")
+    name = _validate_script_name(value.get("name"))  # type: ignore[arg-type]
+    alias = _validate_prompt_text(value.get("alias"), "script package alias")
+    description = _validate_prompt_text(
+        value.get("description"), "script package description"
+    )
+    return {"name": name, "alias": alias, "description": description}
+
+
+def _validate_prompt_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-empty string")
+    return value.strip()
 
 
 def _duration_ms(started_at: datetime, finished_at: datetime) -> int:

@@ -119,19 +119,84 @@ def _declared_resources(
             )
             continue
         name = item.get("name")
+        alias = item.get("alias")
+        description = item.get("description")
         label = item.get("label")
         protocol = item.get("protocol")
-        if not all(isinstance(value, str) and value for value in (name, label, protocol)):
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (name, alias, description, label, protocol)
+        ):
             violations.append(
-                Violation(path, decorator.lineno, "script resource requires name, label and protocol")
+                Violation(
+                    path,
+                    decorator.lineno,
+                    "script resource requires non-empty name, alias, description, label and protocol",
+                )
             )
             continue
         if name in declared:
             violations.append(
                 Violation(path, decorator.lineno, f"script resource name {name!r} is duplicated")
             )
-        declared[name] = {"name": name, "label": label, "protocol": protocol}
+        declared[name] = {
+            "name": name,
+            "alias": alias,
+            "description": description,
+            "label": label,
+            "protocol": protocol,
+        }
     return declared, violations
+
+
+def _package_metadata_violations(
+    path: Path, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> list[Violation]:
+    decorator = next(
+        item
+        for item in function.decorator_list
+        if _call_name(item.func if isinstance(item, ast.Call) else item) == "register_script"
+    )
+    if not isinstance(decorator, ast.Call):
+        return []
+    packages_node = next(
+        (keyword.value for keyword in decorator.keywords if keyword.arg == "packages"),
+        None,
+    )
+    if packages_node is None:
+        return []
+    try:
+        packages = ast.literal_eval(packages_node)
+    except (ValueError, TypeError, SyntaxError):
+        return [
+            Violation(path, decorator.lineno, "register_script packages must be literal metadata")
+        ]
+    if not isinstance(packages, (tuple, list)):
+        return [
+            Violation(path, decorator.lineno, "register_script packages must be a tuple or list")
+        ]
+    violations: list[Violation] = []
+    names: set[str] = set()
+    for item in packages:
+        if not isinstance(item, dict) or not all(
+            isinstance(item.get(key), str) and item[key].strip()
+            for key in ("name", "alias", "description")
+        ):
+            violations.append(
+                Violation(
+                    path,
+                    decorator.lineno,
+                    "each Web-facing package requires non-empty name, alias and description",
+                )
+            )
+            continue
+        name = item["name"]
+        if name in names:
+            violations.append(
+                Violation(path, decorator.lineno, f"script package name {name!r} is duplicated")
+            )
+        names.add(name)
+    return violations
 
 
 def _function_violations(
@@ -147,6 +212,7 @@ def _function_violations(
     registered_func_names: set[str] = set()
     declared_resources, resource_violations = _declared_resources(path, function)
     violations.extend(resource_violations)
+    violations.extend(_package_metadata_violations(path, function))
 
     func_indexes = [
         index

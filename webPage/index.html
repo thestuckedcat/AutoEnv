@@ -34,7 +34,7 @@
     </section>
 
     <section class="page" id="page-launch">
-      <div class="page-head"><div><span class="kicker">02 / ORCHESTRATE</span><h1>一次选择，完整拉起</h1><p>包链接留空时沿用已有 HDFS 最新包逻辑；填写时使用指定链接。</p></div><div class="actions"><button class="ghost" id="openLog">打开 run.log</button><button class="ghost" id="openRun">打开 runtime</button></div></div>
+      <div class="page-head"><div><span class="kicker">02 / ORCHESTRATE</span><h1>由脚本声明启动所需资源</h1><p>选择脚本后，按资源别名和说明绑定已注册环境中的网口/串口，并填写脚本需要的 HDFS 包链接。</p></div><div class="actions"><button class="ghost" id="openLog">打开 run.log</button><button class="ghost" id="openRun">打开 runtime</button></div></div>
       <div class="launch-grid"><form class="panel launch-form" id="launchForm"><label>脚本<select id="launchScript" required></select></label><label>模式<select id="launchMode"><option value="run">RUN</option><option value="rerun">RERUN</option></select></label><div id="resourceFields"></div><div id="packageFields"></div><div id="argumentFields"></div><div class="actions"><button type="button" class="danger" id="stopRun">终止</button><button class="primary" type="submit">▶ 拉起环境</button></div></form>
       <div class="panel console-panel"><div class="console-head"><span><i></i> LIVE TASK OUTPUT</span><input id="consoleFilter" placeholder="筛选输出"><button class="ghost small" id="clearConsole">清空</button></div><div class="console" id="console"></div></div></div>
     </section>

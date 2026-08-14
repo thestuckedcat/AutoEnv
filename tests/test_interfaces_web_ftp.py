@@ -130,6 +130,25 @@ def test_web_environment_validation_requires_unique_known_labels():
         })
 
 
+def test_script_api_describes_connection_and_hdfs_prompts():
+    from webPage.server import _describe_scripts
+
+    scripts = _describe_scripts()
+    example = next(item for item in scripts if item["name"] == "example_host_environment")
+    assert example["resources"] == [{
+        "name": "example_host",
+        "alias": "1260 管理网口",
+        "description": "用于上传安装包、执行安装命令并检查 READY 状态。",
+        "label": "1260网口",
+        "protocol": "ssh",
+    }]
+    assert example["package_inputs"] == [{
+        "name": "A1",
+        "alias": "A1 主安装包",
+        "description": "从 HDFS 下载并上传到 1260 主机的安装包。",
+    }]
+
+
 def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -27,7 +27,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 非交互模式缺少必填参数时立即失败，不回退到 `input()`。
 
-资源标签来自 `autoenv/resources.py` 的固定目录：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。脚本通过 `register_script(resources=...)` 声明所需交互点，连接注册调用必须带同一 `resource_label`；Web 对每个交互点独立选择环境，同时对 `packages` 中每个包独立收集 HDFS 链接。
+资源标签来自 `autoenv/resources.py` 的固定目录：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。脚本通过 `register_script(resources=...)` 声明连接交互点，每项都包含内部 `name`、页面 `alias`、提示 `description`、固定 `label` 和 `protocol`；连接注册调用必须带同一 `resource_label`。HDFS 输入通过 `packages=({"name": ..., "alias": ..., "description": ...},)` 声明。`/api/scripts` 返回 `resources` 和 `package_inputs`，Web 选择脚本后立即渲染这些输入：每个连接点独立选择包含匹配标签的环境/IP，每个 HDFS 包独立填写链接。
 
 环境页保存的 `baud_rate` 是网络串口的档案元数据；当前 Telnet 客户端连接 TCP 端口，不能直接修改串口服务器的物理波特率。若设备要求下发频率，应在对应环境脚本中用已确认的设备命令完成。
 

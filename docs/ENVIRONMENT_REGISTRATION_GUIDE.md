@@ -19,8 +19,18 @@ from autoenv import SSHDefaults, package, register_script
 @register_script(
     name="start_demo",
     description="下载并安装演示环境",
-    packages=("A1",),
-    resources=({"name": "demo_server", "label": "1260网口", "protocol": "ssh"},),
+    packages=({
+        "name": "A1",
+        "alias": "A1 主安装包",
+        "description": "从 HDFS 下载并上传到演示服务器的安装包。",
+    },),
+    resources=({
+        "name": "demo_server",
+        "alias": "演示服务器管理网口",
+        "description": "用于上传安装包并执行启动命令。",
+        "label": "1260网口",
+        "protocol": "ssh",
+    },),
 )
 def start_demo(ctx):
     demo_package = package("A1")
@@ -150,7 +160,13 @@ from autoenv import register_func, register_script
 @register_script(
     name="start_demo",
     description="启动演示环境",
-    resources=({"name": "demo", "label": "1260网口", "protocol": "ssh"},),
+    resources=({
+        "name": "demo",
+        "alias": "演示服务器管理网口",
+        "description": "用于执行环境启动和状态检查命令。",
+        "label": "1260网口",
+        "protocol": "ssh",
+    },),
 )
 def start_demo(ctx):
     host = ctx.register_ssh_host(
@@ -766,10 +782,26 @@ from autoenv import (
 @register_script(
     name="example_environment",
     description="AutoEnv 完整接口示例",
-    packages=("A1",),
+    packages=({
+        "name": "A1",
+        "alias": "A1 主安装包",
+        "description": "完整示例所需的 HDFS 安装包。",
+    },),
     resources=(
-        {"name": "example_host", "label": "1260网口", "protocol": "ssh"},
-        {"name": "example_console", "label": "1260串口", "protocol": "telnet"},
+        {
+            "name": "example_host",
+            "alias": "1260 管理网口",
+            "description": "用于上传文件并执行安装命令。",
+            "label": "1260网口",
+            "protocol": "ssh",
+        },
+        {
+            "name": "example_console",
+            "alias": "1260 调试串口",
+            "description": "用于观察启动输出并发送控制字节。",
+            "label": "1260串口",
+            "protocol": "telnet",
+        },
     ),
 )
 def example_environment(ctx):
@@ -1013,8 +1045,8 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 
 ## 24. Web 元数据与结构化入口
 
-注册脚本在装饰器声明三类 Web 元数据：HDFS 输入 `packages=("A1",)`、普通输入 `parameters=({"name": "value", ...},)`，以及资源交互点 `resources=({"name": "host_1260", "label": "1260网口", "protocol": "ssh"},)`。每个 `register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 必须传入对应的 `resource_label`。脚本通过 `ctx.argument("value")` 读取普通输入。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+注册脚本在装饰器声明三类 Web 元数据：HDFS 输入 `packages=({"name": "A1", "alias": "A1 主安装包", "description": "..."},)`、普通输入 `parameters=({"name": "value", ...},)`，以及资源交互点 `resources=({"name": "host_1260", "alias": "1260 管理网口", "description": "...", "label": "1260网口", "protocol": "ssh"},)`。`name` 是脚本内部绑定名，`alias` 和 `description` 用于启动页提示。每个 `register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 必须传入对应的 `resource_label`。脚本通过 `ctx.argument("value")` 读取普通输入。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
 
-静态资源标签固定为：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境档案中的每个 IP 必须绑定其中一个与协议类型相符的标签；同一环境不能重复占用标签。Web 启动时按脚本的每个资源交互点分别选择包含匹配标签的环境，因此一个脚本可绑定多个环境；包链接作为独立输入逐项填写。
+静态资源标签固定为：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境档案中的每个 IP 必须绑定其中一个与协议类型相符的标签；同一环境不能重复占用标签。Web 选择脚本后，按元数据逐项展示连接资源与 HDFS 包；连接资源分别选择包含匹配标签的环境/IP，因此一个脚本可绑定多个环境，包链接也按提示逐项填写。
 
 Web 环境档案、LaunchRequest 完整字段和 Agent CLI 限制见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md) 与 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。

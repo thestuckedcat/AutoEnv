@@ -165,7 +165,13 @@ match(r"^firmware-.*\.bin$")
 @register_script(
     name="start_udk",
     description="启动 UDK 环境",
-    resources=({"name": "udk", "label": "1260网口", "protocol": "ssh"},),
+    resources=({
+        "name": "udk",
+        "alias": "UDK 管理网口",
+        "description": "用于上传包并执行 UDK 启动命令。",
+        "label": "1260网口",
+        "protocol": "ssh",
+    },),
 )
 def start_udk(ctx):
     ...

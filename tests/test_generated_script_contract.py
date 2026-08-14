@@ -119,7 +119,7 @@ def test_contract_accepts_an_exact_regex_selector_with_braces(tmp_path) -> None:
         r'''
 from autoenv import SSHDefaults, match, register_script
 
-@register_script("regex", resources=({"name": "dut", "label": "1260网口", "protocol": "ssh"},))
+@register_script("regex", resources=({"name": "dut", "alias": "主机网口", "description": "上传并执行测试包", "label": "1260网口", "protocol": "ssh"},))
 def regex(ctx):
     archive = match(r"^api-\d{2}\.tgz$")
     host = ctx.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
@@ -146,6 +146,26 @@ def bad(ctx):
     messages = [item.message for item in violations]
     assert any("literal resource_label" in item for item in messages)
     assert any("register_script resources" in item for item in messages)
+
+
+def test_contract_requires_alias_and_description_for_web_inputs(tmp_path) -> None:
+    violations = _validate_source(
+        tmp_path,
+        '''
+from autoenv import SSHDefaults, register_script
+
+@register_script(
+    "bad_prompts",
+    packages=("A1",),
+    resources=({"name": "dut", "label": "1260网口", "protocol": "ssh"},),
+)
+def bad_prompts(ctx):
+    host = ctx.register_ssh_host("dut", resource_label="1260网口", defaults=SSHDefaults(host="192.0.2.1"))
+''',
+    )
+    messages = [item.message for item in violations]
+    assert any("alias, description" in item for item in messages)
+    assert any("package requires" in item for item in messages)
 
 
 def test_contract_rejects_module_level_and_non_final_registered_funcs(tmp_path) -> None:

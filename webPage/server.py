@@ -214,6 +214,22 @@ def _validate_environment(value: dict[str, object]) -> dict[str, object]:
     return normalized
 
 
+def _describe_scripts() -> list[dict[str, object]]:
+    from autoenv.registry import list_scripts
+
+    return [
+        {
+            "name": item.name,
+            "description": item.description,
+            "packages": list(item.packages),
+            "package_inputs": list(item.package_inputs),
+            "parameters": list(item.parameters),
+            "resources": list(item.resources),
+        }
+        for item in list_scripts(root_dir=ROOT_DIR)
+    ]
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
@@ -251,8 +267,7 @@ class Handler(SimpleHTTPRequestHandler):
                 from autoenv.resources import describe_resource_labels
                 self.json({"resource_labels": describe_resource_labels()})
             elif parsed.path == "/api/scripts":
-                from autoenv.registry import list_scripts
-                self.json({"scripts": [{"name": item.name, "description": item.description, "packages": list(item.packages), "parameters": list(item.parameters), "resources": list(item.resources)} for item in list_scripts(root_dir=ROOT_DIR)]})
+                self.json({"scripts": _describe_scripts()})
             elif parsed.path == "/api/tools":
                 from autoenv.web_tools import describe_tools
                 self.json({"tools": describe_tools(ROOT_DIR)})
