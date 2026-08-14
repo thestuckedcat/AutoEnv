@@ -55,7 +55,7 @@ python -X utf8 -m pytest -q
 | `test_package_extractor.py` | fake HDFS、临时压缩包、注入 `.run` runner | 下载路径、原子文件、提取安全和摘要 | `package_manager.py`、`extractor.py`、临时包内容 |
 | `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏 | `results.py`、`selectors.py`、`recorder.py` |
 | `test_cli.py` | monkeypatch 注册表和执行函数 | 菜单选择、命令模式和退出码 | `autoenv/cli.py` 的参数/输出映射 |
-| `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP、动态模块 | LaunchRequest 合并、多环境标签绑定、脚本连接/HDFS 提示元数据、下载结果复用、FTP、Web Tool 和导入边界 | `interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
+| `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP、动态模块 | LaunchRequest 合并、多环境标签绑定、脚本连接/HDFS/普通输入元数据、模板 Web 契约、下载结果复用、FTP、Web Tool 和导入边界 | `interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
 
 ## 4. `register_func` 每条 UT 的目的
 
@@ -109,7 +109,7 @@ SSH 和 Telnet 测试都把关键词拆成两个接收分片，证明接口按�
 Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 提示符不会带到 Bootloader 会话；对象本身没有永久关闭，后续操作仍可懒重连。SSH 只关闭本次 Channel，Transport 保持可复用。
 ## 8. Web、下载和 FTP 扩展 UT
 
-- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、多环境资源标签绑定、脚本连接/HDFS 别名说明与多包参数、环境保存校验、ConPTY 原始控制序列流、动态 Web Tool 发现执行和 ZIP 导入安全限制。
+- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、多环境资源标签绑定、脚本连接/HDFS/普通输入提示与模板元数据、环境保存校验、ConPTY 原始控制序列流、动态 Web Tool 发现执行和 ZIP 导入安全限制。
 - `tests/test_ssh_host.py` 新增 SFTP 精确/正则下载、唯一匹配和落盘校验。
 - `tests/test_package_extractor.py` 新增 ZIP 单文件提取与路径穿越拒绝。
 - Web HTTP API 另做本机冒烟测试；UT 使用假 PTY，不启动真实 SSH、Telnet、FTP、HDFS 或 Agent CLI。

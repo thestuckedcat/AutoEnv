@@ -149,6 +149,29 @@ def test_script_api_describes_connection_and_hdfs_prompts():
     }]
 
 
+def test_template_script_describes_all_web_input_types():
+    from webPage.server import _describe_scripts
+
+    scripts = _describe_scripts()
+    template = next(item for item in scripts if item["name"] == "template_host_and_transfer")
+    assert template["package_inputs"] == [{
+        "name": "A1",
+        "alias": "A1 主安装包",
+        "description": "示例主安装包；留空链接时使用 config.json 的 link/base_link。",
+    }]
+    assert template["parameters"] == [{
+        "name": "release_channel",
+        "type": "string",
+        "label": "发布通道",
+        "placeholder": "例如 debug 或 release",
+        "required": True,
+    }]
+    assert [(item["name"], item["label"], item["protocol"]) for item in template["resources"]] == [
+        ("template_ssh", "1260网口", "ssh"),
+        ("template_ftp", "1712网口", "ftp"),
+    ]
+
+
 def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

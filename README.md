@@ -57,6 +57,10 @@ autoenv rerun example_host_environment
 
 在 `scripts/` 下添加 Python 文件：
 
+需要查看 HDFS、选择器、提取、SSH/SCP/SFTP、FTP、Telnet、结果判断、后置
+`register_func`、组合脚本以及 Web 元数据的完整写法时，参考
+[`scripts/template.py`](scripts/template.py)；下面保留最小示例。
+
 ```python
 from autoenv import SSHDefaults, package, register_func, register_script
 
