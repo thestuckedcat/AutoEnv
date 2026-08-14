@@ -62,9 +62,11 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 ## 6. Agent CLI 与文件导入
 
-Agent 页签通过 `pywinpty` 在 Windows ConPTY 中启动设置里的 `codeagent` 或 `nga`，按原始终端块持续读取，并保留回车覆盖、清屏和常用 ANSI 光标移动语义。终端区域可直接接收方向键、翻页键、Home/End、Tab、Escape、Backspace 和 Ctrl 字母组合。页面使用仓库内轻量屏幕渲染器，不依赖 CDN；复杂颜色、鼠标模式和少见控制序列仍不等价于完整 xterm.js。
+Agent 页签通过 `pywinpty` 在 Windows ConPTY 中启动设置里的 `codeagent`、`nga` 或 `cmd.exe`，并把设置的“启动目录”作为 ConPTY `cwd`。终端按原始块持续读取，保留回车覆盖、清屏、窗口标题序列过滤和常用 ANSI 光标移动语义；启动尺寸按终端画布计算，页面尺寸变化时同步调整 ConPTY。终端画布自身持有输入焦点，不存在独立消息框；键盘输入按顺序写回 ConPTY，支持方向键、翻页键、Home/End、Insert/Delete、F1-F12、Tab、Escape、Backspace 和 Ctrl 字母组合。
 
-拖入图片、`.py` 或 `.zip` 时，文件以随机前缀保存到设置目录，绝对路径插入输入框，但不会自动导入或执行。Python/ZIP 应由 `.agents/skills/import-python-web-tool/SKILL.md` 静态审查并适配。
+在终端上粘贴或拖入图片、`.py`、`.zip` 时，文件以随机前缀保存到设置目录，带引号的绝对路径直接写到当前 CLI 光标处，但不自动发送回车。普通剪贴板文本也直接写入 ConPTY。文件不会自动导入或执行；Python/ZIP 应由 `.agents/skills/import-python-web-tool/SKILL.md` 静态审查并适配。
+
+页面仍使用仓库内轻量屏幕渲染器而非 xterm.js，因此数据通路和键盘交互等价于真实伪终端，但复杂颜色、鼠标模式、IME 和少见控制序列尚不能视为完整 Windows Terminal 复刻。
 
 ## 7. 安全边界
 
@@ -89,7 +91,7 @@ python -X utf8 -m pytest
 
 ## 9. 已知限制与后续优先级
 
-1. Agent CLI 已使用 ConPTY 和固定启动尺寸；页面尚未提供完整 xterm.js 颜色/鼠标/动态尺寸能力。
+1. Agent CLI 已使用 ConPTY 并同步页面尺寸；页面尚未提供完整 xterm.js 颜色、鼠标和 IME 能力。
 2. `download_and_parse_logs` 的日志块规则等待真实样例，当前只生成明确 TODO 文件。
 3. 错误码工具仅有动态 Tool 契约示例，尚无业务规则。
 4. 环境密码按已确认需求允许明文保存；若未来允许远程访问 Web，必须先增加鉴权、CSRF/来源限制、传输保护和密钥存储方案。

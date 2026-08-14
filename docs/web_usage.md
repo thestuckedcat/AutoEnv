@@ -488,7 +488,31 @@ python -X utf8 adapt_interface.py `
 python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name for item in list_scripts()])"
 ```
 
-## 10. 常用 API
+## 10. Agent 页签如何复用本地命令行
+
+Agent 页签不经过 `adapt_interface.py`。它使用一条独立链路：
+
+```text
+点击“启动终端”
+    → POST /api/agent/start（command、cwd、rows、cols）
+    → server.py 用 pywinpty 创建 Windows ConPTY
+    → GET /api/agent/events 读取终端原始输出块
+    → 终端画布渲染，并直接把键盘事件 POST 到 /api/agent/input
+```
+
+设置里的“启动目录”会作为 ConPTY 的 `cwd`，所以在 `F:\\workspace\\demo` 启动 `cmd.exe`，效果等价于先打开本地 cmd、执行 `cd /d F:\\workspace\\demo`，再开始输入。目录不存在时，保存设置或启动都会失败，不会静默退回项目根目录。
+
+终端区域本身是输入面，不再有单独 textarea：
+
+- 点击终端后，普通字符、控制键、方向键和功能键直接写入 ConPTY；
+- 粘贴普通文本时，文本原样写入当前 CLI；
+- 粘贴剪贴板图片或拖入本地文件时，浏览器先调用 `/api/upload` 保存文件，再把带双引号的绝对路径写入当前 CLI；
+- 插入文件路径后不会自动回车，用户仍可编辑命令并决定何时执行；
+- 设置 `Agent 命令` 为 `cmd.exe` 可得到普通 cmd，设置为 `codeagent` 或 `nga` 则直接从指定目录启动对应 Agent CLI。
+
+ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANSI 屏幕渲染器，不包含 xterm.js 的完整颜色、鼠标模式和 IME 能力。
+
+## 11. 常用 API
 
 | 方法 | 作用 |
 |---|---|
@@ -501,30 +525,39 @@ python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name f
 | `GET /api/run/events?cursor=N` | 增量读取运行输出 |
 | `POST /api/run/stop` | 终止当前环境任务 |
 | `POST /api/open` | 打开最近运行目录或日志 |
+| `GET/POST /api/settings` | 读取/保存 Agent 命令、启动目录和上传目录 |
+| `POST /api/agent/start` | 在指定工作目录创建 ConPTY |
+| `POST /api/agent/input` | 把键盘、文本或文件路径写入 ConPTY |
+| `GET /api/agent/events?cursor=N` | 增量读取终端原始输出块 |
+| `POST /api/upload` | 保存拖入或粘贴的文件并返回绝对路径 |
 
-## 11. 常见错误如何定位
+## 12. 常见错误如何定位
 
-### 11.1 下拉框显示“没有环境注册了该标签”
+### 12.1 下拉框显示“没有环境注册了该标签”
 
 检查脚本的协议/标签、环境对应分区和环境是否保存成功。
 
-### 11.2 `requires an environment binding`
+### 12.2 `requires an environment binding`
 
 脚本声明了资源，但请求的 `environments` 没有对应脚本逻辑名。
 
-### 11.3 `must contain exactly one ... resource`
+### 12.3 `must contain exactly one ... resource`
 
 所选环境在正确协议分区中没有匹配标签，或环境文件被手工改坏。Web 保存接口本身会拒绝同一环境重复标签。
 
-### 11.4 页面收到 `{"ok": true}`，但环境随后失败
+### 12.4 页面收到 `{"ok": true}`，但环境随后失败
 
 `ok` 只表示 Python 子进程成功创建。继续查看 LIVE TASK OUTPUT、`run.log` 和最终 `result.json`。
 
-### 11.5 脚本停在启动后的 func 菜单
+### 12.5 脚本停在启动后的 func 菜单
 
 `register_func` 是 CLI 交互菜单，当前环境启动页没有 func 选择控件。面向 Web 的主流程不应依赖该菜单完成；完整示例见 `scripts/template.py`。
 
-## 12. 安全和数据边界
+### 12.6 `agent startup directory does not exist`
+
+设置的 Agent 启动目录不存在或不是目录。改成已经存在的本地目录并保存；相对路径会按项目根目录解析。
+
+## 13. 安全和数据边界
 
 - 环境密码按当前项目约定明文保存在 `environments/*.json`；该目录默认被 Git 忽略；
 - 请求文件保存在 `webPage/.runtime/`，也默认被 Git 忽略；
@@ -533,7 +566,7 @@ python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name f
 - `POST /api/run/stop` 会终止当前 AutoEnv 子进程，可能使远端操作停在中间状态；
 - 离线测试只能验证参数和控制面契约，不能证明真实 SSH、Telnet、FTP 或 HDFS 环境可用。
 
-## 13. 相关文档与代码
+## 14. 相关文档与代码
 
 - 快速操作：[`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)
 - Web 架构边界：[`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)

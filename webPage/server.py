@@ -176,6 +176,29 @@ def _write_json(path: Path, value: object) -> None:
     os.replace(pending, path)
 
 
+def _load_settings() -> dict[str, object]:
+    defaults: dict[str, object] = {
+        "upload_dir": str(UPLOAD_DIR),
+        "agent_command": "codeagent",
+        "agent_cwd": str(ROOT_DIR),
+    }
+    stored = _json_file(SETTINGS_PATH, {})
+    if isinstance(stored, dict):
+        defaults.update(stored)
+    return defaults
+
+
+def _resolve_agent_cwd(value: object) -> Path:
+    raw = os.path.expandvars(str(value or ROOT_DIR).strip())
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    path = path.resolve()
+    if not path.is_dir():
+        raise ValueError(f"agent startup directory does not exist: {path}")
+    return path
+
+
 def _safe_name(value: object, label: str) -> str:
     name = str(value).strip()
     if not name or Path(name).name != name or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in name):
@@ -277,7 +300,7 @@ class Handler(SimpleHTTPRequestHandler):
                 with session.lock:
                     self.json({"events": session.events[cursor:], "next": len(session.events)})
             elif parsed.path == "/api/settings":
-                self.json(_json_file(SETTINGS_PATH, {"upload_dir": str(UPLOAD_DIR), "agent_command": "codeagent"}))
+                self.json(_load_settings())
             else:
                 if parsed.path == "/":
                     self.path = "/index.html"
@@ -321,11 +344,15 @@ class Handler(SimpleHTTPRequestHandler):
                 upload_dir = Path(str(data.get("upload_dir", UPLOAD_DIR))).expanduser().resolve()
                 command = str(data.get("agent_command", "codeagent")).strip()
                 if not command: raise ValueError("agent command must not be empty")
-                _write_json(SETTINGS_PATH, {"upload_dir": str(upload_dir), "agent_command": command})
+                agent_cwd = _resolve_agent_cwd(data.get("agent_cwd", ROOT_DIR))
+                _write_json(SETTINGS_PATH, {
+                    "upload_dir": str(upload_dir),
+                    "agent_command": command,
+                    "agent_cwd": str(agent_cwd),
+                })
                 self.json({"ok": True})
             elif self.path == "/api/upload":
-                settings = _json_file(SETTINGS_PATH, {"upload_dir": str(UPLOAD_DIR)})
-                assert isinstance(settings, dict)
+                settings = _load_settings()
                 folder = Path(str(settings.get("upload_dir", UPLOAD_DIR))).resolve()
                 folder.mkdir(parents=True, exist_ok=True)
                 name = Path(str(data.get("name", "upload.bin"))).name
@@ -336,8 +363,7 @@ class Handler(SimpleHTTPRequestHandler):
                 target.write_bytes(payload)
                 self.json({"path": str(target)})
             elif self.path == "/api/agent/start":
-                settings = _json_file(SETTINGS_PATH, {"agent_command": "codeagent"})
-                assert isinstance(settings, dict)
+                settings = _load_settings()
                 command = str(data.get("command") or settings.get("agent_command") or "codeagent")
                 executable = shutil.which(command)
                 if executable is None: raise FileNotFoundError(f"agent command not found: {command}")
@@ -345,7 +371,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if Path(executable).suffix.lower() in {".cmd", ".bat"}:
                     command_line = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", executable]
                 rows = int(data.get("rows", 30)); cols = int(data.get("cols", 100))
-                AGENT_SESSION.start(command_line, cwd=ROOT_DIR, rows=rows, cols=cols)
+                cwd = _resolve_agent_cwd(data.get("cwd") or settings.get("agent_cwd"))
+                AGENT_SESSION.start(command_line, cwd=cwd, rows=rows, cols=cols)
                 self.json({"ok": True})
             elif self.path == "/api/agent/input":
                 AGENT_SESSION.input(str(data.get("value", ""))); self.json({"ok": True})

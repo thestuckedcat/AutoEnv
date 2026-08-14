@@ -217,8 +217,31 @@ def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
         )
     assert terminal_data == "loading 1%\rloading 100%\x1b[2Jready"
     assert process.options["dimensions"] == (40, 120)
+    assert process.options["cwd"] == str(tmp_path)
     session.input("hello\r")
     assert process.writes == ["hello\r"]
+
+
+def test_agent_startup_directory_must_be_an_existing_directory(tmp_path: Path):
+    from webPage.server import _resolve_agent_cwd
+
+    assert _resolve_agent_cwd(tmp_path) == tmp_path.resolve()
+    with pytest.raises(ValueError, match="startup directory does not exist"):
+        _resolve_agent_cwd(tmp_path / "missing")
+
+
+def test_agent_page_types_and_drops_files_directly_in_terminal():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "webPage" / "index.html").read_text(encoding="utf-8")
+    javascript = (root / "webPage" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="agentInput"' not in html
+    assert 'id="agentInputForm"' not in html
+    assert 'id="agentConsole" tabindex="0" role="textbox"' in html
+    assert "terminal.onpaste" in javascript
+    assert 'terminal.addEventListener("drop"' in javascript
+    assert "sendAgentInput(value)" in javascript
+    assert 'cwd:$("agentCwd").value' in javascript
 
 
 def test_web_tool_discovery_and_execution():

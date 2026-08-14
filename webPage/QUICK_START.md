@@ -17,7 +17,7 @@ Web 框架、按钮触发 Python 子进程和环境到脚本参数的完整说�
 2. **环境启动**：先选脚本，页面按脚本声明的 `alias` 与 `description` 展开所有交互资源。SSH/Telnet/FTP 交互点分别选择一个包含匹配标签的环境/IP，因此一次启动可组合多个环境；每个 HDFS 包也有独立的说明和链接输入，留空使用 `config.json` 的 link/base_link 逻辑，填写则覆盖为指定 HDFS 路径。
    当前页面不提供启动后 `register_func` 菜单的输入控件；包含该菜单的脚本应从 CLI 运行，或确保输入流关闭后自动退出菜单。
 3. **Tools**：工具由 `webPage/tools/*.py` 动态发现。不要修改核心页面来增加工具。
-4. **Agent CLI**：通过 Windows ConPTY 启动 `codeagent` 或 `nga`，持续渲染页面刷新输出；拖入图片、`.py` 或 `.zip` 后把落盘绝对路径插入消息。
+4. **Agent CLI**：通过 Windows ConPTY 启动 `codeagent`、`nga` 或 `cmd.exe`。点击终端画布后直接输入，不再使用独立发送框；把图片、`.py` 或 `.zip` 粘贴/拖到终端会保存文件，并把带引号的绝对路径插到当前 CLI 输入（不自动回车）。设置中可指定启动目录，相当于先在该目录执行 `cd` 再启动命令。
 
 ## 非交互启动
 
@@ -45,4 +45,4 @@ python -X utf8 adapt_interface.py --script download_and_parse_logs --environment
 
 ## Agent 文件导入
 
-图片只转换为本地路径。Python 文件或 ZIP 不会自动执行；应让 Agent 使用 `.agents/skills/import-python-web-tool/SKILL.md` 检查、提取并注册为 Tool。项目 ZIP 必须拒绝路径穿越和符号链接，且不得覆盖已有工具。
+图片只转换为本地路径。图片既可以从资源管理器拖入终端，也可以复制位图后在已聚焦的终端内粘贴；普通文本粘贴会直接写入 ConPTY。Python 文件或 ZIP 不会自动执行；应让 Agent 使用 `.agents/skills/import-python-web-tool/SKILL.md` 检查、提取并注册为 Tool。项目 ZIP 必须拒绝路径穿越和符号链接，且不得覆盖已有工具。
