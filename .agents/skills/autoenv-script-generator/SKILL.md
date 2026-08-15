@@ -177,6 +177,8 @@ return start_second()
 - 在 `scripts/<name>.py` 新建脚本，或对用户指定文件做最小修改。
 - 仅从 `autoenv` 顶层导入当前需要的公共符号，保持导入最小化。
 - 使用 `@register_script(name=..., description=...)`，并保证注册名唯一。
+- 在 `package(name, alias=..., description=...)` 调用点声明 HDFS Web 元数据；`alias` 省略时使用 `name`，`description` 省略时为空。包名、alias 和 description 必须是字面量，注册器会在不执行脚本的情况下自动发现。
+- 在 `ctx.register_ssh_host()`、`ctx.register_telnet()` 或 `ctx.register_ftp_host()` 调用点声明连接 Web 元数据；必须使用字面量 `name` 和 `resource_label`，协议由函数自动确定，`alias`/`description` 的默认规则与 package 相同。
 - 在环境函数开头集中声明所有 `package()`、`extra_file()`、`match()` 文件选择器以及 SSH/Telnet 连接对象；变量名应体现环境或文件用途。
 - 后续下载、提取、上传和命令步骤只复用开头声明的变量，不要在各步骤中重复构造相同选择器。
 - 按输出响应使用 `target.execute_on_output(command, keyword=..., send_data=..., timeout=...)`；`send_data` 必须是明确的 bytes 字面量，控制字符和回车形式必须与用户确认结果一致。
@@ -239,8 +241,8 @@ python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name f
 - For SCP/SFTP remote downloads, declare the SSH host once and call `host.scp_download()` or `host.sftp_download()`. Pass exactly one of `remote_file` and `pattern`. A pattern searches only the named directory and must match exactly one file; never apply HDFS newest semantics.
 - Reuse a successful `RemoteDownloadResult` directly as the source of `scp_upload()`, `sftp_upload()`, or FTP `upload()` so the actual downloaded basename and operation log remain connected.
 - Register plain FTP independently with `ctx.register_ftp_host()` and `FTPDefaults`; FTP does not reuse SSH credentials unless the script deliberately gives the same defaults.
-- Declare every Web-facing HDFS input in `register_script(packages=...)` as a literal mapping with non-empty `name`, user-facing `alias`, and user-facing `description`. Declare script inputs with `parameters=(...)` and read them with `ctx.argument()`.
-- Declare every Web-facing connection in `register_script(resources=...)` with literal internal `name`, user-facing `alias`, user-facing `description`, fixed `label`, and `protocol`. Pass the identical `resource_label` to `register_ssh_host()`, `register_telnet()`, or `register_ftp_host()`. Read valid labels and their `network`/`serial` types from the repository's `autoenv/resource_labels.json`; network labels are for SSH/FTP and serial labels are for Telnet.
+- Declare every Web-facing HDFS input at its `package(name, alias=..., description=...)` call. The registry discovers it statically; omitted alias defaults to name and omitted description defaults to empty. Keep ordinary script inputs in `register_script(parameters=...)` and read them with `ctx.argument()`.
+- Declare every Web-facing connection at its `register_ssh_host()`, `register_telnet()`, or `register_ftp_host()` call with literal internal name and `resource_label`; protocol is inferred from the function. Optional alias/description use the same defaults as package. Read valid labels and their `network`/`serial` types from `autoenv/resource_labels.json`; network labels are for SSH/FTP and serial labels are for Telnet.
 - Keep recursive nested-ZIP expansion and business log-block parsing script-specific until a second confirmed use case justifies a public API.
 - Treat `register_func` as a post-start CLI menu. The current Web launch page does not provide func-menu input; keep a Web-targeted main flow independent of that menu and document CLI-only examples explicitly.
 - Validate generated scripts offline. Do not run SCP/SFTP downloads, FTP uploads, or registered scripts against real targets without explicit user authorization.

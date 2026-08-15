@@ -10,15 +10,15 @@
 
 Web 关联
 --------
-``register_script()`` 是脚本与“环境启动”页面的契约：
+脚本中的声明调用是与“环境启动”页面的契约：
 
 * ``description`` 显示在脚本下拉框中。
-* ``packages`` 的 ``alias``/``description`` 生成 HDFS 链接输入；``name`` 必须
-  对应 ``config.json``，也是 ``package(name)`` 的参数。
+* ``package(name, alias=..., description=...)`` 自动生成 HDFS 链接输入；``name``
+  必须对应 ``config.json``。留空时 Web 请求沿用配置的 ``link/base_link``。
 * ``parameters`` 生成普通输入框；脚本用 ``ctx.argument(name)`` 读取。
-* ``resources`` 为 SSH/Telnet/FTP 生成“环境 / 标签资源”下拉框。``name`` 是
-  脚本内部逻辑名，``alias``/``description`` 是页面提示，``label`` 决定只能选择
-  哪个已注册 IP。连接注册时必须复用相同的 ``name`` 和 ``resource_label``。
+* ``ctx.register_ssh_host/register_telnet/register_ftp_host`` 自动生成“环境 / 标签
+  资源”下拉框；协议由函数确定，``resource_label`` 决定可选资源。``alias`` 默认
+  使用 ``name``，``description`` 默认空字符串。
 * Web 会把以上输入转换成结构化 LaunchRequest；运行结果及日志持续显示在页面。
 * ``register_func`` 当前只提供 CLI 菜单，没有对应 Web 输入控件，因此专门放在
   ``template_post_start_functions`` 中，不应从 Web 启动该示例。
@@ -61,11 +61,6 @@ from autoenv import (
 @register_script(
     name="template_host_and_transfer",
     description="Template: HDFS, selectors, extraction, SSH/SCP/SFTP, FTP and results",
-    packages=({
-        "name": "A1",
-        "alias": "A1 主安装包",
-        "description": "示例主安装包；留空链接时使用 config.json 的 link/base_link。",
-    },),
     parameters=({
         "name": "release_channel",
         "type": "string",
@@ -73,26 +68,14 @@ from autoenv import (
         "placeholder": "例如 debug 或 release",
         "required": True,
     },),
-    resources=(
-        {
-            "name": "template_ssh",
-            "alias": "1260 管理网口",
-            "description": "用于远端下载、上传文件、执行命令和检查业务状态。",
-            "label": "1260网口",
-            "protocol": "ssh",
-        },
-        {
-            "name": "template_ftp",
-            "alias": "1712 FTP 网口",
-            "description": "用于演示独立普通 FTP 上传；不会复用 SSH 凭据。",
-            "label": "1712网口",
-            "protocol": "ftp",
-        },
-    ),
 )
 def template_host_and_transfer(ctx):
     # 声明区：所有选择器和连接必须只声明一次，并放在任何实际操作之前。
-    main_package = package("A1")
+    main_package = package(
+        "A1",
+        alias="A1 主安装包",
+        description="示例主安装包；留空链接时使用 config.json 的 link/base_link。",
+    )
     manual_archive = extra_file("manual_bundle.tar.gz")
     extracted_driver = extra_file("driver.bin")
     firmware_image = match(r"^firmware-[\w.-]+\.bin$")
@@ -100,6 +83,8 @@ def template_host_and_transfer(ctx):
     ssh_host = ctx.register_ssh_host(
         "template_ssh",
         resource_label="1260网口",
+        alias="1260 管理网口",
+        description="用于远端下载、上传文件、执行命令和检查业务状态。",
         defaults=SSHDefaults(
             host="192.0.2.10",
             port=22,
@@ -111,6 +96,8 @@ def template_host_and_transfer(ctx):
     ftp_host = ctx.register_ftp_host(
         "template_ftp",
         resource_label="1712网口",
+        alias="1712 FTP 网口",
+        description="用于演示独立普通 FTP 上传；不会复用 SSH 凭据。",
         defaults=FTPDefaults(
             host="192.0.2.20",
             port=21,
@@ -279,33 +266,21 @@ chmod +x "S{A1}"
 @register_script(
     name="template_console",
     description="Template: Telnet shell modes, command results and raw-byte interaction",
-    resources=(
-        {
-            "name": "template_console_ssh",
-            "alias": "1260 串口配套网口",
-            "description": "先上传串口命令文件，再供 Telnet 占位符解析使用。",
-            "label": "1260网口",
-            "protocol": "ssh",
-        },
-        {
-            "name": "template_console",
-            "alias": "1260 调试串口",
-            "description": "用于执行串口命令、判断未知结果并按启动提示发送 Ctrl+B。",
-            "label": "1260串口",
-            "protocol": "telnet",
-        },
-    ),
 )
 def template_console(ctx):
     console_script = extra_file("console_command.sh")
     upload_host = ctx.register_ssh_host(
         "template_console_ssh",
         resource_label="1260网口",
+        alias="1260 串口配套网口",
+        description="先上传串口命令文件，再供 Telnet 占位符解析使用。",
         defaults=SSHDefaults(host="192.0.2.10", username="root", password=""),
     )
     console = ctx.register_telnet(
         "template_console",
         resource_label="1260串口",
+        alias="1260 调试串口",
+        description="用于执行串口命令、判断未知结果并按启动提示发送 Ctrl+B。",
         defaults=TelnetDefaults(
             host="192.0.2.30",
             port=23,
@@ -348,18 +323,13 @@ def template_console(ctx):
 @register_script(
     name="template_post_start_functions",
     description="Template (CLI only): reusable register_func menu after startup",
-    resources=({
-        "name": "template_func_ssh",
-        "alias": "1260 状态检查网口",
-        "description": "供 CLI 启动后的固定检查和日志收集函数复用。",
-        "label": "1260网口",
-        "protocol": "ssh",
-    },),
 )
 def template_post_start_functions(ctx):
     ssh_host = ctx.register_ssh_host(
         "template_func_ssh",
         resource_label="1260网口",
+        alias="1260 状态检查网口",
+        description="供 CLI 启动后的固定检查和日志收集函数复用。",
         defaults=SSHDefaults(host="192.0.2.10", username="root", password=""),
     )
 
@@ -391,48 +361,6 @@ def template_post_start_functions(ctx):
 @register_script(
     name="template_combined",
     description="Template: run registered host and console scripts serially",
-    packages=({
-        "name": "A1",
-        "alias": "A1 主安装包",
-        "description": "template_host_and_transfer 子脚本使用的 HDFS 包。",
-    },),
-    parameters=({
-        "name": "release_channel",
-        "type": "string",
-        "label": "发布通道",
-        "placeholder": "例如 debug 或 release",
-        "required": True,
-    },),
-    resources=(
-        {
-            "name": "template_ssh",
-            "alias": "1260 管理网口",
-            "description": "主机子脚本使用的 SSH 资源。",
-            "label": "1260网口",
-            "protocol": "ssh",
-        },
-        {
-            "name": "template_ftp",
-            "alias": "1712 FTP 网口",
-            "description": "主机子脚本使用的独立 FTP 资源。",
-            "label": "1712网口",
-            "protocol": "ftp",
-        },
-        {
-            "name": "template_console",
-            "alias": "1260 调试串口",
-            "description": "串口子脚本使用的 Telnet 资源。",
-            "label": "1260串口",
-            "protocol": "telnet",
-        },
-        {
-            "name": "template_console_ssh",
-            "alias": "1260 串口配套网口",
-            "description": "串口子脚本上传命令文件时使用的 SSH 资源。",
-            "label": "1260网口",
-            "protocol": "ssh",
-        },
-    ),
 )
 def template_combined(_ctx):
     # 装饰后的函数返回独立 ScriptResult；每个子脚本有自己的 run_dir 与连接。

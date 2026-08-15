@@ -68,29 +68,23 @@ from autoenv import SSHDefaults, package, register_func, register_script
 @register_script(
     name="start_demo",
     description="启动演示环境",
-    packages=({
-        "name": "A1",
-        "alias": "A1 主安装包",
-        "description": "从 HDFS 下载并上传到演示服务器的安装包。",
-    },),
-    resources=({
-        "name": "server",
-        "alias": "演示服务器管理网口",
-        "description": "用于上传安装包并执行启动命令。",
-        "label": "1260网口",
-        "protocol": "ssh",
-    },),
 )
 def start_demo(ctx):
     # 文件选择器和连接对象集中声明，后续流程只复用这些变量。
-    demo_package = package("A1")
+    demo_package = package(
+        "A1",
+        alias="A1 主安装包",
+        description="从 HDFS 下载并上传到演示服务器的安装包。",
+    )
     host = ctx.register_ssh_host(
         "server",
         resource_label="1260网口",
+        alias="演示服务器管理网口",
+        description="用于上传安装包并执行启动命令。",
         defaults=SSHDefaults(
-            host="192.168.1.100",
+            host="192.0.2.10",
             username="root",
-            password="root",
+            password="",
         ),
     )
 

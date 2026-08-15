@@ -165,21 +165,20 @@ match(r"^firmware-.*\.bin$")
 @register_script(
     name="start_udk",
     description="启动 UDK 环境",
-    resources=({
-        "name": "udk",
-        "alias": "UDK 管理网口",
-        "description": "用于上传包并执行 UDK 启动命令。",
-        "label": "1260网口",
-        "protocol": "ssh",
-    },),
 )
 def start_udk(ctx):
-    ...
+    host = ctx.register_ssh_host(
+        "udk",
+        resource_label="1260网口",
+        alias="UDK 管理网口",
+        description="用于上传包并执行 UDK 启动命令。",
+    )
 ```
 
 装饰器负责：
 
 - 注册唯一名称和描述。
+- 静态提取 `package()` 与连接注册调用的 Web 元数据，不执行脚本函数。
 - 保留函数的直接可调用能力。
 - 每次调用创建独立 `RunContext`。
 - 创建运行目录、日志、参数和结果文件。
@@ -346,7 +345,7 @@ logs/
   "script_name": "start_udk",
   "ssh_hosts": {
     "udk_host": {
-      "host": "192.168.1.100",
+      "host": "192.0.2.10",
       "port": 22,
       "username": "root",
       "password": "root"
@@ -354,7 +353,7 @@ logs/
   },
   "telnet_connections": {
     "udk_console": {
-      "host": "192.168.1.200",
+      "host": "192.0.2.20",
       "port": 23,
       "timeout": 30.0,
       "shell_mode": "auto"
@@ -417,10 +416,10 @@ host = ctx.register_ssh_host(
     "main_server",
     resource_label="1260网口",
     defaults=SSHDefaults(
-        host="192.168.1.100",
+        host="192.0.2.10",
         port=22,
         username="root",
-        password="root",
+        password="",
         connect_timeout=30.0,
     ),
 )
@@ -439,7 +438,7 @@ console = ctx.register_telnet(
     "board_console",
     resource_label="1260串口",
     defaults=TelnetDefaults(
-        host="192.168.1.200",
+        host="192.0.2.20",
         port=23,
         timeout=30.0,
         shell_mode="auto",

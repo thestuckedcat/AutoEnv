@@ -52,8 +52,18 @@ def _required_text(value: str, label: str) -> str:
     return normalized
 
 
-def package(name: str) -> PackageSelector:
-    return PackageSelector(_required_text(name, "package name"))
+def package(
+    name: str,
+    *,
+    alias: str | None = None,
+    description: str = "",
+) -> PackageSelector:
+    normalized_name = _required_text(name, "package name")
+    if alias is not None and not isinstance(alias, str):
+        raise TypeError("package alias must be a string")
+    if not isinstance(description, str):
+        raise TypeError("package description must be a string")
+    return PackageSelector(normalized_name)
 
 
 def extra_file(filename: str) -> ExtraFileSelector:

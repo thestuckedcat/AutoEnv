@@ -232,6 +232,16 @@ def test_template_script_describes_all_web_input_types():
         ("template_ftp", "1712网口", "ftp"),
     ]
 
+    combined = next(item for item in scripts if item["name"] == "template_combined")
+    assert combined["package_inputs"] == template["package_inputs"]
+    assert combined["parameters"] == template["parameters"]
+    assert [item["name"] for item in combined["resources"]] == [
+        "template_ssh",
+        "template_ftp",
+        "template_console_ssh",
+        "template_console",
+    ]
+
 
 def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

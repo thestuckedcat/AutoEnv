@@ -15,11 +15,6 @@ SELECTOR_FACTORIES = {"package", "extra_file", "match"}
 UPLOAD_METHODS = {"scp_upload", "sftp_upload"}
 PLACEHOLDER = re.compile(r"S\{([^{}]+)\}")
 CONNECTION_METHODS = {"register_ssh_host", "register_telnet", "register_ftp_host"}
-RESOURCE_PROTOCOLS = {
-    "register_ssh_host": "ssh",
-    "register_telnet": "telnet",
-    "register_ftp_host": "ftp",
-}
 
 
 @dataclass(frozen=True)
@@ -82,123 +77,6 @@ def _registered_func(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
-def _declared_resources(
-    path: Path, function: ast.FunctionDef | ast.AsyncFunctionDef
-) -> tuple[dict[str, dict[str, str]], list[Violation]]:
-    violations: list[Violation] = []
-    decorator = next(
-        item
-        for item in function.decorator_list
-        if _call_name(item.func if isinstance(item, ast.Call) else item) == "register_script"
-    )
-    if not isinstance(decorator, ast.Call):
-        return {}, violations
-    resources_node = next(
-        (keyword.value for keyword in decorator.keywords if keyword.arg == "resources"),
-        None,
-    )
-    if resources_node is None:
-        return {}, violations
-    try:
-        raw_resources = ast.literal_eval(resources_node)
-    except (ValueError, TypeError, SyntaxError):
-        violations.append(
-            Violation(path, decorator.lineno, "register_script resources must be literal metadata")
-        )
-        return {}, violations
-    declared: dict[str, dict[str, str]] = {}
-    if not isinstance(raw_resources, (tuple, list)):
-        violations.append(
-            Violation(path, decorator.lineno, "register_script resources must be a tuple or list")
-        )
-        return {}, violations
-    for item in raw_resources:
-        if not isinstance(item, dict):
-            violations.append(
-                Violation(path, decorator.lineno, "each script resource must be a dictionary")
-            )
-            continue
-        name = item.get("name")
-        alias = item.get("alias")
-        description = item.get("description")
-        label = item.get("label")
-        protocol = item.get("protocol")
-        if not all(
-            isinstance(value, str) and value.strip()
-            for value in (name, alias, description, label, protocol)
-        ):
-            violations.append(
-                Violation(
-                    path,
-                    decorator.lineno,
-                    "script resource requires non-empty name, alias, description, label and protocol",
-                )
-            )
-            continue
-        if name in declared:
-            violations.append(
-                Violation(path, decorator.lineno, f"script resource name {name!r} is duplicated")
-            )
-        declared[name] = {
-            "name": name,
-            "alias": alias,
-            "description": description,
-            "label": label,
-            "protocol": protocol,
-        }
-    return declared, violations
-
-
-def _package_metadata_violations(
-    path: Path, function: ast.FunctionDef | ast.AsyncFunctionDef
-) -> list[Violation]:
-    decorator = next(
-        item
-        for item in function.decorator_list
-        if _call_name(item.func if isinstance(item, ast.Call) else item) == "register_script"
-    )
-    if not isinstance(decorator, ast.Call):
-        return []
-    packages_node = next(
-        (keyword.value for keyword in decorator.keywords if keyword.arg == "packages"),
-        None,
-    )
-    if packages_node is None:
-        return []
-    try:
-        packages = ast.literal_eval(packages_node)
-    except (ValueError, TypeError, SyntaxError):
-        return [
-            Violation(path, decorator.lineno, "register_script packages must be literal metadata")
-        ]
-    if not isinstance(packages, (tuple, list)):
-        return [
-            Violation(path, decorator.lineno, "register_script packages must be a tuple or list")
-        ]
-    violations: list[Violation] = []
-    names: set[str] = set()
-    for item in packages:
-        if not isinstance(item, dict) or not all(
-            isinstance(item.get(key), str) and item[key].strip()
-            for key in ("name", "alias", "description")
-        ):
-            violations.append(
-                Violation(
-                    path,
-                    decorator.lineno,
-                    "each Web-facing package requires non-empty name, alias and description",
-                )
-            )
-            continue
-        name = item["name"]
-        if name in names:
-            violations.append(
-                Violation(path, decorator.lineno, f"script package name {name!r} is duplicated")
-            )
-        names.add(name)
-    return violations
-
-
 def _function_violations(
     path: Path, function: ast.FunctionDef | ast.AsyncFunctionDef
 ) -> list[Violation]:
@@ -210,9 +88,6 @@ def _function_violations(
     telnet_source_by_var: dict[str, str | None] = {}
     declaration_lines: set[int] = set()
     registered_func_names: set[str] = set()
-    declared_resources, resource_violations = _declared_resources(path, function)
-    violations.extend(resource_violations)
-    violations.extend(_package_metadata_violations(path, function))
 
     func_indexes = [
         index
@@ -309,6 +184,16 @@ def _function_violations(
                 )
             selector_var_by_key[key] = variable
             declaration_lines.add(statement.lineno)
+            if name == "package":
+                for keyword in call.keywords:
+                    if keyword.arg in {"alias", "description"} and _literal_text(keyword.value) is None:
+                        violations.append(
+                            Violation(
+                                path,
+                                statement.lineno,
+                                f"package {keyword.arg} must be a literal string for automatic registration",
+                            )
+                        )
         elif name in CONNECTION_METHODS:
             logical_name = _literal_text(call.args[0] if call.args else None)
             if logical_name is None:
@@ -332,24 +217,15 @@ def _function_violations(
                         f"{name} requires one literal resource_label",
                     )
                 )
-            declared = declared_resources.get(logical_name)
-            protocol = RESOURCE_PROTOCOLS[name]
-            if declared is None:
-                violations.append(
-                    Violation(
-                        path,
-                        statement.lineno,
-                        f"connection {logical_name!r} must be declared in register_script resources",
+            for keyword in call.keywords:
+                if keyword.arg in {"alias", "description"} and _literal_text(keyword.value) is None:
+                    violations.append(
+                        Violation(
+                            path,
+                            statement.lineno,
+                            f"connection {keyword.arg} must be a literal string for automatic registration",
+                        )
                     )
-                )
-            elif declared["protocol"] != protocol or declared["label"] != resource_label:
-                violations.append(
-                    Violation(
-                        path,
-                        statement.lineno,
-                        f"connection {logical_name!r} must match its script resource protocol and label",
-                    )
-                )
             if name == "register_ssh_host":
                 ssh_by_var[variable] = logical_name
             if name == "register_telnet":

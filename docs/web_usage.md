@@ -78,7 +78,7 @@ flowchart LR
 GET /api/scripts
 ```
 
-`server.py` 调用 `autoenv.registry.list_scripts()`。注册表会导入并发现 `scripts/*.py`，但不会执行环境函数。每个 `@register_script(...)` 会提供：
+`server.py` 调用 `autoenv.registry.list_scripts()`。注册表会导入并发现 `scripts/*.py`，但不会执行环境函数。注册器静态读取 `package()` 和 `ctx.register_*()` 调用，并与 `@register_script(...)` 一起提供：
 
 - `name`：脚本注册名；
 - `description`：脚本下拉框说明；
@@ -95,44 +95,31 @@ from autoenv import SSHDefaults, TelnetDefaults, package, register_script
 @register_script(
     name="start_demo",
     description="启动演示环境",
-    packages=({
-        "name": "A1",
-        "alias": "A1 主安装包",
-        "description": "从 HDFS 下载的演示安装包。",
-    },),
     parameters=({
         "name": "release_channel",
         "label": "发布通道",
         "placeholder": "debug 或 release",
         "required": True,
     },),
-    resources=(
-        {
-            "name": "dut_ssh",
-            "alias": "1260 管理网口",
-            "description": "用于上传安装包并执行启动命令。",
-            "label": "1260网口",
-            "protocol": "ssh",
-        },
-        {
-            "name": "dut_console",
-            "alias": "1260 调试串口",
-            "description": "用于查看设备启动输出。",
-            "label": "1260串口",
-            "protocol": "telnet",
-        },
-    ),
 )
 def start_demo(ctx):
-    image = package("A1")
+    image = package(
+        "A1",
+        alias="A1 主安装包",
+        description="从 HDFS 下载的演示安装包。",
+    )
     host = ctx.register_ssh_host(
         "dut_ssh",
         resource_label="1260网口",
+        alias="1260 管理网口",
+        description="用于上传安装包并执行启动命令。",
         defaults=SSHDefaults(),
     )
     console = ctx.register_telnet(
         "dut_console",
         resource_label="1260串口",
+        alias="1260 调试串口",
+        description="用于查看设备启动输出。",
         defaults=TelnetDefaults(),
     )
 
@@ -152,7 +139,7 @@ def start_demo(ctx):
 - 一个 HDFS 链接输入：`A1 主安装包`；
 - 一个普通输入：`发布通道`。
 
-这里的 `name` 是 Python 内部绑定名；`alias` 和 `description` 才是主要的页面提示。
+这里的 `name` 是 Python 内部绑定名；`alias` 和 `description` 是页面提示。两者可省略，分别默认使用 `name` 和空字符串。`protocol` 由连接注册函数自动确定，`label` 直接取 `resource_label`。
 
 ## 4. 如何注册一个可供脚本选择的环境
 
@@ -421,14 +408,14 @@ Web 启动使用 `non_interactive=True`。缺少必填环境、包路径来源�
 
 ## 8. HDFS 链接如何传给脚本
 
-脚本通过 `packages` 声明 Web 输入：
+脚本调用 `package()` 时自动声明 Web 输入：
 
 ```python
-packages=({
-    "name": "A1",
-    "alias": "A1 主安装包",
-    "description": "环境启动需要的主安装包。",
-},)
+image = package(
+    "A1",
+    alias="A1 主安装包",
+    description="环境启动需要的主安装包。",
+)
 ```
 
 页面输入非空时发送：

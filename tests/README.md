@@ -47,9 +47,9 @@ python -X utf8 -m pytest -q
 
 | 文件 | 简单实现 | 主要目标 | 失败优先检查 |
 |---|---|---|---|
-| `test_runtime_registry.py` | 临时项目、注入输入、内存 console | 注册、RunContext、last-run、package `!newest` 快捷选择、组合脚本、`register_func` 生命周期 | `autoenv/registry.py`、`autoenv/runtime.py`、`result.json` |
+| `test_runtime_registry.py` | 临时项目、注入输入、内存 console | 调用点自动元数据、RunContext、last-run、package `!newest` 快捷选择、组合脚本、`register_func` 生命周期 | `autoenv/registry.py`、`autoenv/runtime.py`、`result.json` |
 | `test_command_files.py` | 纯内存上传映射、临时输出文件 | `S{file_name}`、Host 隔离、完整 shell 文本生成 | `autoenv/command_files.py` |
-| `test_generated_script_contract.py` | 临时 Python 片段和 AST 验证器 | skill 生成脚本的统一静态契约，包括两类命令接口的上传目标 | 失败消息对应行、验证器和生成脚本 |
+| `test_generated_script_contract.py` | 临时 Python 片段和 AST 验证器 | skill 生成脚本的统一静态契约，包括调用点元数据字面量和两类命令接口的上传目标 | 失败消息对应行、验证器和生成脚本 |
 | `test_ssh_host.py` | fake Paramiko/SFTP/SCP/远端文件系统 | SSH 状态、连接复用、按输出响应、上传校验、占位符目标 | `autoenv/ssh_host.py` 和 fake 收到的命令/响应/文件 |
 | `test_telnet_client.py` | fake Socket、Clock、提示符字节流 | Telnet 模式探测、按输出响应、退出结果、断连、上传来源 | `autoenv/telnet_client.py` 和预置收发字节流 |
 | `test_package_extractor.py` | fake HDFS、临时压缩包、注入 `.run` runner | 下载路径、原子文件、提取安全和摘要 | `package_manager.py`、`extractor.py`、临时包内容 |

@@ -23,6 +23,7 @@ from .results import (
     result_to_dict,
 )
 from .runtime import DEFAULT_PACKAGE_CACHE_LIMIT, LastRunNotFoundError, RunContext, RunMode
+from .script_metadata import infer_script_metadata
 
 
 ScriptBody = Callable[[RunContext], object | None]
@@ -88,6 +89,45 @@ def register_script(
         if normalized in _REGISTRY:
             raise ValueError(f"script already registered: {normalized}")
 
+        inferred = infer_script_metadata(body)
+        inherited_package_inputs: list[dict[str, object]] = []
+        inherited_parameters: list[dict[str, object]] = []
+        inherited_resources: list[dict[str, object]] = []
+        for called_name in inferred.called_functions:
+            called = body.__globals__.get(called_name)
+            child_name = getattr(called, "__autoenv_script_name__", None)
+            child = _REGISTRY.get(child_name) if isinstance(child_name, str) else None
+            if child is None or child.name == normalized:
+                continue
+            inherited_package_inputs.extend(child.package_inputs)
+            inherited_parameters.extend(child.parameters)
+            inherited_resources.extend(child.resources)
+
+        final_package_inputs = tuple(
+            _validate_package_input(item)
+            for item in _merge_named_metadata(
+                [*inherited_package_inputs, *inferred.packages],
+                list(normalized_package_inputs),
+                "package",
+            )
+        )
+        final_parameters = tuple(
+            _validate_parameter(item)
+            for item in _merge_named_metadata(
+                inherited_parameters,
+                list(normalized_parameters),
+                "parameter",
+            )
+        )
+        final_resources = tuple(
+            _validate_resource(item)
+            for item in _merge_named_metadata(
+                [*inherited_resources, *inferred.resources],
+                list(normalized_resources),
+                "resource",
+            )
+        )
+
         @functools.wraps(body)
         def entrypoint() -> ScriptResult:
             root = _CURRENT_ROOT.get() or Path.cwd()
@@ -104,11 +144,12 @@ def register_script(
             description=description.strip(),
             body=body,
             entrypoint=entrypoint,
-            packages=normalized_packages,
-            package_inputs=normalized_package_inputs,
-            parameters=normalized_parameters,
-            resources=normalized_resources,
+            packages=tuple(item["name"] for item in final_package_inputs),
+            package_inputs=final_package_inputs,
+            parameters=final_parameters,
+            resources=final_resources,
         )
+        setattr(entrypoint, "__autoenv_script_name__", normalized)
         return entrypoint
 
     return decorator
@@ -509,9 +550,11 @@ def _validate_resource(value: dict[str, object]) -> dict[str, str]:
     if protocol not in {"ssh", "telnet", "ftp"}:
         raise ValueError("script resource protocol must be ssh, telnet or ftp")
     label = validate_resource_label(value.get("label"), protocol=protocol)
-    alias = _validate_prompt_text(value.get("alias"), "script resource alias")
-    description = _validate_prompt_text(
-        value.get("description"), "script resource description"
+    alias = _validate_optional_prompt_text(
+        value.get("alias"), name, "script resource alias"
+    )
+    description = _validate_optional_prompt_text(
+        value.get("description"), "", "script resource description"
     )
     return {
         "name": name,
@@ -529,17 +572,47 @@ def _validate_package_input(value: str | dict[str, object]) -> dict[str, str]:
     if not isinstance(value, dict):
         raise TypeError("script package metadata must be a string or dictionary")
     name = _validate_script_name(value.get("name"))  # type: ignore[arg-type]
-    alias = _validate_prompt_text(value.get("alias"), "script package alias")
-    description = _validate_prompt_text(
-        value.get("description"), "script package description"
+    alias = _validate_optional_prompt_text(
+        value.get("alias"), name, "script package alias"
+    )
+    description = _validate_optional_prompt_text(
+        value.get("description"), "", "script package description"
     )
     return {"name": name, "alias": alias, "description": description}
 
 
-def _validate_prompt_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a non-empty string")
-    return value.strip()
+def _validate_optional_prompt_text(value: object, default: str, label: str) -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    return value.strip() or default
+
+
+def _merge_named_metadata(
+    inferred: list[dict[str, object]],
+    explicit: list[dict[str, object]],
+    label: str,
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    indexes: dict[str, int] = {}
+    for item in [*inferred, *explicit]:
+        name = str(item.get("name", "")).strip()
+        if name not in indexes:
+            indexes[name] = len(result)
+            result.append(dict(item))
+            continue
+        current = result[indexes[name]]
+        if label == "resource":
+            for field in ("protocol", "label"):
+                old = str(current.get(field, "")).strip().lower()
+                new = str(item.get(field, "")).strip().lower()
+                if old and new and old != new:
+                    raise ValueError(
+                        f"conflicting script resource {field} for {name!r}: {old!r} != {new!r}"
+                    )
+        current.update(item)
+    return result
 
 
 def _duration_ms(started_at: datetime, finished_at: datetime) -> int:
