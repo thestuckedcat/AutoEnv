@@ -168,6 +168,27 @@ def test_resource_label_api_returns_json_catalog():
         thread.join(timeout=5)
 
 
+def test_start_web_script_api_returns_registered_scripts():
+    from webPage.server import Handler
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/scripts",
+            timeout=5,
+        ) as response:
+            payload = json.load(response)
+        names = {item["name"] for item in payload["scripts"]}
+        assert "example_host_environment" in names
+        assert "template_combined" in names
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_web_environment_validation_requires_unique_known_labels():
     from webPage.server import _validate_environment
 

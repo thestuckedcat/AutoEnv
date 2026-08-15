@@ -185,6 +185,45 @@ def test_automatic_metadata_defaults_alias_to_name_and_description_to_empty(tmp_
     assert definition.parameters == ()
 
 
+def test_dynamic_calls_do_not_break_discovery_and_legacy_metadata_still_applies(tmp_path):
+    root = _project_root(tmp_path)
+    package_name = "firmware"
+    resource_label = "1260网口"
+
+    @register_script(
+        "legacy_dynamic_metadata",
+        packages=("firmware",),
+        resources=({
+            "name": "dut",
+            "label": "1260网口",
+            "protocol": "ssh",
+        },),
+    )
+    def legacy_dynamic_metadata(ctx: RunContext):
+        firmware = package(package_name)
+        ctx.register_ssh_host("dut", resource_label=resource_label)
+        return ctx.download_package(firmware)
+
+    definition = get_script("legacy_dynamic_metadata", root_dir=root)
+    assert definition.packages == ("firmware",)
+    assert definition.package_inputs[0]["alias"] == "firmware"
+    assert definition.resources[0]["alias"] == "dut"
+
+
+def test_unextractable_dynamic_calls_leave_script_visible(tmp_path):
+    root = _project_root(tmp_path)
+    package_name = "firmware"
+
+    @register_script("dynamic_without_metadata")
+    def dynamic_without_metadata(ctx: RunContext):
+        firmware = package(package_name)
+        return ctx.download_package(firmware)
+
+    definition = get_script("dynamic_without_metadata", root_dir=root)
+    assert definition.packages == ()
+    assert definition.package_inputs == ()
+
+
 def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp_path):
     root = _project_root(tmp_path, with_package=True)
     contexts: list[RunContext] = []
