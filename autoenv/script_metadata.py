@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from typing import Callable
 
 
-class ScriptMetadataError(ValueError):
-    """Raised when a script call cannot be represented as static Web metadata."""
-
-
 @dataclass(frozen=True)
 class InferredScriptMetadata:
     packages: tuple[dict[str, object], ...] = ()
@@ -32,7 +28,10 @@ def infer_script_metadata(body: Callable[..., object]) -> InferredScriptMetadata
         source = textwrap.dedent(inspect.getsource(body))
     except (OSError, TypeError):
         return InferredScriptMetadata()
-    module = ast.parse(source)
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return InferredScriptMetadata()
     function = next(
         (
             node
@@ -60,6 +59,8 @@ def extract_script_metadata(
         call_name = _call_name(node.func)
         if call_name == "package":
             name = _required_literal_text(node, 0, "name")
+            if name is None:
+                continue
             packages.append(
                 {
                     "name": name,
@@ -69,12 +70,15 @@ def extract_script_metadata(
             )
         elif call_name in _RESOURCE_PROTOCOLS:
             name = _required_literal_text(node, 0, "name")
+            label = _required_literal_text(node, None, "resource_label")
+            if name is None or label is None:
+                continue
             resources.append(
                 {
                     "name": name,
                     "alias": _optional_literal_text(node, "alias", name),
                     "description": _optional_literal_text(node, "description", ""),
-                    "label": _required_literal_text(node, None, "resource_label"),
+                    "label": label,
                     "protocol": _RESOURCE_PROTOCOLS[call_name],
                 }
             )
@@ -82,8 +86,8 @@ def extract_script_metadata(
             called_functions.append(node.func.id)
 
     return InferredScriptMetadata(
-        packages=tuple(_deduplicate(packages, "package")),
-        resources=tuple(_deduplicate(resources, "resource")),
+        packages=tuple(_deduplicate(packages)),
+        resources=tuple(_deduplicate(resources)),
         called_functions=tuple(dict.fromkeys(called_functions)),
     )
 
@@ -123,7 +127,7 @@ def _required_literal_text(
     call: ast.Call,
     position: int | None,
     keyword: str,
-) -> str:
+) -> str | None:
     value = (
         call.args[position]
         if position is not None and len(call.args) > position
@@ -134,9 +138,7 @@ def _required_literal_text(
         or not isinstance(value.value, str)
         or not value.value.strip()
     ):
-        raise ScriptMetadataError(
-            f"line {call.lineno}: {keyword} must be a non-empty string literal for automatic metadata registration"
-        )
+        return None
     return value.value.strip()
 
 
@@ -145,25 +147,17 @@ def _optional_literal_text(call: ast.Call, keyword: str, default: str) -> str:
     if value is None:
         return default
     if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
-        raise ScriptMetadataError(
-            f"line {call.lineno}: {keyword} must be a string literal for automatic metadata registration"
-        )
+        return default
     return value.value.strip()
 
 
-def _deduplicate(
-    values: list[dict[str, object]], label: str
-) -> list[dict[str, object]]:
+def _deduplicate(values: list[dict[str, object]]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     seen: dict[str, dict[str, object]] = {}
     for value in values:
         name = str(value["name"])
         previous = seen.get(name)
         if previous is not None:
-            if previous != value:
-                raise ScriptMetadataError(
-                    f"conflicting automatic {label} metadata for {name!r}"
-                )
             continue
         seen[name] = value
         result.append(value)

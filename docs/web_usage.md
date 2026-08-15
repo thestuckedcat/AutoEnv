@@ -141,6 +141,8 @@ def start_demo(ctx):
 
 这里的 `name` 是 Python 内部绑定名；`alias` 和 `description` 是页面提示。两者可省略，分别默认使用 `name` 和空字符串。`protocol` 由连接注册函数自动确定，`label` 直接取 `resource_label`。
 
+自动发现要求包名、连接名、`resource_label` 以及显式提示文本使用字符串字面量。运行时发现会跳过无法静态提取的动态调用，避免一个旧脚本导致整个 `/api/scripts` 失败；这类旧脚本可继续使用兼容的装饰器 `packages`/`resources` 元数据。脚本生成器的离线契约仍会拒绝新脚本中的动态声明，确保 Web 字段完整。
+
 ## 4. 如何注册一个可供脚本选择的环境
 
 在“环境库”页面填写环境并点击“保存环境”时，`app.js` 发送：
@@ -159,7 +161,7 @@ Content-Type: application/json
   "ssh_hosts": {
     "rack_mgmt": {
       "resource_label": "1260网口",
-      "host": "192.168.10.11",
+      "host": "192.0.2.11",
       "port": 22,
       "username": "root",
       "password": "example-password",
@@ -169,7 +171,7 @@ Content-Type: application/json
   "telnet_connections": {
     "rack_console": {
       "resource_label": "1260串口",
-      "host": "192.168.10.21",
+      "host": "192.0.2.21",
       "port": 2001,
       "baud_rate": 115200,
       "timeout": 30,
@@ -315,7 +317,7 @@ GET /api/run/events?cursor=<上次位置>
   "ssh_hosts": {
     "dut_ssh": {
       "resource_label": "1260网口",
-      "host": "192.168.10.11",
+      "host": "192.0.2.11",
       "port": 22,
       "username": "root",
       "password": "example-password",
@@ -325,7 +327,7 @@ GET /api/run/events?cursor=<上次位置>
   "telnet_connections": {
     "dut_console": {
       "resource_label": "1260串口",
-      "host": "192.168.10.21",
+      "host": "192.0.2.21",
       "port": 2001,
       "baud_rate": 115200,
       "timeout": 30,
@@ -342,7 +344,7 @@ GET /api/run/events?cursor=<上次位置>
   "ssh_hosts": {
     "dut_ssh": {
       "resource_label": "1260网口",
-      "host": "192.168.10.11",
+      "host": "192.0.2.11",
       "port": 22,
       "username": "root",
       "password": "example-password",
@@ -352,7 +354,7 @@ GET /api/run/events?cursor=<上次位置>
   "telnet_connections": {
     "dut_console": {
       "resource_label": "1260串口",
-      "host": "192.168.10.21",
+      "host": "192.0.2.21",
       "port": 2001,
       "baud_rate": 115200,
       "timeout": 30,
