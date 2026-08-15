@@ -214,9 +214,10 @@ Content-Type: application/json
 
 环境内部逻辑名主要用于环境档案可读性和页面下拉选项展示；脚本逻辑名用于 Python 代码取值。
 
-### 4.2 固定资源标签
+### 4.2 资源标签目录
 
-当前资源标签是静态目录：
+资源标签的唯一数据源是 [`autoenv/resource_labels.json`](../autoenv/resource_labels.json)。
+当前目录包含：
 
 - `1260网口`、`1260串口`；
 - `1712网口`、`1712串口`；
@@ -228,6 +229,10 @@ Content-Type: application/json
 - Telnet 只能使用串口标签；
 - 同一环境不能重复注册同一个标签；
 - 脚本选择环境后，该环境必须恰好包含一个匹配资源。
+
+修改目录时必须保持 `schema_version` 为受支持版本、标签名唯一，并只使用
+`network` 或 `serial` 类型。后端从同一 JSON 完成环境保存和脚本注册校验，
+`GET /api/resource-labels` 把同一目录返回给 Web 下拉框。
 
 `baud_rate` 当前只是串口档案元数据。Telnet 客户端连接 TCP 端口，不会自动修改串口服务器的物理波特率。
 
@@ -519,7 +524,7 @@ ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANS
 | 方法 | 作用 |
 |---|---|
 | `GET /api/health` | 检查本地服务和项目根目录 |
-| `GET /api/resource-labels` | 读取固定资源标签 |
+| `GET /api/resource-labels` | 读取 `autoenv/resource_labels.json` 资源标签目录 |
 | `GET /api/environments` | 读取所有本机环境档案 |
 | `POST /api/environments` | 校验并保存一个环境档案 |
 | `GET /api/scripts` | 发现脚本及其 Web 元数据 |

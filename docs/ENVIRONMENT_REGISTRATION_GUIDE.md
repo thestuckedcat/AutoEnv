@@ -1051,6 +1051,6 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 
 注册脚本在装饰器声明三类 Web 元数据：HDFS 输入 `packages=({"name": "A1", "alias": "A1 主安装包", "description": "..."},)`、普通输入 `parameters=({"name": "value", ...},)`，以及资源交互点 `resources=({"name": "host_1260", "alias": "1260 管理网口", "description": "...", "label": "1260网口", "protocol": "ssh"},)`。`name` 是脚本内部绑定名，`alias` 和 `description` 用于启动页提示。每个 `register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 必须传入对应的 `resource_label`。脚本通过 `ctx.argument("value")` 读取普通输入。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
 
-静态资源标签固定为：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境档案中的每个 IP 必须绑定其中一个与协议类型相符的标签；同一环境不能重复占用标签。Web 选择脚本后，按元数据逐项展示连接资源与 HDFS 包；连接资源分别选择包含匹配标签的环境/IP，因此一个脚本可绑定多个环境，包链接也按提示逐项填写。
+可用资源标签统一维护在 `autoenv/resource_labels.json`；环境档案中的每个 IP 必须绑定目录中一个与协议类型相符的标签，同一环境不能重复占用标签。修改目录时保持标签唯一，并仅使用 `network` 或 `serial` 类型。Web 选择脚本后，按元数据逐项展示连接资源与 HDFS 包；连接资源分别选择包含匹配标签的环境/IP，因此一个脚本可绑定多个环境，包链接也按提示逐项填写。
 
 Web 环境档案、LaunchRequest 完整字段和 Agent CLI 限制见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md) 与 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。

@@ -24,6 +24,9 @@ autoenv = "autoenv.cli:main"
 [tool.setuptools.packages.find]
 include = ["autoenv*", "scripts*"]
 
+[tool.setuptools.package-data]
+autoenv = ["resource_labels.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
