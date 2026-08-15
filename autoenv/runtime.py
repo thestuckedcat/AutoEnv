@@ -19,6 +19,13 @@ from .selectors import (
 )
 
 
+def _validate_display_metadata(alias: str | None, description: str) -> None:
+    if alias is not None and not isinstance(alias, str):
+        raise TypeError("alias must be a string")
+    if not isinstance(description, str):
+        raise TypeError("description must be a string")
+
+
 DEFAULT_PACKAGE_CACHE_LIMIT = 1024 * 1024 * 1024
 PACKAGE_NEWEST_SHORTCUT = "!newest"
 
@@ -184,12 +191,19 @@ class RunContext:
         return value
 
     def register_ssh_host(
-        self, name: str, *, resource_label: str, defaults: object | None = None
+        self,
+        name: str,
+        *,
+        resource_label: str,
+        alias: str | None = None,
+        description: str = "",
+        defaults: object | None = None,
     ):
         from .ssh_host import SSHConnectionInfo, SSHDefaults, SSHHost
         from .resources import validate_resource_label
 
         normalized_name = self._validate_object_name(name, "SSH host")
+        _validate_display_metadata(alias, description)
         normalized_label = validate_resource_label(resource_label, protocol="ssh")
         if normalized_name in self._ssh_hosts or normalized_name in self._telnet_clients:
             raise ValueError(f"connection object already registered in this run: {normalized_name}")
@@ -247,6 +261,8 @@ class RunContext:
         name: str,
         *,
         resource_label: str,
+        alias: str | None = None,
+        description: str = "",
         defaults: object | None = None,
         uploaded_files_from: str | None = None,
     ):
@@ -254,6 +270,7 @@ class RunContext:
         from .resources import validate_resource_label
 
         normalized_name = self._validate_object_name(name, "Telnet")
+        _validate_display_metadata(alias, description)
         normalized_label = validate_resource_label(resource_label, protocol="telnet")
         if normalized_name in self._telnet_clients or normalized_name in self._ssh_hosts:
             raise ValueError(f"connection object already registered in this run: {normalized_name}")
@@ -309,12 +326,19 @@ class RunContext:
         return client
 
     def register_ftp_host(
-        self, name: str, *, resource_label: str, defaults: object | None = None
+        self,
+        name: str,
+        *,
+        resource_label: str,
+        alias: str | None = None,
+        description: str = "",
+        defaults: object | None = None,
     ):
         from .ftp_host import FTPConnectionInfo, FTPDefaults, FTPHost
         from .resources import validate_resource_label
 
         normalized_name = self._validate_object_name(name, "FTP host")
+        _validate_display_metadata(alias, description)
         normalized_label = validate_resource_label(resource_label, protocol="ftp")
         if normalized_name in self._ssh_hosts or normalized_name in self._telnet_clients or normalized_name in self._ftp_hosts:
             raise ValueError(f"connection object already registered in this run: {normalized_name}")

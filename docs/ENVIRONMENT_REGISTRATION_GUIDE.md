@@ -19,29 +19,23 @@ from autoenv import SSHDefaults, package, register_script
 @register_script(
     name="start_demo",
     description="下载并安装演示环境",
-    packages=({
-        "name": "A1",
-        "alias": "A1 主安装包",
-        "description": "从 HDFS 下载并上传到演示服务器的安装包。",
-    },),
-    resources=({
-        "name": "demo_server",
-        "alias": "演示服务器管理网口",
-        "description": "用于上传安装包并执行启动命令。",
-        "label": "1260网口",
-        "protocol": "ssh",
-    },),
 )
 def start_demo(ctx):
-    demo_package = package("A1")
+    demo_package = package(
+        "A1",
+        alias="A1 主安装包",
+        description="从 HDFS 下载并上传到演示服务器的安装包。",
+    )
     host = ctx.register_ssh_host(
         "demo_server",
         resource_label="1260网口",
+        alias="演示服务器管理网口",
+        description="用于上传安装包并执行启动命令。",
         defaults=SSHDefaults(
-            host="192.168.1.100",
+            host="192.0.2.10",
             port=22,
             username="root",
-            password="root",
+            password="",
         ),
     )
 
@@ -160,17 +154,14 @@ from autoenv import register_func, register_script
 @register_script(
     name="start_demo",
     description="启动演示环境",
-    resources=({
-        "name": "demo",
-        "alias": "演示服务器管理网口",
-        "description": "用于执行环境启动和状态检查命令。",
-        "label": "1260网口",
-        "protocol": "ssh",
-    },),
 )
 def start_demo(ctx):
     host = ctx.register_ssh_host(
-        "demo", resource_label="1260网口", defaults=SSHDefaults(...)
+        "demo",
+        resource_label="1260网口",
+        alias="演示服务器管理网口",
+        description="用于执行环境启动和状态检查命令。",
+        defaults=SSHDefaults(...),
     )
     result = host.execute("/root/start.sh", timeout=600)
     if not result.success:
@@ -257,10 +248,10 @@ host = ctx.register_ssh_host(
     "main_server",
     resource_label="1260网口",
     defaults=SSHDefaults(
-        host="192.168.1.100",
+        host="192.0.2.10",
         port=22,
         username="root",
-        password="root",
+        password="",
         connect_timeout=30.0,
     ),
 )
@@ -298,7 +289,7 @@ console = ctx.register_telnet(
     "board_console",
     resource_label="1260串口",
     defaults=TelnetDefaults(
-        host="192.168.1.200",
+        host="192.0.2.20",
         port=23,
         timeout=30.0,
         shell_mode="auto",
@@ -786,30 +777,13 @@ from autoenv import (
 @register_script(
     name="example_environment",
     description="AutoEnv 完整接口示例",
-    packages=({
-        "name": "A1",
-        "alias": "A1 主安装包",
-        "description": "完整示例所需的 HDFS 安装包。",
-    },),
-    resources=(
-        {
-            "name": "example_host",
-            "alias": "1260 管理网口",
-            "description": "用于上传文件并执行安装命令。",
-            "label": "1260网口",
-            "protocol": "ssh",
-        },
-        {
-            "name": "example_console",
-            "alias": "1260 调试串口",
-            "description": "用于观察启动输出并发送控制字节。",
-            "label": "1260串口",
-            "protocol": "telnet",
-        },
-    ),
 )
 def example_environment(ctx):
-    a1_package = package("A1")
+    a1_package = package(
+        "A1",
+        alias="A1 主安装包",
+        description="完整示例所需的 HDFS 安装包。",
+    )
     manual_bundle = extra_file("manual_bundle.tar.gz")
     driver_file = extra_file("driver.bin")
     firmware_image = match(r"^firmware-.*\.bin$")
@@ -817,11 +791,13 @@ def example_environment(ctx):
     host_1260 = ctx.register_ssh_host(
         "example_host",
         resource_label="1260网口",
+        alias="1260 管理网口",
+        description="用于上传文件并执行安装命令。",
         defaults=SSHDefaults(
-            host="192.168.1.100",
+            host="192.0.2.10",
             port=22,
             username="root",
-            password="root",
+            password="",
             connect_timeout=30.0,
         ),
     )
@@ -829,8 +805,10 @@ def example_environment(ctx):
     console_1260 = ctx.register_telnet(
         "example_console",
         resource_label="1260串口",
+        alias="1260 调试串口",
+        description="用于观察启动输出并发送控制字节。",
         defaults=TelnetDefaults(
-            host="192.168.1.200",
+            host="192.0.2.20",
             port=23,
             timeout=30.0,
             shell_mode="auto",
@@ -1049,7 +1027,9 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 
 ## 24. Web 元数据与结构化入口
 
-注册脚本在装饰器声明三类 Web 元数据：HDFS 输入 `packages=({"name": "A1", "alias": "A1 主安装包", "description": "..."},)`、普通输入 `parameters=({"name": "value", ...},)`，以及资源交互点 `resources=({"name": "host_1260", "alias": "1260 管理网口", "description": "...", "label": "1260网口", "protocol": "ssh"},)`。`name` 是脚本内部绑定名，`alias` 和 `description` 用于启动页提示。每个 `register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 必须传入对应的 `resource_label`。脚本通过 `ctx.argument("value")` 读取普通输入。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+注册脚本通过实际调用自动形成两类 Web 元数据：`package("A1", alias="A1 主安装包", description="...")` 形成 HDFS 输入；`register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 形成资源交互点，协议由函数确定，标签取 `resource_label`。`name` 是脚本内部绑定名；`alias` 默认使用 `name`，`description` 默认空字符串。普通业务输入仍在装饰器使用 `parameters=({"name": "value", ...},)` 声明，并通过 `ctx.argument("value")` 读取。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
+
+Web 为每个自动发现的包生成路径输入，并在启动时写入 `LaunchRequest.parameters.packages.<name>`。输入留空时发送空对象，运行时优先使用 `config.json` 的 `link`，否则从 `base_link` 自动选择最新目录；填写路径时使用 `path_override`。
 
 可用资源标签统一维护在 `autoenv/resource_labels.json`；环境档案中的每个 IP 必须绑定目录中一个与协议类型相符的标签，同一环境不能重复占用标签。修改目录时保持标签唯一，并仅使用 `network` 或 `serial` 类型。Web 选择脚本后，按元数据逐项展示连接资源与 HDFS 包；连接资源分别选择包含匹配标签的环境/IP，因此一个脚本可绑定多个环境，包链接也按提示逐项填写。
 

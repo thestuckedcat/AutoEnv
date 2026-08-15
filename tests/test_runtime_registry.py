@@ -130,21 +130,59 @@ def test_script_interaction_metadata_keeps_names_and_user_prompts(tmp_path):
     assert definition.resources[0]["description"] == "用于上传固件和执行升级命令。"
 
 
-def test_structured_interaction_metadata_requires_user_prompts():
-    with pytest.raises(ValueError, match="resource alias"):
-        register_script(
-            "missing_resource_prompt",
-            resources=({
-                "name": "dut",
-                "label": "1260网口",
-                "protocol": "ssh",
-            },),
+def test_script_metadata_is_inferred_from_package_and_connection_calls(tmp_path):
+    root = _project_root(tmp_path)
+
+    @register_script("automatic_metadata")
+    def automatic_metadata(ctx: RunContext):
+        firmware = package(
+            "firmware",
+            alias="主固件包",
+            description="从 HDFS 下载的升级固件。",
         )
-    with pytest.raises(ValueError, match="package description"):
-        register_script(
-            "missing_package_prompt",
-            packages=({"name": "A1", "alias": "主包", "description": ""},),
+        ctx.register_ssh_host(
+            "dut",
+            resource_label="1260网口",
+            alias="设备管理网口",
+            description="用于执行升级。",
         )
+        return ctx.download_package(firmware)
+
+    definition = get_script("automatic_metadata", root_dir=root)
+    assert definition.packages == ("firmware",)
+    assert definition.package_inputs == ({
+        "name": "firmware",
+        "alias": "主固件包",
+        "description": "从 HDFS 下载的升级固件。",
+    },)
+    assert definition.resources == ({
+        "name": "dut",
+        "alias": "设备管理网口",
+        "description": "用于执行升级。",
+        "label": "1260网口",
+        "protocol": "ssh",
+    },)
+
+
+def test_automatic_metadata_defaults_alias_to_name_and_description_to_empty(tmp_path):
+    root = _project_root(tmp_path)
+
+    @register_script("default_metadata")
+    def default_metadata(ctx: RunContext):
+        firmware = package("firmware")
+        ctx.register_ssh_host("dut", resource_label="1260网口")
+        ctx.argument("ordinary_business_input")
+        return ctx.download_package(firmware)
+
+    definition = get_script("default_metadata", root_dir=root)
+    assert definition.package_inputs == ({
+        "name": "firmware",
+        "alias": "firmware",
+        "description": "",
+    },)
+    assert definition.resources[0]["alias"] == "dut"
+    assert definition.resources[0]["description"] == ""
+    assert definition.parameters == ()
 
 
 def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp_path):

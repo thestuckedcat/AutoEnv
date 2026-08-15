@@ -19,17 +19,14 @@ from autoenv import SSHDefaults, register_script
         {"name": "remote_pattern", "label": "文件名正则", "required": False},
         {"name": "log_pattern", "label": "日志块 pattern（待补规则）", "required": False},
     ),
-    resources=({
-        "name": "log_server",
-        "alias": "日志服务器网口",
-        "description": "用于通过 SFTP 下载待解析日志 ZIP 的 SSH 连接。",
-        "label": "1260网口",
-        "protocol": "ssh",
-    },),
 )
 def download_and_parse_logs(ctx):
     server = ctx.register_ssh_host(
-        "log_server", resource_label="1260网口", defaults=SSHDefaults()
+        "log_server",
+        resource_label="1260网口",
+        alias="日志服务器网口",
+        description="用于通过 SFTP 下载待解析日志 ZIP 的 SSH 连接。",
+        defaults=SSHDefaults(),
     )
     remote_dir = str(ctx.argument("remote_dir", required=True))
     remote_file = str(ctx.argument("remote_file", default="") or "").strip()
