@@ -13,7 +13,7 @@ Web 框架、按钮触发 Python 子进程和环境到脚本参数的完整说�
 
 服务默认只监听 `127.0.0.1:8765`。依次使用四个页签：
 
-1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。每个 IP 必须从固定目录选择唯一资源标签（1260/1712/udie1 的网口或串口）。JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。
+1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。每个 IP 必须从 `autoenv/resource_labels.json` 维护的目录中选择唯一且协议匹配的资源标签。环境 JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。
 2. **环境启动**：先选脚本，页面按脚本声明的 `alias` 与 `description` 展开所有交互资源。SSH/Telnet/FTP 交互点分别选择一个包含匹配标签的环境/IP，因此一次启动可组合多个环境；每个 HDFS 包也有独立的说明和链接输入，留空使用 `config.json` 的 link/base_link 逻辑，填写则覆盖为指定 HDFS 路径。
    当前页面不提供启动后 `register_func` 菜单的输入控件；包含该菜单的脚本应从 CLI 运行，或确保输入流关闭后自动退出菜单。
 3. **Tools**：工具由 `webPage/tools/*.py` 动态发现。不要修改核心页面来增加工具。

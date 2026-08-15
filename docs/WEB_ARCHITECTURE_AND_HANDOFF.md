@@ -31,7 +31,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 `register_func` 仍是运行成功后的 CLI 循环菜单，Web 启动页没有对应的选择/输入控件。不要把依赖该菜单完成的流程当作 Web 可交互流程；`scripts/template.py` 将它拆成独立的 CLI 示例。
 
-资源标签来自 `autoenv/resources.py` 的固定目录：`1260网口`、`1260串口`、`1712网口`、`1712串口`、`udie1网口`、`udie1串口`。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。脚本通过 `register_script(resources=...)` 声明连接交互点，每项都包含内部 `name`、页面 `alias`、提示 `description`、固定 `label` 和 `protocol`；连接注册调用必须带同一 `resource_label`。HDFS 输入通过 `packages=({"name": ..., "alias": ..., "description": ...},)` 声明。`/api/scripts` 返回 `resources` 和 `package_inputs`，Web 选择脚本后立即渲染这些输入：每个连接点独立选择包含匹配标签的环境/IP，每个 HDFS 包独立填写链接。
+资源标签的唯一数据源是 `autoenv/resource_labels.json`，`autoenv/resources.py` 负责加载并校验目录，`/api/resource-labels` 把同一份数据返回 Web。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。Web 初始化时先加载标签目录再创建环境资源行；目录加载完成后也会刷新已有下拉框，避免异步初始化留下空选项。脚本通过 `register_script(resources=...)` 声明连接交互点，每项都包含内部 `name`、页面 `alias`、提示 `description`、固定 `label` 和 `protocol`；连接注册调用必须带同一 `resource_label`。HDFS 输入通过 `packages=({"name": ..., "alias": ..., "description": ...},)` 声明。`/api/scripts` 返回 `resources` 和 `package_inputs`，Web 选择脚本后立即渲染这些输入：每个连接点独立选择包含匹配标签的环境/IP，每个 HDFS 包独立填写链接。
 
 环境页保存的 `baud_rate` 是网络串口的档案元数据；当前 Telnet 客户端连接 TCP 端口，不能直接修改串口服务器的物理波特率。若设备要求下发频率，应在对应环境脚本中用已确认的设备命令完成。
 

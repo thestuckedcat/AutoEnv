@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import json
 import stat
 import sys
+import threading
 import time
 import types
 import zipfile
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.request import urlopen
 
 import pytest
 
 from autoenv.ftp_host import FTPConnectionInfo, FTPHost
 from autoenv.interface import LaunchRequest, bind_environments, merge_parameters
-from autoenv.resources import describe_resource_labels, validate_resource_label
+from autoenv.resources import (
+    RESOURCE_LABELS_PATH,
+    describe_resource_labels,
+    load_resource_labels,
+    validate_resource_label,
+)
 from autoenv.results import RemoteDownloadResult
 from autoenv.selectors import extra_file, resolve_local_file
 from autoenv.web_tools import describe_tools, run_web_tool
@@ -99,12 +108,64 @@ def test_multi_environment_resource_bindings_are_independent_from_packages(tmp_p
     assert set(merged["packages"]) == {"A1", "A2"}
 
 
-def test_resource_labels_are_static_and_protocol_checked():
+def test_resource_labels_are_loaded_from_json_and_protocol_checked():
     labels = {item["label"] for item in describe_resource_labels()}
     assert labels == {"1260网口", "1260串口", "1712网口", "1712串口", "udie1网口", "udie1串口"}
+    assert RESOURCE_LABELS_PATH.name == "resource_labels.json"
     assert validate_resource_label("1260网口", protocol="ssh") == "1260网口"
     with pytest.raises(ValueError, match="not valid for telnet"):
         validate_resource_label("1260网口", protocol="telnet")
+
+
+@pytest.mark.parametrize(
+    ("catalog", "message"),
+    [
+        ({"schema_version": 2, "labels": [{"label": "dut", "kind": "network"}]}, "schema_version"),
+        ({"schema_version": 1, "labels": [{"label": "dut", "kind": "other"}]}, "network or serial"),
+        (
+            {
+                "schema_version": 1,
+                "labels": [
+                    {"label": "dut", "kind": "network"},
+                    {"label": "dut", "kind": "serial"},
+                ],
+            },
+            "duplicate label",
+        ),
+    ],
+)
+def test_resource_label_catalog_rejects_invalid_data(
+    tmp_path: Path, catalog: dict[str, object], message: str
+):
+    path = tmp_path / "resource_labels.json"
+    path.write_text(json.dumps(catalog), encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_resource_labels(path)
+
+
+def test_resource_label_api_returns_json_catalog():
+    from webPage.server import Handler
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/resource-labels",
+            timeout=5,
+        ) as response:
+            status = response.status
+            payload = json.load(response)
+        assert status == 200
+        assert len(payload["resource_labels"]) == 6
+        assert {item["kind"] for item in payload["resource_labels"]} == {
+            "network",
+            "serial",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_web_environment_validation_requires_unique_known_labels():
@@ -281,13 +342,15 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
-    assert "app.js?v=20260815-terminal-shell" in html
+    assert "app.js?v=20260815-resource-labels-json" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript
     assert 'cwd:$("agentCwd").value' in javascript
     assert "agentPollGeneration" in javascript
     assert "agentSessionGeneration" in javascript
+    assert "refreshResourceLabelSelects" in javascript
+    assert 'await loadResourceLabels();blankEnv();await Promise.all' in javascript
     server = (root / "webPage" / "server.py").read_text(encoding="utf-8")
     assert "shutil.which" not in server
     assert 'self.send_header("Cache-Control", "no-store")' in server

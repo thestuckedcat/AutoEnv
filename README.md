@@ -1,6 +1,6 @@
 # AutoEnv
 
-本分支提供本地开发者 Web 控制台：运行 `python -X utf8 startWeb.py`，即可注册环境、非交互拉起脚本、使用动态 Tools，以及启动支持文件路径转换的 Agent CLI。快速使用见 `webPage/QUICK_START.md`，后续开发接手见 `docs/WEB_ARCHITECTURE_AND_HANDOFF.md`。
+本分支提供本地开发者 Web 控制台：运行 `python -X utf8 startWeb.py`，即可注册环境、非交互拉起脚本、使用动态 Tools，以及启动支持文件路径转换的 Agent CLI。环境页和后端校验使用同一份 `autoenv/resource_labels.json` 资源标签目录。快速使用见 `webPage/QUICK_START.md`，后续开发接手见 `docs/WEB_ARCHITECTURE_AND_HANDOFF.md`。
 
 AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 包下载、SCP/SFTP 远端文件下载、显式文件/目录及 ZIP 提取、SCP/SFTP/FTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、结构化非交互启动、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
 
