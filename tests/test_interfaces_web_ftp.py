@@ -373,7 +373,7 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
-    assert "app.js?v=20260815-resource-labels-json" in html
+    assert "app.js?v=20260815-environment-save" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript
@@ -382,6 +382,9 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert "agentSessionGeneration" in javascript
     assert "refreshResourceLabelSelects" in javascript
     assert 'await loadResourceLabels();blankEnv();await Promise.all' in javascript
+    assert 'f.elements.namedItem("name")' in javascript
+    assert 'f.elements.namedItem("title")' in javascript
+    assert '保存失败：${error.message}' in javascript
     server = (root / "webPage" / "server.py").read_text(encoding="utf-8")
     assert "shutil.which" not in server
     assert 'self.send_header("Cache-Control", "no-store")' in server
