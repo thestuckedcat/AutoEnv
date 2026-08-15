@@ -6,7 +6,6 @@ import json
 import mimetypes
 import os
 import queue
-import shutil
 import subprocess
 import sys
 import threading
@@ -91,7 +90,7 @@ class TerminalSession:
         self.process: object | None = None
         self.generation = 0
 
-    def start(self, command: list[str], *, cwd: Path, rows: int = 30, cols: int = 100) -> None:
+    def start(self, command: list[str], *, cwd: Path, rows: int = 30, cols: int = 100) -> int:
         self.stop()
         try:
             from winpty import PtyProcess
@@ -115,6 +114,7 @@ class TerminalSession:
         threading.Thread(
             target=self._read, args=(process, generation), daemon=True
         ).start()
+        return generation
 
     def _read(self, process: object, generation: int) -> None:
         try:
@@ -155,6 +155,21 @@ class TerminalSession:
         process, self.process = self.process, None
         if process is not None and process.isalive():  # type: ignore[attr-defined]
             process.terminate(force=True)  # type: ignore[attr-defined]
+
+
+def _start_agent_shell(
+    session: TerminalSession,
+    command: str,
+    *,
+    cwd: Path,
+    rows: int,
+    cols: int,
+) -> int:
+    shell = os.environ.get("COMSPEC", "cmd.exe")
+    generation = session.start([shell, "/d"], cwd=cwd, rows=rows, cols=cols)
+    if command:
+        session.input(f"{command}\r")
+    return generation
 
 
 AUTOENV_SESSION = ProcessSession()
@@ -260,6 +275,11 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
+    def end_headers(self) -> None:
+        if not self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def json(self, value: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -298,7 +318,11 @@ class Handler(SimpleHTTPRequestHandler):
                 session = AUTOENV_SESSION if "/run/" in parsed.path else AGENT_SESSION
                 cursor = int(parse_qs(parsed.query).get("cursor", ["0"])[0])
                 with session.lock:
-                    self.json({"events": session.events[cursor:], "next": len(session.events)})
+                    self.json({
+                        "events": session.events[cursor:],
+                        "next": len(session.events),
+                        "generation": session.generation,
+                    })
             elif parsed.path == "/api/settings":
                 self.json(_load_settings())
             else:
@@ -342,8 +366,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.json({"result": run_web_tool(ROOT_DIR, name, values)})
             elif self.path == "/api/settings":
                 upload_dir = Path(str(data.get("upload_dir", UPLOAD_DIR))).expanduser().resolve()
-                command = str(data.get("agent_command", "codeagent")).strip()
-                if not command: raise ValueError("agent command must not be empty")
+                command = str(data.get("agent_command") or "").strip()
                 agent_cwd = _resolve_agent_cwd(data.get("agent_cwd", ROOT_DIR))
                 _write_json(SETTINGS_PATH, {
                     "upload_dir": str(upload_dir),
@@ -364,16 +387,14 @@ class Handler(SimpleHTTPRequestHandler):
                 self.json({"path": str(target)})
             elif self.path == "/api/agent/start":
                 settings = _load_settings()
-                command = str(data.get("command") or settings.get("agent_command") or "codeagent")
-                executable = shutil.which(command)
-                if executable is None: raise FileNotFoundError(f"agent command not found: {command}")
-                command_line = [executable]
-                if Path(executable).suffix.lower() in {".cmd", ".bat"}:
-                    command_line = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", executable]
+                requested_command = data.get("command", settings.get("agent_command", "codeagent"))
+                command = str(requested_command or "").strip()
                 rows = int(data.get("rows", 30)); cols = int(data.get("cols", 100))
                 cwd = _resolve_agent_cwd(data.get("cwd") or settings.get("agent_cwd"))
-                AGENT_SESSION.start(command_line, cwd=cwd, rows=rows, cols=cols)
-                self.json({"ok": True})
+                generation = _start_agent_shell(
+                    AGENT_SESSION, command, cwd=cwd, rows=rows, cols=cols
+                )
+                self.json({"ok": True, "generation": generation})
             elif self.path == "/api/agent/input":
                 AGENT_SESSION.input(str(data.get("value", ""))); self.json({"ok": True})
             elif self.path == "/api/agent/resize":

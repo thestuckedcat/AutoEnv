@@ -205,7 +205,7 @@ def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
 
     monkeypatch.setitem(sys.modules, "winpty", types.SimpleNamespace(PtyProcess=FakeProcessFactory))
     session = TerminalSession()
-    session.start(["agent.exe"], cwd=tmp_path, rows=40, cols=120)
+    generation = session.start(["agent.exe"], cwd=tmp_path, rows=40, cols=120)
     for _ in range(100):
         with session.lock:
             if any(event["type"] == "complete" for event in session.events):
@@ -216,6 +216,7 @@ def test_agent_terminal_uses_pty_chunks_and_preserves_control_sequences(
             str(event["data"]) for event in session.events if event["type"] == "terminal"
         )
     assert terminal_data == "loading 1%\rloading 100%\x1b[2Jready"
+    assert generation == 1
     assert process.options["dimensions"] == (40, 120)
     assert process.options["cwd"] == str(tmp_path)
     session.input("hello\r")
@@ -230,6 +231,48 @@ def test_agent_startup_directory_must_be_an_existing_directory(tmp_path: Path):
         _resolve_agent_cwd(tmp_path / "missing")
 
 
+def test_agent_command_is_typed_into_cmd_instead_of_prevalidated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from webPage.server import _start_agent_shell
+
+    class FakeSession:
+        def start(self, command, **options):
+            self.command = command
+            self.options = options
+            return 7
+
+        def input(self, value):
+            self.value = value
+
+    session = FakeSession()
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    generation = _start_agent_shell(
+        session, "missing-agent --verbose", cwd=tmp_path, rows=24, cols=115
+    )
+
+    assert session.command == [r"C:\Windows\System32\cmd.exe", "/d"]
+    assert session.options == {"cwd": tmp_path, "rows": 24, "cols": 115}
+    assert session.value == "missing-agent --verbose\r"
+    assert generation == 7
+
+
+def test_empty_agent_command_opens_cmd_without_typing(tmp_path: Path):
+    from webPage.server import _start_agent_shell
+
+    class FakeSession:
+        def start(self, command, **options):
+            self.command = command
+            return 8
+
+        def input(self, _value):
+            raise AssertionError("an empty startup command must not write terminal input")
+
+    session = FakeSession()
+    _start_agent_shell(session, "", cwd=tmp_path, rows=30, cols=100)
+    assert session.command[-1] == "/d"
+
+
 def test_agent_page_types_and_drops_files_directly_in_terminal():
     root = Path(__file__).resolve().parents[1]
     html = (root / "webPage" / "index.html").read_text(encoding="utf-8")
@@ -238,10 +281,16 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
+    assert "app.js?v=20260815-terminal-shell" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript
     assert 'cwd:$("agentCwd").value' in javascript
+    assert "agentPollGeneration" in javascript
+    assert "agentSessionGeneration" in javascript
+    server = (root / "webPage" / "server.py").read_text(encoding="utf-8")
+    assert "shutil.which" not in server
+    assert 'self.send_header("Cache-Control", "no-store")' in server
 
 
 def test_web_tool_discovery_and_execution():

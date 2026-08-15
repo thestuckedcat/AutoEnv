@@ -62,7 +62,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 ## 6. Agent CLI 与文件导入
 
-Agent 页签通过 `pywinpty` 在 Windows ConPTY 中启动设置里的 `codeagent`、`nga` 或 `cmd.exe`，并把设置的“启动目录”作为 ConPTY `cwd`。终端按原始块持续读取，保留回车覆盖、清屏、窗口标题序列过滤和常用 ANSI 光标移动语义；启动尺寸按终端画布计算，页面尺寸变化时同步调整 ConPTY。终端画布自身持有输入焦点，不存在独立消息框；键盘输入按顺序写回 ConPTY，支持方向键、翻页键、Home/End、Insert/Delete、F1-F12、Tab、Escape、Backspace 和 Ctrl 字母组合。
+Agent 页签通过 `pywinpty` 在 Windows ConPTY 中始终先启动本地 `cmd.exe /d`，并把设置的“启动目录”作为 ConPTY `cwd`。设置里的 Agent 命令不是待直接创建的可执行文件，而是在 cmd 启动后自动写入的字符和回车；因此内置命令、带参数命令和不存在的命令都由 cmd 在同一终端中回显，留空则只打开 cmd。终端按原始块持续读取，保留回车覆盖、清屏、窗口标题序列过滤和常用 ANSI 光标移动语义；启动尺寸按终端画布计算，页面尺寸变化时同步调整 ConPTY。终端画布自身持有输入焦点，不存在独立消息框；键盘输入按顺序写回 ConPTY，支持方向键、翻页键、Home/End、Insert/Delete、F1-F12、Tab、Escape、Backspace 和 Ctrl 字母组合。
 
 在终端上粘贴或拖入图片、`.py`、`.zip` 时，文件以随机前缀保存到设置目录，带引号的绝对路径直接写到当前 CLI 光标处，但不自动发送回车。普通剪贴板文本也直接写入 ConPTY。文件不会自动导入或执行；Python/ZIP 应由 `.agents/skills/import-python-web-tool/SKILL.md` 静态审查并适配。
 

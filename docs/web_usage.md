@@ -495,12 +495,13 @@ Agent 页签不经过 `adapt_interface.py`。它使用一条独立链路：
 ```text
 点击“启动终端”
     → POST /api/agent/start（command、cwd、rows、cols）
-    → server.py 用 pywinpty 创建 Windows ConPTY
+    → server.py 用 pywinpty 在 Windows ConPTY 中创建 cmd.exe /d
+    → 把 command 字符和回车写入 cmd（留空则不写）
     → GET /api/agent/events 读取终端原始输出块
     → 终端画布渲染，并直接把键盘事件 POST 到 /api/agent/input
 ```
 
-设置里的“启动目录”会作为 ConPTY 的 `cwd`，所以在 `F:\\workspace\\demo` 启动 `cmd.exe`，效果等价于先打开本地 cmd、执行 `cd /d F:\\workspace\\demo`，再开始输入。目录不存在时，保存设置或启动都会失败，不会静默退回项目根目录。
+设置里的“启动目录”会作为 ConPTY 的 `cwd`，所以设置为 `F:\\workspace\\demo` 时，效果等价于先打开本地 cmd、执行 `cd /d F:\\workspace\\demo`，再开始输入。目录不存在时，保存设置或启动都会失败，不会静默退回项目根目录。
 
 终端区域本身是输入面，不再有单独 textarea：
 
@@ -508,7 +509,8 @@ Agent 页签不经过 `adapt_interface.py`。它使用一条独立链路：
 - 粘贴普通文本时，文本原样写入当前 CLI；
 - 粘贴剪贴板图片或拖入本地文件时，浏览器先调用 `/api/upload` 保存文件，再把带双引号的绝对路径写入当前 CLI；
 - 插入文件路径后不会自动回车，用户仍可编辑命令并决定何时执行；
-- 设置 `Agent 命令` 为 `cmd.exe` 可得到普通 cmd，设置为 `codeagent` 或 `nga` 则直接从指定目录启动对应 Agent CLI。
+- “Agent 命令”是 cmd 启动后自动键入的文本，不做 `shutil.which()` 预检查；不存在的命令会显示 cmd 自己的错误；
+- 命令留空时只打开普通 cmd，设置为 `codeagent` 或 `nga` 时则自动键入并启动对应 Agent CLI；Agent 退出后仍回到同一个 cmd。
 
 ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANSI 屏幕渲染器，不包含 xterm.js 的完整颜色、鼠标模式和 IME 能力。
 
@@ -526,7 +528,7 @@ ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANS
 | `POST /api/run/stop` | 终止当前环境任务 |
 | `POST /api/open` | 打开最近运行目录或日志 |
 | `GET/POST /api/settings` | 读取/保存 Agent 命令、启动目录和上传目录 |
-| `POST /api/agent/start` | 在指定工作目录创建 ConPTY |
+| `POST /api/agent/start` | 在指定工作目录创建 cmd ConPTY，并可自动键入启动命令 |
 | `POST /api/agent/input` | 把键盘、文本或文件路径写入 ConPTY |
 | `GET /api/agent/events?cursor=N` | 增量读取终端原始输出块 |
 | `POST /api/upload` | 保存拖入或粘贴的文件并返回绝对路径 |
