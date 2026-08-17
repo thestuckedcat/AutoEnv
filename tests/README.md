@@ -56,7 +56,7 @@ python -X utf8 -m pytest -q
 | `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏、静默写入与批量计数摘要 | `results.py`、`selectors.py`、`recorder.py` |
 | `test_cli.py` | monkeypatch 注册表和执行函数 | 菜单选择、命令模式和退出码 | `autoenv/cli.py` 的参数/输出映射 |
 | `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP/HTTP server、动态模块 | LaunchRequest 合并、多环境标签绑定、脚本连接/HDFS/普通输入元数据、唯一 Web 启动链与固定端口、workflow 进度事件/进度条、模板 Web 契约、下载结果复用、FTP、local Web Tool 和导入边界 | `startWeb.py`、`webPage/server.py`、`interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
-| `test_log_collection.py` | 三份确认日志、非法日历日期、脚本化路径/glob 来源、同名多目录日志、压缩包、临时 SQLite、离线 workflow | 来源独立 Group 与 manifest、ZIP/GZ/TAR.GZ/TGZ 递归安全解压、block 正文排除、稳定 group 顺序、非法日期 `[?]` 与原始顺序、line/block 时间语义、精确目标日志、批次/分页/跨午夜查询、workflow Tool 隔离、异常堆栈静默落盘、注册模板校验与发现隔离 | `autoenv/logs.py`、`autoenv/log_query.py`、`autoenv/web_tools.py`、`webPage/tools/log_collection.py`、`webPage/tools/_template.py` |
+| `test_log_collection.py` | 三份确认日志、非法日历日期、line-block 多行记录、脚本化路径/glob 来源、同名多目录日志、压缩包、临时 SQLite、离线 workflow | 来源独立 Group 与 manifest、ZIP/GZ/TAR.GZ/TGZ 递归安全解压、block 正文排除、line-block 时间边界/文件隔离、稳定 group 顺序、非法日期 `[?]` 与原始顺序、line/block 时间语义、精确目标日志、批次/分页/跨午夜查询、workflow Tool 隔离、异常堆栈静默落盘、注册模板校验与发现隔离 | `autoenv/logs.py`、`autoenv/log_query.py`、`autoenv/web_tools.py`、`webPage/tools/log_collection.py`、`webPage/tools/_template.py` |
 | `test_log_error_triage_skill.py` | 临时普通/GZ 日志、临时知识库、子进程 CLI | `[ERROR]` 精确提取与上下文、隐藏文件忽略、编码/大小写入口、知识模板安全创建与禁止覆盖、Skill/人工确认契约 | `.agents/skills/log-error-triage/`、`logKnowledge/` |
 
 ## 4. `register_func` 每条 UT 的目的
@@ -113,7 +113,7 @@ Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 
 
 - `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、JSON 资源标签目录及 HTTP 接口、多环境资源标签绑定、首次保存环境后立即刷新脚本/Tool 资源选择、日志分页控件的 CSS 查询与异步面板替换保护、SCP 进度文本到结构化事件及原生进度条的契约、脚本连接/HDFS/普通输入提示与模板元数据、环境保存校验、ConPTY 原始控制序列流、动态 local Web Tool 发现执行和 ZIP 导入安全限制。
 - 同一文件还扫描仓库中的 `serve_forever()` 实现，要求只存在 `webPage/server.py`；验证 `startWeb.py` 拒绝全部参数，服务只能绑定固定的 `127.0.0.1:8765`，且旧 Web 目录不存在。
-- `tests/test_log_collection.py`：验证 workflow Tool 的 `RunContext` 运行结果、未捕获异常堆栈只落 `run.log` 且页面只显示单行错误、脚本化来源按路径/glob 分组、多远端目录同名文件隔离、block 正文排除、非法日历日期保留原始顺序并以 `[?]` 输出、确认日志样例的精确输出、归档安全边界、时间继承与批次查询。
+- `tests/test_log_collection.py`：验证 workflow Tool 的 `RunContext` 运行结果、未捕获异常堆栈只落 `run.log` 且页面只显示单行错误、脚本化来源按路径/glob 分组、多远端目录同名文件隔离、block 正文排除、line-block 只吸收连续无时间戳续行且不跨文件、非法日历日期保留原始顺序并以 `[?]` 输出、确认日志样例的精确输出、归档安全边界、时间继承与批次查询。
 - `tests/test_log_error_triage_skill.py`：验证日志提取辅助脚本和人工知识库脚手架；所有输入、GZ 和输出均位于临时目录，不读取真实业务日志。
 - `tests/test_ssh_host.py` 新增 SFTP 精确/正则下载，以及 SCP 批量多匹配、BusyBox 非 GNU 且无 `wc` 的枚举、稳定排序、远端 mtime、日志批量无大小比对、逐文件进度、静默明细和失败清理。
 - `tests/test_package_extractor.py` 新增 ZIP 单文件提取与路径穿越拒绝。

@@ -271,6 +271,127 @@ def test_invalid_calendar_date_is_retained_with_question_mark_in_source_order(
     ]
 
 
+def test_match_line_block_keeps_only_timestamp_less_continuations_in_order(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "cpdt_line_block.log"
+    fixture.write_text(
+        "08:00:00 [INFO] ignored boundary\n"
+        "ignored continuation\n"
+        "08:01:00 [ERROR] first failure\n"
+        "Traceback: first detail\n"
+        "[ERROR] repeated marker without timestamp\n"
+        "  indented detail\n"
+        "08:02:00 [INFO] closes first block\n"
+        "not captured after info\n"
+        "08:03:00 [ERROR] second failure\n"
+        "second detail\n"
+        "0000-00-00 08:04:00 [ERROR] invalid-date failure\n"
+        "invalid-date detail\n"
+        "08:05:00 [INFO] closes invalid block\n"
+        "[ERROR] timestamp-less inherited start\n"
+        "inherited detail\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "line-block-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="line-block-run", run_dir=run_dir, recorder=Recorder()
+    )
+    assert collection.download(
+        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
+
+    matched = group.match_line_block(r"\[ERROR\]", "errors.log")
+
+    assert matched.success and matched.output_count == 10
+    assert collection.finalize().success
+    assert (collection.targets_dir / "errors.log").read_text(encoding="utf-8") == (
+        "[08:01:00] 08:01:00 [ERROR] first failure\n"
+        "[08:01:00] Traceback: first detail\n"
+        "[08:01:00] [ERROR] repeated marker without timestamp\n"
+        "[08:01:00]   indented detail\n"
+        "[08:03:00] 08:03:00 [ERROR] second failure\n"
+        "[08:03:00] second detail\n"
+        "[?] 0000-00-00 08:04:00 [ERROR] invalid-date failure\n"
+        "[?] invalid-date detail\n"
+        "[08:05:00] [ERROR] timestamp-less inherited start\n"
+        "[08:05:00] inherited detail\n"
+    )
+    queried = query_log_records(
+        tmp_path, "line-block-run", "errors.log", page=1, limit=20
+    )
+    assert [item["timestamp"] for item in queried["records"]] == [
+        "08:01:00",
+        "08:01:00",
+        "08:01:00",
+        "08:01:00",
+        "08:03:00",
+        "08:03:00",
+        "?",
+        "?",
+        "08:05:00",
+        "08:05:00",
+    ]
+    assert [item["source_line"] for item in queried["records"]] == [
+        3, 4, 5, 6, 9, 10, 11, 12, 14, 15
+    ]
+    assert [item["timestamp_source"] for item in queried["records"]] == [
+        "parsed",
+        "line_block_continuation",
+        "line_block_continuation",
+        "line_block_continuation",
+        "parsed",
+        "line_block_continuation",
+        "invalid",
+        "invalid",
+        "inherited",
+        "line_block_continuation",
+    ]
+
+
+def test_match_line_block_resets_active_state_at_each_file_boundary(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "cpdt_first.log"
+    second = tmp_path / "cpdt_second.log"
+    first.write_text(
+        "08:00:00 [ERROR] first file\nfirst-file detail\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "orphan must not cross files\n"
+        "08:01:00 [ERROR] second file\n"
+        "second-file detail\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "line-block-files-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="line-block-files-run", run_dir=run_dir, recorder=Recorder()
+    )
+    assert collection.download(
+        FakeBatchHost([(first, 1.0), (second, 2.0)]),
+        remote_dir="/logs",
+        glob="cpdt_*",
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
+
+    assert group.match_line_block(r"\[ERROR\]", "errors.log").success
+    assert collection.finalize().success
+    output = (collection.targets_dir / "errors.log").read_text(encoding="utf-8")
+    assert "orphan must not cross files" not in output
+    assert output == (
+        "[08:00:00] 08:00:00 [ERROR] first file\n"
+        "[08:00:00] first-file detail\n"
+        "[08:01:00] 08:01:00 [ERROR] second file\n"
+        "[08:01:00] second-file detail\n"
+    )
+
+
 def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Path):
     first_fixture = tmp_path / "first-fixture"
     second_fixture = tmp_path / "second-fixture"

@@ -896,6 +896,98 @@ class LogGroup:
         self.collection.recorder.record_result("LOG MATCH LINE", result)
         return result
 
+    def match_line_block(
+        self,
+        start_regex: str,
+        target_file: str,
+    ) -> LogOperationResult:
+        """Copy a matching start line plus its timestamp-less continuation.
+
+        This mode is intended for records whose first line carries the product
+        timestamp and marker while stack traces or wrapped payload lines do not.
+        A parsed timestamp is always a boundary: it closes the active block,
+        and the same line opens a new block only when ``start_regex`` matches.
+        A timestamp-less matching line may also start a block and inherits the
+        last valid timestamp from the same source file, matching ``match_line``.
+
+        There is deliberately no end regex.  Blank lines and every other line
+        without a timestamp belong to the active block until the next timestamp
+        or file boundary.  Files never inherit block state or timestamps from
+        their predecessor, preserving the existing rotated-log isolation.
+        """
+
+        start = re.compile(start_regex)
+        target = _target_file(target_file)
+        started = datetime.now().astimezone()
+        operation_id = self.collection.recorder.next_operation_id()
+        self._rule_order += 1
+        count = 0
+        try:
+            for file_order, path in enumerate(self.files, start=self.file_order_start):
+                previous: LogTimestamp | None = None
+                active = False
+                anchor: LogTimestamp | None = None
+                source_file = str(path.relative_to(self.collection.expanded_dir))
+                for line_number, line in enumerate(self._read_lines(path), start=1):
+                    parsed = self.timestamp.parse(line)
+                    if parsed is not None:
+                        # Any explicit timestamp closes the previous implicit
+                        # block before this line is considered as a new start.
+                        active = False
+                        anchor = None
+                        if not parsed.invalid_date:
+                            previous = parsed
+
+                    if active and parsed is None:
+                        # Once a block is active, every timestamp-less line is
+                        # continuation content.  Even if it repeats the start
+                        # marker, it must not reset the block's anchor time.
+                        timestamp_source = (
+                            "invalid"
+                            if anchor is not None and anchor.invalid_date
+                            else "line_block_continuation"
+                        )
+                    elif start.search(line):
+                        active = True
+                        anchor = parsed or previous
+                        if parsed is not None and parsed.invalid_date:
+                            timestamp_source = "invalid"
+                        elif parsed is not None:
+                            timestamp_source = "parsed"
+                        elif previous is not None:
+                            timestamp_source = "inherited"
+                        else:
+                            timestamp_source = "unknown"
+                    else:
+                        continue
+
+                    self.collection._records.append(
+                        _Record(
+                            target,
+                            file_order,
+                            line_number,
+                            self._rule_order,
+                            line,
+                            anchor,
+                            timestamp_source,
+                            source_file,
+                        )
+                    )
+                    count += 1
+            result = self.collection._operation_result(
+                operation_id, started, True, "success", count
+            )
+        except Exception as exc:
+            self.collection._failed = True
+            self.collection._write_manifest(
+                "failed", error=str(exc), download=self.collection._download_manifest()
+            )
+            result = self.collection._operation_result(
+                operation_id, started, False, "match_failed", count, exc
+            )
+        self.collection.recorder.record_result("LOG MATCH LINE BLOCK", result)
+        return result
+
     def match_block(
         self,
         begin_regex: str,

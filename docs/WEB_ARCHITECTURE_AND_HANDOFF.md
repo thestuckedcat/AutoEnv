@@ -59,6 +59,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 - `source_groups()` 按 `LogSource.name` 返回独立 Group。直接下载的普通文件和该来源压缩包递归展开后的非压缩文件全部入组；压缩包容器保留审计但不作为文本解码，不再执行第二次文件名 glob。
 - `TimestampPattern` 使用 `year/month/day/hour/minute/second` 命名组；`hour` 和 `minute` 必须存在，日期与秒可缺失。
 - `match_line()` 扫描全部原始行更新时间，匹配行继承本文件上一时间；文件之间不继承。
+- `match_line_block()` 保留 start regex 命中的起始行，并继续保留其后连续的无时间戳行；下一条可解析时间戳是硬边界，该行只有同时匹配 start 才会开启新块。起始行和续行共享起始关联时间，文件边界重置活动块与继承时间。
 - `match_block()` 排除 begin/end 行，支持文件头和 end 后的隐式块、重复 begin、连续 end 与显式块 EOF 输出；同一块统一时间。可选 `exclude_regex` 在块和时间确定后删除命中的正文行。未取得时间时输出 `[-]`；正则命中但 year/month/day 不能组成合法日历日期时保留记录位置、输出 `[?]`，并从时间窗查询中排除。
 - `finalize()` 生成 `targets/*.log`、逐行 SQLite 索引和不含密码的 `manifest.json`。只有 manifest 状态为 `ready` 的批次可查询。
 
