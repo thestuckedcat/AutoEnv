@@ -374,6 +374,18 @@ def test_environment_reload_refreshes_existing_workflow_tool_choices():
     assert 'choices.some(choice=>choice.environment===selected)' in javascript
 
 
+def test_log_query_uses_css_selectors_and_ignores_replaced_panels():
+    root = Path(__file__).resolve().parents[1]
+    javascript = (root / "webPage" / "app.js").read_text(encoding="utf-8")
+
+    assert 'document.querySelector(`[data-prev-page="${index}"]`)' in javascript
+    assert 'document.querySelector(`[data-next-page="${index}"]`)' in javascript
+    assert '$(`[data-prev-page="${index}"]`)' not in javascript
+    assert '$(`[data-next-page="${index}"]`)' not in javascript
+    assert "if(!container||!pageLabel||!previous||!next)return" in javascript
+    assert "state.logQueryTokens[index]===token&&container" in javascript
+
+
 def test_agent_page_types_and_drops_files_directly_in_terminal():
     root = Path(__file__).resolve().parents[1]
     html = (root / "webPage" / "index.html").read_text(encoding="utf-8")

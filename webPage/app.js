@@ -70,7 +70,22 @@
 
   function markKeyword(value,keyword){const text=String(value??""),needle=String(keyword??"").trim();if(!needle)return esc(text);const folded=text.toLocaleLowerCase(),wanted=needle.toLocaleLowerCase();let cursor=0,html="",found;while((found=folded.indexOf(wanted,cursor))!==-1){html+=esc(text.slice(cursor,found))+`<mark>${esc(text.slice(found,found+needle.length))}</mark>`;cursor=found+needle.length}return html+esc(text.slice(cursor))}
 
-  async function queryLogPane(index,page){const container=$(`logRecords${index}`);if(!container||!state.selectedLogBatch)return;const token=++state.logQuerySerial;state.logQueryTokens[index]=token;const params=new URLSearchParams({batch:state.selectedLogBatch,target:state.logPanes[index],page:String(page),limit:"200",date:$("logDate").value,time:$("logTime").value,window:$("logWindow").value||"60",keyword:state.logFinds[index]||""});try{const data=await api(`/api/log-batches/query?${params}`),keyword=data.keyword||"";if(state.logQueryTokens[index]!==token)return;container.innerHTML=data.records.length?data.records.map(row=>`<button class="log-row ${row.clock_seconds===null?"unknown-time":""}" data-clock="${row.clock_seconds??""}" data-date="${esc(row.date_key||"")}"><time>[${esc(row.timestamp)}]</time><span>${markKeyword(row.text,keyword)}</span><small>${esc(row.source_file)}:${row.source_line}</small></button>`).join(""):`<div class="interaction-empty">没有匹配记录</div>`;const pageLabel=$(`logPage${index}`);pageLabel.textContent=`${data.page} / ${Math.max(1,Math.ceil(data.total/data.limit))} · ${data.total} 条`;pageLabel.dataset.page=String(data.page);$(`[data-prev-page="${index}"]`).disabled=data.page<=1;$(`[data-next-page="${index}"]`).disabled=!data.has_more;$$(`#logRecords${index} .log-row`).forEach(row=>row.onclick=()=>highlightRelated(row))}catch(error){if(state.logQueryTokens[index]===token)container.textContent=`ERROR: ${error.message}`}}
+  async function queryLogPane(index,page){
+    if(!$(`logRecords${index}`)||!state.selectedLogBatch)return;
+    const token=++state.logQuerySerial;state.logQueryTokens[index]=token;
+    const params=new URLSearchParams({batch:state.selectedLogBatch,target:state.logPanes[index],page:String(page),limit:"200",date:$("logDate").value,time:$("logTime").value,window:$("logWindow").value||"60",keyword:state.logFinds[index]||""});
+    try{
+      const data=await api(`/api/log-batches/query?${params}`),keyword=data.keyword||"";
+      if(state.logQueryTokens[index]!==token)return;
+      // 查询返回时日志面板可能已被切换或重建，必须重新取得当前 DOM。分页按钮只有
+      // data 属性而没有 id，不能交给基于 getElementById() 的 $() 查询。
+      const container=$(`logRecords${index}`),pageLabel=$(`logPage${index}`),previous=document.querySelector(`[data-prev-page="${index}"]`),next=document.querySelector(`[data-next-page="${index}"]`);
+      if(!container||!pageLabel||!previous||!next)return;
+      container.innerHTML=data.records.length?data.records.map(row=>`<button class="log-row ${row.clock_seconds===null?"unknown-time":""}" data-clock="${row.clock_seconds??""}" data-date="${esc(row.date_key||"")}"><time>[${esc(row.timestamp)}]</time><span>${markKeyword(row.text,keyword)}</span><small>${esc(row.source_file)}:${row.source_line}</small></button>`).join(""):`<div class="interaction-empty">没有匹配记录</div>`;
+      pageLabel.textContent=`${data.page} / ${Math.max(1,Math.ceil(data.total/data.limit))} · ${data.total} 条`;pageLabel.dataset.page=String(data.page);previous.disabled=data.page<=1;next.disabled=!data.has_more;
+      $$(`#logRecords${index} .log-row`).forEach(row=>row.onclick=()=>highlightRelated(row));
+    }catch(error){const container=$(`logRecords${index}`);if(state.logQueryTokens[index]===token&&container)container.textContent=`ERROR: ${error.message}`}
+  }
 
   function highlightRelated(selected){$$('.log-row').forEach(row=>row.classList.remove("selected","correlated"));selected.classList.add("selected");if(selected.dataset.clock==="")return;const selectedClock=Number(selected.dataset.clock),selectedDate=selected.dataset.date;$$('.log-row').forEach(row=>{if(row===selected||row.dataset.clock==="")return;const clock=Number(row.dataset.clock),rowDate=row.dataset.date;let distance;if(selectedDate&&rowDate){const left=new Date(`${selectedDate}T00:00:00Z`).getTime()/1000+selectedClock,right=new Date(`${rowDate}T00:00:00Z`).getTime()/1000+clock;distance=Math.abs(left-right)}else{const direct=Math.abs(selectedClock-clock);distance=Math.min(direct,86400-direct)}if(distance<=300)row.classList.add("correlated")})}
 
