@@ -1034,13 +1034,19 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 日志收集 workflow 可以复用同一个 `RunContext` 和已注册 SSH Host：
 
 ```python
-from autoenv import TimestampPattern
+from autoenv import LogSource, TimestampPattern
 
-collection = ctx.create_log_collection(alias="问题单 1234")
-result = collection.download_many(
+# 路径和下载 glob 是产品规则，固化在注册脚本中并接受代码审查；
+# Web 请求只负责绑定 SSH 环境，不能临时扩大远端读取范围。
+LOG_SOURCES = (
+    LogSource("product", "/var/log/product", "cpdt_*"),
+    LogSource("backup", "/var/log/product-backup", "cpdt_backup_*"),
+)
+
+collection = ctx.create_log_collection()
+result = collection.download_sources(
     host,
-    remote_dirs=["/var/log/product", "/var/log/product-backup"],
-    glob="cpdt_*",
+    sources=LOG_SOURCES,
     protocol="scp",
 )
 if not result.success:
@@ -1053,19 +1059,24 @@ timestamp = TimestampPattern(
     r"(?:(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+)?"
     r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
 )
-group = collection.group(glob="cpdt*.log", timestamp=timestamp)
-result = group.match_line(r"\[AUTH\]", "auth.log")
+groups = collection.source_groups(timestamp=timestamp)
+result = groups["product"].match_line(r"\[AUTH\]", "auth.log")
 if not result.success:
     return result
-result = group.match_block(r"\[DB\] BEGIN\b", r"\[DB\] END\b", "database.log")
+result = groups["product"].match_block(
+    r"\[DB\] BEGIN\b",
+    r"\[DB\] END\b",
+    "database.log",
+    exclude_regex=r"^debug=",  # 可选：从已选中的 block 正文删除匹配行
+)
 if not result.success:
     return result
 return collection.finalize()
 ```
 
-`download()` 在单个远端目录按 basename glob 下载全部匹配普通文件。`download_many()` 接收非空、无重复的目录序列，并把每个目录隔离到 `raw/source-NNN/`，所以相同 basename 不会互相覆盖；任一目录零匹配或下载失败时，整个多目录批次失败并清理已下载文件。远端设备只需 BusyBox ash 及常见的 `test`、`wc`、`stat`、`printf` applet，不依赖 GNU `find -printf`。`extract_all()` 递归支持 ZIP、GZ、TAR.GZ、TGZ，并拒绝路径穿越、链接、特殊文件、冲突及超过 10,000 文件/5 GiB 的展开。
+`LogSource` 把一个稳定的 group 名、一个远端目录和该目录专属的 basename glob 绑定为脚本配置。`download_sources()` 按声明顺序把每个来源隔离到 `raw/source-NNN/`，所以不同来源中的相同 basename 不会互相覆盖；任一来源零匹配或下载失败时，整个批次失败并清理已下载文件。兼容 API `download()`/`download_many()` 仍然保留。远端设备只需 BusyBox ash 及常见的 `test`、`wc`、`stat`、`printf` applet，不依赖 GNU `find -printf`。`extract_all()` 递归支持 ZIP、GZ、TAR.GZ、TGZ，并拒绝路径穿越、链接、特殊文件、冲突及超过 10,000 文件/5 GiB 的展开。
 
-group 文件按远端 mtime 和相对路径稳定排序。时间正则必须提供 `hour`、`minute` 命名组，可选 `year`、`month`、`day`、`second`。`match_line()` 的时间只在单个源文件内继承；`match_block()` 排除边界行，显式块统一使用 begin 时间，隐式块使用块内首个时间或块前时间。未知时间输出 `[-]`。同一目标的多条规则在 finalize 时按源文件、源行、规则声明顺序合并；目标名必须是无目录的 `.log` 文件名。
+`source_groups()` 不再执行第二次文件名 glob：每个来源直接下载的普通文件，以及压缩包递归展开后的所有非压缩叶子文件，都进入以 `LogSource.name` 命名的独立 group；压缩包容器本身保留用于审计，但不会作为文本解析。group 文件按远端 mtime 和相对路径稳定排序。时间正则必须提供 `hour`、`minute` 命名组，可选 `year`、`month`、`day`、`second`。`match_line()` 的时间只在单个源文件内继承；`match_block()` 排除边界行，显式块统一使用 begin 时间，隐式块使用块内首个时间或块前时间。可选 `exclude_regex` 在 block 边界和关联时间已经确定后删除匹配的正文行，因此删掉携带时间的正文也不会改变其余行的关联时间。未知时间输出 `[-]`。同一目标的多条规则在 finalize 时按源文件、源行、规则声明顺序合并；目标名必须是无目录的 `.log` 文件名。
 
 默认编码按 UTF-8、UTF-8-SIG、GB18030、Latin-1 尝试并记录实际值。成功 `finalize()` 后批次包含人工可读的 `targets/*.log`、SQLite 逐行索引和不含连接密码的 `manifest.json`；失败或未 finalize 的批次不会进入 Web 查询列表。
 

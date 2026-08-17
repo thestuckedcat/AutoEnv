@@ -6,9 +6,6 @@
     }
   },
   "parameters": {
-    "arguments": {
-      "remote_dirs": "/var/log/product\n/var/log/product-backup",
-      "alias": "问题单示例"
-    }
+    "arguments": {}
   }
 }

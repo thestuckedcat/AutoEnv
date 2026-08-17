@@ -13,7 +13,7 @@ from .results import (
     ScriptResult,
     UploadResult,
 )
-from .logs import LogCollection, LogGroup, TimestampPattern
+from .logs import LogCollection, LogGroup, LogSource, TimestampPattern
 from .selectors import extra_file, match, package
 from .ssh_host import SSHDefaults
 from .ftp_host import FTPDefaults
@@ -32,6 +32,7 @@ __all__ = [
     "ExtractResult",
     "LogCollection",
     "LogGroup",
+    "LogSource",
     "TimestampPattern",
     "SSHDefaults",
     "FTPDefaults",

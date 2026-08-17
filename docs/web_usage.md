@@ -498,7 +498,7 @@ python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py `
 - `kind="local"` 是兼容默认值：函数接收页面 values 字典，由 `POST /api/tools/run` 在服务进程中调用，结果必须可 JSON 序列化。
 - `kind="workflow"`：函数接收 `RunContext`，资源由函数中的字面量 `ctx.register_*()` 调用静态发现。页面把资源逻辑名绑定到环境档案后，`POST /api/tools/workflow/start` 启动固定入口 `adapt_tool_interface.py`；输出从 `/api/tools/workflow/events` 分页轮询，停止使用 `/api/tools/workflow/stop`。
 
-日志 Tool 使用 `renderer="log_collection"`。“远端日志目录”是每行一个路径的多行输入；不同路径下载到 `raw/source-NNN/`，再统一解压和分析，因此同名日志不会覆盖。任一路径失败都会使整个批次失败并清理已经下载的原始文件。远端枚举兼容 BusyBox，不依赖 GNU `find -printf`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
+日志 Tool 使用 `renderer="log_collection"`。页面只提交所选 SSH 环境；远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py::LOG_SOURCES`，不能由 Web 请求覆盖。不同来源下载到 `raw/source-NNN/`，递归解压后由 `source_groups()` 直接形成独立 Group，因此同名日志不会覆盖，也不会通过第二个 basename glob 混入其他来源。任一路径失败都会使整个批次失败并清理已经下载的原始文件。远端枚举兼容 BusyBox，不依赖 GNU `find -printf`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
 
 ```text
 GET /api/log-batches

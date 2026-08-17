@@ -17,7 +17,7 @@ import pytest
 
 from autoenv import web_tools
 from autoenv.log_query import list_log_batches, query_log_records
-from autoenv.logs import LogCollection, TimestampPattern
+from autoenv.logs import LogCollection, LogSource, TimestampPattern
 from autoenv.registry import list_scripts
 from autoenv.results import RemoteBatchDownloadResult, RemoteDownloadedFile
 from autoenv.web_tools import WebToolDefinition, describe_tools, run_web_tool, run_workflow_tool
@@ -82,11 +82,13 @@ class FakeMultiDirectoryHost:
     def __init__(self, files_by_dir: dict[str, list[tuple[Path, float]]]) -> None:
         self.files_by_dir = files_by_dir
         self.calls: list[tuple[str, Path]] = []
+        self.globs: list[str] = []
 
     def scp_download_many(self, remote_dir: str, *, glob: str, destination: Path):
         now = datetime.now().astimezone()
         destination.mkdir(parents=True, exist_ok=True)
         self.calls.append((remote_dir, destination))
+        self.globs.append(glob)
         downloaded = []
         for source, mtime in self.files_by_dir[remote_dir]:
             target = destination / source.name
@@ -263,6 +265,134 @@ def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Pat
     assert manifest["download"]["remote_dir"] is None
     assert manifest["download"]["remote_dirs"] == ["/logs/first", "/logs/second"]
     assert [item["file_count"] for item in manifest["download"]["directories"]] == [1, 1]
+
+
+def test_scripted_sources_use_per_path_globs_and_form_groups_after_extraction(
+    tmp_path: Path,
+):
+    auth_fixtures = tmp_path / "auth-fixtures"
+    database_fixtures = tmp_path / "database-fixtures"
+    auth_fixtures.mkdir()
+    database_fixtures.mkdir()
+    auth_plain = auth_fixtures / "auth_current.log"
+    auth_plain.write_text("08:00:00 [AUTH] current\n", encoding="utf-8")
+    auth_archive = auth_fixtures / "auth_bundle.zip"
+    with zipfile.ZipFile(auth_archive, "w") as archive:
+        archive.writestr("nested/auth_archived.log", "08:01:00 [AUTH] archived\n")
+    database_archive = database_fixtures / "db_bundle.zip"
+    with zipfile.ZipFile(database_archive, "w") as archive:
+        archive.writestr(
+            "database.log",
+            "08:02:00 [DB] BEGIN\n"
+            "debug=remove this line\n"
+            "SQL=select 1\n"
+            "08:02:01 [DB] END\n",
+        )
+
+    host = FakeMultiDirectoryHost(
+        {
+            "/logs/auth": [(auth_plain, 1.0), (auth_archive, 2.0)],
+            "/logs/database": [(database_archive, 3.0)],
+        }
+    )
+    run_dir = tmp_path / "logs" / "scripted-source-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="scripted-source-run", run_dir=run_dir, recorder=Recorder()
+    )
+    sources = (
+        LogSource(name="auth", remote_dir="/logs/auth", glob="auth_*"),
+        LogSource(name="database", remote_dir="/logs/database", glob="db_*"),
+    )
+
+    downloaded = collection.download_sources(host, sources=sources)
+    assert downloaded.success and downloaded.output_count == 3
+    assert [item[0] for item in host.calls] == ["/logs/auth", "/logs/database"]
+    assert host.globs == ["auth_*", "db_*"]
+    assert collection.extract_all().success
+
+    groups = collection.source_groups(timestamp=TIMESTAMP)
+    assert list(groups) == ["auth", "database"]
+    assert [path.name for path in groups["auth"].files] == [
+        "auth_current.log",
+        "auth_archived.log",
+    ]
+    assert [path.name for path in groups["database"].files] == ["database.log"]
+    assert all(path.suffix not in {".zip", ".gz"} for group in groups.values() for path in group.files)
+
+    assert groups["auth"].match_line(r"\[AUTH\]", "auth.log").success
+    assert groups["database"].match_block(
+        r"\[DB\] BEGIN\b",
+        r"\[DB\] END\b",
+        "database.log",
+        exclude_regex=r"^debug=",
+    ).success
+    assert collection.finalize().success
+    assert (collection.targets_dir / "auth.log").read_text(encoding="utf-8") == (
+        "[08:00:00] 08:00:00 [AUTH] current\n"
+        "[08:01:00] 08:01:00 [AUTH] archived\n"
+    )
+    assert (collection.targets_dir / "database.log").read_text(encoding="utf-8") == (
+        "[08:02:00] SQL=select 1\n"
+    )
+    manifest = json.loads(collection.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["download"]["glob"] is None
+    assert manifest["download"]["sources"] == [
+        {"name": "auth", "remote_dir": "/logs/auth", "glob": "auth_*"},
+        {"name": "database", "remote_dir": "/logs/database", "glob": "db_*"},
+    ]
+
+
+def test_match_block_exclusion_keeps_block_time_from_removed_line(tmp_path: Path):
+    fixture = tmp_path / "cpdt_implicit.log"
+    fixture.write_text(
+        "08:05:00 debug=remove timestamp carrier\n"
+        "payload retained\n"
+        "08:05:10 [DB] END\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "block-exclusion-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="block-exclusion-run", run_dir=run_dir, recorder=Recorder()
+    )
+    assert collection.download(
+        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
+
+    matched = group.match_block(
+        r"\[DB\] BEGIN\b",
+        r"\[DB\] END\b",
+        "database.log",
+        exclude_regex=r"^\d{2}:\d{2}:\d{2} debug=",
+    )
+
+    assert matched.success and matched.output_count == 1
+    assert collection.finalize().success
+    assert (collection.targets_dir / "database.log").read_text(encoding="utf-8") == (
+        "[08:05:00] payload retained\n"
+    )
+
+
+def test_scripted_sources_reject_duplicate_names_before_transfer(tmp_path: Path):
+    run_dir = tmp_path / "logs" / "duplicate-source-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="duplicate-source-run", run_dir=run_dir, recorder=Recorder()
+    )
+    host = FakeMultiDirectoryHost({"/logs/one": [], "/logs/two": []})
+
+    with pytest.raises(ValueError, match="duplicate log source name"):
+        collection.download_sources(
+            host,
+            sources=[
+                LogSource("same", "/logs/one", "one_*"),
+                LogSource("same", "/logs/two", "two_*"),
+            ],
+        )
+    assert host.calls == []
 
 
 def test_multiple_remote_directories_reject_duplicates_before_transfer(tmp_path: Path):
@@ -633,21 +763,21 @@ def test_log_collection_is_a_workflow_tool_not_an_environment_script():
     tool = next(item for item in describe_tools(root) if item["name"] == "log-collection")
     assert tool["kind"] == "workflow"
     assert tool["renderer"] == "log_collection"
-    assert tool["fields"][0] == {
-        "name": "remote_dirs",
-        "label": "远端日志目录（每行一个）",
-        "type": "textarea",
-        "required": True,
-        "placeholder": "/var/log/product\n/var/log/product-backup",
-    }
+    assert tool["fields"] == []
     assert tool["resources"] == [{
         "name": "log_server",
         "alias": "日志服务器网口",
-        "description": "通过 SCP 从所填多个目录批量收集 cpdt_* 日志。",
+        "description": "通过 SCP 按脚本固化的路径和通配符收集日志。",
         "label": "1260网口",
         "protocol": "ssh",
     }]
     assert "log-collection" not in {item.name for item in list_scripts(root_dir=root)}
     assert "download_and_parse_logs" not in {item.name for item in list_scripts(root_dir=root)}
+    source = (root / "webPage/tools/log_collection.py").read_text(encoding="utf-8")
+    assert 'remote_dir="/var/log/product"' in source
+    assert 'glob="cpdt_*"' in source
+    assert 'ctx.argument("remote_dirs"' not in source
+    assert "collection.download_sources(" in source
+    assert "collection.source_groups(" in source
     with pytest.raises(ValueError, match="workflow"):
         run_web_tool(root, "log-collection", {})
