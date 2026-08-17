@@ -40,7 +40,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 - `SSHHost.scp_download()`：SCP 传输，目录枚举和大小检查使用 SSH 命令。
 - `SSHHost.sftp_download()`：SFTP 枚举、传输和大小检查。
-- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。
+- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`wc -c`、`stat -c %Y` 和 NUL 分隔的 `printf`。
 - 两者的 `remote_file` 和 `pattern` 必须二选一。pattern 只搜索指定目录、不递归；零匹配和多匹配都失败，没有 newest 语义。
 - 下载写入本次 `packages/`，先使用 `.part`，大小校验成功后原子替换。
 - 成功的 `RemoteDownloadResult` 可直接传给 SCP/SFTP/FTP 上传。
@@ -50,8 +50,9 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 公共 `Extractor` 支持 `.run`、`.tar.gz`、`.tgz`、`.zip`，并拒绝路径穿越和 ZIP 符号链接。
 
-`RunContext.create_log_collection()` 创建当前运行唯一的日志批次目录。处理链为 `download()` → `extract_all()` → `group()` → 一个或多个 `match_line()`/`match_block()` → `finalize()`：
+`RunContext.create_log_collection()` 创建当前运行唯一的日志批次目录。单目录处理链为 `download()` → `extract_all()` → `group()` → 一个或多个 `match_line()`/`match_block()` → `finalize()`；多目录把首步换成 `download_many(remote_dirs=[...])`：
 
+- `download_many()` 将每个远端目录下载到 `raw/source-NNN/`，允许不同目录存在同名文件；任一路径失败会清理此前已下载文件并使整个批次失败。目录列表和逐目录状态写入 manifest。
 - `extract_all()` 递归处理 ZIP、GZ、TAR.GZ 和 TGZ；拒绝路径穿越、绝对路径、链接、特殊文件、同名/父子路径冲突，并限制总文件数与展开大小。失败的展开目录会清理。
 - `group()` 递归匹配 basename glob，按继承的远端 mtime、相对路径稳定排序。每个文件独立尝试 UTF-8、UTF-8-SIG、GB18030、Latin-1，并在 manifest 记录实际编码。
 - `TimestampPattern` 使用 `year/month/day/hour/minute/second` 命名组；`hour` 和 `minute` 必须存在，日期与秒可缺失。

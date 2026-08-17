@@ -76,6 +76,47 @@ class FakeBatchHost:
         )
 
 
+class FakeMultiDirectoryHost:
+    """Serve a different local fixture set for each requested remote path."""
+
+    def __init__(self, files_by_dir: dict[str, list[tuple[Path, float]]]) -> None:
+        self.files_by_dir = files_by_dir
+        self.calls: list[tuple[str, Path]] = []
+
+    def scp_download_many(self, remote_dir: str, *, glob: str, destination: Path):
+        now = datetime.now().astimezone()
+        destination.mkdir(parents=True, exist_ok=True)
+        self.calls.append((remote_dir, destination))
+        downloaded = []
+        for source, mtime in self.files_by_dir[remote_dir]:
+            target = destination / source.name
+            shutil.copy2(source, target)
+            downloaded.append(
+                RemoteDownloadedFile(
+                    name=source.name,
+                    remote_file=f"{remote_dir}/{source.name}",
+                    local_file=str(target),
+                    remote_size=target.stat().st_size,
+                    remote_mtime=mtime,
+                )
+            )
+        return RemoteBatchDownloadResult(
+            run_id="multi-run",
+            operation_id=f"download-{len(self.calls)}",
+            protocol="scp",
+            target_name="log_server",
+            remote_dir=remote_dir,
+            glob=glob,
+            success=True,
+            status="success",
+            started_at=now,
+            finished_at=now,
+            duration_ms=0,
+            destination=str(destination),
+            files=tuple(downloaded),
+        )
+
+
 TIMESTAMP = TimestampPattern(
     r"(?:(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+)?"
     r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
@@ -172,6 +213,128 @@ def test_confirmed_log_samples_generate_expected_targets_and_index(tmp_path: Pat
     assert manifest["download"]["glob"] == "cpdt_*"
     assert set(manifest["source_encodings"].values()) == {"utf-8"}
     assert "password" not in json.dumps(manifest).lower()
+
+
+def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Path):
+    first_fixture = tmp_path / "first-fixture"
+    second_fixture = tmp_path / "second-fixture"
+    first_fixture.mkdir()
+    second_fixture.mkdir()
+    first = first_fixture / "cpdt_same.log"
+    second = second_fixture / "cpdt_same.log"
+    first.write_text("09:00:00 [AUTH] from first\n", encoding="utf-8")
+    second.write_text("08:00:00 [AUTH] from second\n", encoding="utf-8")
+    host = FakeMultiDirectoryHost(
+        {
+            "/logs/first": [(first, 20.0)],
+            "/logs/second": [(second, 10.0)],
+        }
+    )
+    run_dir = tmp_path / "logs" / "multi-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="multi-run", run_dir=run_dir, recorder=Recorder(), alias="多目录"
+    )
+
+    downloaded = collection.download_many(
+        host,
+        remote_dirs=["/logs/first", "/logs/second"],
+        glob="cpdt_*",
+    )
+    assert downloaded.success and downloaded.output_count == 2
+    assert [path.name for _, path in host.calls] == ["source-001", "source-002"]
+    assert (collection.raw_dir / "source-001/cpdt_same.log").is_file()
+    assert (collection.raw_dir / "source-002/cpdt_same.log").is_file()
+
+    assert collection.extract_all().success
+    group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
+    assert [str(path.relative_to(collection.expanded_dir)) for path in group.files] == [
+        "source-002/cpdt_same.log",
+        "source-001/cpdt_same.log",
+    ]
+    assert group.match_line(r"\[AUTH\]", "auth.log").success
+    assert collection.finalize().success
+    assert (collection.targets_dir / "auth.log").read_text(encoding="utf-8") == (
+        "[08:00:00] 08:00:00 [AUTH] from second\n"
+        "[09:00:00] 09:00:00 [AUTH] from first\n"
+    )
+
+    manifest = json.loads(collection.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["download"]["remote_dir"] is None
+    assert manifest["download"]["remote_dirs"] == ["/logs/first", "/logs/second"]
+    assert [item["file_count"] for item in manifest["download"]["directories"]] == [1, 1]
+
+
+def test_multiple_remote_directories_reject_duplicates_before_transfer(tmp_path: Path):
+    run_dir = tmp_path / "logs" / "duplicate-dir-run"
+    run_dir.mkdir(parents=True)
+    host = FakeMultiDirectoryHost({"/logs": []})
+    collection = LogCollection(
+        run_id="duplicate-dir-run", run_dir=run_dir, recorder=Recorder()
+    )
+
+    with pytest.raises(ValueError, match="duplicate remote directory"):
+        collection.download_many(host, remote_dirs=["/logs", " /logs "])
+    assert host.calls == []
+
+
+def test_multiple_remote_directories_fail_as_one_batch_and_clean_raw_files(tmp_path: Path):
+    fixture = tmp_path / "cpdt_first.log"
+    fixture.write_text("08:00:00 [AUTH] first\n", encoding="utf-8")
+
+    class SecondDirectoryFails(FakeMultiDirectoryHost):
+        def scp_download_many(
+            self, remote_dir: str, *, glob: str, destination: Path
+        ):
+            if remote_dir == "/logs/missing":
+                now = datetime.now().astimezone()
+                destination.mkdir(parents=True, exist_ok=True)
+                self.calls.append((remote_dir, destination))
+                return RemoteBatchDownloadResult(
+                    run_id="failed-multi-run",
+                    operation_id="download-2",
+                    protocol="scp",
+                    target_name="log_server",
+                    remote_dir=remote_dir,
+                    glob=glob,
+                    success=False,
+                    status="remote_file_not_found",
+                    started_at=now,
+                    finished_at=now,
+                    duration_ms=0,
+                    destination=str(destination),
+                    error_type="REMOTE_FILE_NOT_FOUND",
+                    error_message="no matching files",
+                )
+            return super().scp_download_many(
+                remote_dir, glob=glob, destination=destination
+            )
+
+    host = SecondDirectoryFails({"/logs/first": [(fixture, 1.0)]})
+    run_dir = tmp_path / "logs" / "failed-multi-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="failed-multi-run", run_dir=run_dir, recorder=Recorder()
+    )
+
+    result = collection.download_many(
+        host, remote_dirs=["/logs/first", "/logs/missing"]
+    )
+
+    assert not result.success
+    assert result.status == "remote_file_not_found"
+    assert result.error_type == "REMOTE_FILE_NOT_FOUND"
+    assert list(collection.raw_dir.iterdir()) == []
+    manifest = json.loads(collection.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["download"]["remote_dirs"] == [
+        "/logs/first",
+        "/logs/missing",
+    ]
+    assert [entry["success"] for entry in manifest["download"]["directories"]] == [
+        True,
+        False,
+    ]
 
 
 def test_log_batch_query_supports_clock_windows_unknown_rows_and_paging(tmp_path: Path):
@@ -470,10 +633,17 @@ def test_log_collection_is_a_workflow_tool_not_an_environment_script():
     tool = next(item for item in describe_tools(root) if item["name"] == "log-collection")
     assert tool["kind"] == "workflow"
     assert tool["renderer"] == "log_collection"
+    assert tool["fields"][0] == {
+        "name": "remote_dirs",
+        "label": "远端日志目录（每行一个）",
+        "type": "textarea",
+        "required": True,
+        "placeholder": "/var/log/product\n/var/log/product-backup",
+    }
     assert tool["resources"] == [{
         "name": "log_server",
         "alias": "日志服务器网口",
-        "description": "通过 SCP 从当前目录批量收集 cpdt_* 日志。",
+        "description": "通过 SCP 从所填多个目录批量收集 cpdt_* 日志。",
         "label": "1260网口",
         "protocol": "ssh",
     }]

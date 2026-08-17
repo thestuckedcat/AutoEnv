@@ -557,7 +557,12 @@ class SSHHost:
         glob: str,
         destination: Path | str,
     ) -> RemoteBatchDownloadResult:
-        """Download every basename matched by a glob into an empty run artifact directory."""
+        """Download every basename matched by a glob into an empty run artifact directory.
+
+        Enumeration is intentionally non-recursive.  Higher-level workflows
+        select each remote directory explicitly, which keeps the collection
+        scope reviewable and avoids unexpectedly walking large filesystem trees.
+        """
 
         remote_dir = self._normalize_remote_dir(remote_dir)
         glob = _text(glob, "glob")
@@ -583,6 +588,9 @@ class SSHHost:
         try:
             self._ensure_transport()
             entries = self._list_remote_file_metadata(remote_dir)
+            # Stable chronological ordering is captured in the result and later
+            # reused by LogCollection after archives are expanded.  Filename is
+            # a deterministic tie breaker for coarse/equal remote mtimes.
             matches = sorted(
                 (item for item in entries if fnmatch.fnmatchcase(item[0], glob)),
                 key=lambda item: (item[2], item[0].casefold(), item[0]),
@@ -606,6 +614,9 @@ class SSHHost:
                     remote_path = self._remote_file(remote_dir, name)
                     local_path = (destination_path / name).resolve()
                     local_path.relative_to(destination_path)
+                    # Never expose a truncated file under its final name.  Size
+                    # verification happens on .part, followed by an atomic local
+                    # replace inside the same destination directory.
                     pending = local_path.with_name(local_path.name + ".part")
                     pending.unlink(missing_ok=True)
                     try:
@@ -643,6 +654,8 @@ class SSHHost:
         except Exception as exc:
             status, error_type, error_message = "download_failed", type(exc).__name__, str(exc) or repr(exc)
         if not success:
+            # Batch semantics are all-or-nothing for one remote directory.  The
+            # multi-directory layer applies the same rule across these batches.
             for item in downloaded:
                 Path(item.local_file).unlink(missing_ok=True)
             downloaded.clear()
@@ -1203,17 +1216,31 @@ class SSHHost:
         if protocol == "sftp":
             entries = self._get_sftp().listdir_attr(remote_dir)
             return [item.filename for item in entries if stat.S_ISREG(getattr(item, "st_mode", 0))]
-        command = f"find {shlex.quote(remote_dir)} -maxdepth 1 -type f -printf '%f\\n'"
+        # BusyBox find does not implement GNU find's -printf.  Shell globbing
+        # plus test/printf keeps the same non-recursive semantics and works in
+        # BusyBox ash without requiring SFTP to be enabled on the device.
+        command = self._busybox_list_command(remote_dir, metadata=False)
         result = self.execute(command, timeout=self.info.connect_timeout)
         if not result.success:
             raise _RemoteDownloadError("remote_list_failed", "REMOTE_LIST_FAILED", result.error_message or result.output or "failed to list remote directory")
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        # NUL delimiters preserve spaces, tabs, and newlines in legal filenames;
+        # a remote filename itself can never contain NUL.
+        names = result.stdout.split("\0")
+        if names and names[-1] == "":
+            names.pop()
+        for name in names:
+            self._validate_listed_remote_name(name)
+        return names
 
     def _list_remote_file_metadata(self, remote_dir: str) -> list[tuple[str, int, float]]:
-        command = (
-            f"find {shlex.quote(remote_dir)} -maxdepth 1 -type f "
-            "-printf '%f\\t%s\\t%T@\\n'"
-        )
+        """List direct child files using commands supplied by BusyBox.
+
+        ``stat -c %Y`` yields a whole-second Unix mtime.  That is less precise
+        than GNU find's ``%T@`` but sufficient because collection ordering also
+        uses case-folded and original filenames as deterministic tie breakers.
+        """
+
+        command = self._busybox_list_command(remote_dir, metadata=True)
         result = self.execute(command, timeout=self.info.connect_timeout)
         if not result.success:
             raise _RemoteDownloadError(
@@ -1221,33 +1248,72 @@ class SSHHost:
                 "REMOTE_LIST_FAILED",
                 result.error_message or result.output or "failed to list remote directory",
             )
+        parts = result.stdout.split("\0")
+        if parts and parts[-1] == "":
+            parts.pop()
+        if len(parts) % 3:
+            raise _RemoteDownloadError(
+                "remote_list_failed",
+                "REMOTE_LIST_FAILED",
+                f"cannot parse remote metadata field count: {len(parts)}",
+            )
         entries: list[tuple[str, int, float]] = []
-        for line in result.stdout.splitlines():
-            parts = line.rsplit("\t", 2)
-            if len(parts) != 3:
-                raise _RemoteDownloadError(
-                    "remote_list_failed", "REMOTE_LIST_FAILED", f"cannot parse remote metadata: {line!r}"
-                )
-            name, raw_size, raw_mtime = parts
-            if not name or name != posixpath.basename(name):
-                raise _RemoteDownloadError(
-                    "remote_list_failed", "REMOTE_LIST_FAILED", f"unsafe remote filename: {name!r}"
-                )
+        for index in range(0, len(parts), 3):
+            name, raw_size, raw_mtime = parts[index : index + 3]
+            self._validate_listed_remote_name(name)
             try:
                 size = int(raw_size)
                 mtime = float(raw_mtime)
             except ValueError as exc:
                 raise _RemoteDownloadError(
-                    "remote_list_failed", "REMOTE_LIST_FAILED", f"cannot parse remote metadata: {line!r}"
+                    "remote_list_failed",
+                    "REMOTE_LIST_FAILED",
+                    f"cannot parse remote metadata for {name!r}",
                 ) from exc
             if size < 0 or not math.isfinite(mtime):
                 raise _RemoteDownloadError(
                     "remote_list_failed",
                     "REMOTE_LIST_FAILED",
-                    f"invalid remote metadata: {line!r}",
+                    f"invalid remote metadata for {name!r}",
                 )
             entries.append((name, size, mtime))
         return entries
+
+    @staticmethod
+    def _busybox_list_command(remote_dir: str, *, metadata: bool) -> str:
+        """Build a BusyBox-ash-compatible, non-recursive file listing command."""
+
+        quoted_dir = shlex.quote(remote_dir)
+        if metadata:
+            emit = (
+                'size=$(wc -c < "$path") || exit 41\n'
+                'mtime=$(stat -c %Y "$path") || exit 42\n'
+                'printf \'%s\\000%s\\000%s\\000\' "${path##*/}" "$size" "$mtime"'
+            )
+        else:
+            emit = 'printf \'%s\\000\' "${path##*/}"'
+        return (
+            f"remote_dir={quoted_dir}\n"
+            'if [ ! -d "$remote_dir" ]; then\n'
+            '  echo "remote directory not found: $remote_dir" >&2\n'
+            "  exit 40\n"
+            "fi\n"
+            # Include regular and hidden direct children.  Unmatched patterns
+            # remain literal strings, then fail the -f test harmlessly.
+            'for path in "$remote_dir"/* "$remote_dir"/.[!.]* "$remote_dir"/..?*; do\n'
+            '  [ -f "$path" ] || continue\n'
+            f"  {emit.replace(chr(10), chr(10) + '  ')}\n"
+            "done"
+        )
+
+    @staticmethod
+    def _validate_listed_remote_name(name: str) -> None:
+        if not name or name != posixpath.basename(name) or name in {".", ".."}:
+            raise _RemoteDownloadError(
+                "remote_list_failed",
+                "REMOTE_LIST_FAILED",
+                f"unsafe remote filename: {name!r}",
+            )
 
     def _remote_size(self, remote_path: str, protocol: str) -> int:
         if protocol == "sftp":

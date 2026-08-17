@@ -462,6 +462,62 @@ def test_scp_batch_download_matches_all_files_and_preserves_remote_mtime(
     assert recorder.results[-1][0] == "SCP BATCH DOWNLOAD"
 
 
+def test_busybox_remote_metadata_listing_avoids_gnu_find_and_uses_nul_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _, _, _, _, _, _, _, _ = upload_rig(tmp_path)
+    commands: list[str] = []
+
+    def execute(command: str, *, timeout: float):
+        commands.append(command)
+        return SimpleNamespace(
+            success=True,
+            stdout="\0".join(
+                [
+                    "cpdt one.log",
+                    "7",
+                    "1700000000",
+                    "cpdt\ttwo.log",
+                    "8",
+                    "1700000001",
+                    "",
+                ]
+            ),
+            error_message=None,
+            output="",
+        )
+
+    monkeypatch.setattr(host, "execute", execute)
+    assert host._list_remote_file_metadata("/logs with spaces") == [
+        ("cpdt one.log", 7, 1700000000.0),
+        ("cpdt\ttwo.log", 8, 1700000001.0),
+    ]
+    assert len(commands) == 1
+    assert "find " not in commands[0]
+    assert "stat -c %Y" in commands[0]
+    assert 'remote_dir=\'/logs with spaces\'' in commands[0]
+
+
+def test_busybox_remote_name_listing_preserves_newlines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _, _, _, _, _, _, _, _ = upload_rig(tmp_path)
+    monkeypatch.setattr(
+        host,
+        "execute",
+        lambda _command, *, timeout: SimpleNamespace(
+            success=True,
+            stdout="normal.log\0line\nbreak.log\0",
+            error_message=None,
+            output="",
+        ),
+    )
+    assert host._list_remote_files("/logs", "scp") == [
+        "normal.log",
+        "line\nbreak.log",
+    ]
+
+
 def test_scp_batch_download_reports_zero_matches_without_partial_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
