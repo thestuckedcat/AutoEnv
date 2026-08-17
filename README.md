@@ -128,7 +128,7 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 SCP/SFTP 下载使用已声明的 SSH Host，可指定精确远端文件，或在一个远端目录中用正则进行唯一匹配。下载成功的 `RemoteDownloadResult` 会注册到本次 `packages/`，可直接传给 SCP、SFTP 或 FTP 上传；远端模糊匹配没有 HDFS `newest` 语义，零匹配和多匹配都会失败。完整示例见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用)。
 
-日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载远端目录中的全部匹配文件；内置页面只选择 SSH 环境，远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py` 的 `LOG_SOURCES`。每个来源隔离到 `source-NNN`，递归安全解压后直接形成独立 `LogGroup`，不再由页面提交路径或用第二个文件名 glob 重新混组。远端枚举只使用 BusyBox 可提供的 ash glob、`test`、`wc`、`stat` 和 `printf`，不依赖 GNU `find -printf`。Group 可用 `match_line()`/`match_block()` 生成 target；block 规则还可用 `exclude_regex` 删除命中的正文行。日志 Tool 只出现在 Tools 页签，不进入环境启动脚本列表。
+日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载远端目录中的全部匹配文件；内置页面只选择 SSH 环境，远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py` 的 `LOG_SOURCES`。每个来源隔离到 `source-NNN`，递归安全解压后直接形成独立 `LogGroup`，不再由页面提交路径或用第二个文件名 glob 重新混组。远端枚举只使用 BusyBox 可提供的 ash glob、`test`、`stat` 和 `printf`，不依赖 GNU `find -printf`，也不执行逐文件 `wc` 或下载大小比对；SCP 正常返回后将 `.part` 原子改名。批量 SCP 在 Web 中显示已完成数/总数进度条；文件名、远端枚举、编码判断和异常堆栈等详细证据只写入本次 `run.log`。Group 可用 `match_line()`/`match_block()` 生成 target；block 规则还可用 `exclude_regex` 删除命中的正文行。正则命中但日历日期非法的记录保留原始顺序并显示 `[?]`，完全没有时间的记录仍显示 `[-]`。日志 Tool 只出现在 Tools 页签，不进入环境启动脚本列表。
 
 新增 local Web Tool 时，复制 [`webPage/tools/_template.py`](webPage/tools/_template.py) 为非下划线 `.py` 文件并替换全部占位符；workflow Tool 使用 `.agents/skills/autoenv-web-tool/scripts/scaffold_tool.py --kind workflow` 生成。下划线模板不会被自动发现，正式文件则会自动注册到 Tools 页，无需修改 Web 核心页面。完整流程见 [Web 快速入门](webPage/QUICK_START.md#添加-tool)。
 
@@ -146,7 +146,7 @@ logs/<run_id>/
 
 `state/last_runs/<script>.json` 保存该脚本上一次完整参数。密码按项目需求允许明文存档，但终端和 `run.log` 会脱敏。请保护本机的 `state/` 和 `logs/` 访问权限。
 
-终端面向人工阅读，会用带空行的摘要块突出操作状态、源/目标、命令结果和错误；`run.log` 仍保留单行 JSON 操作记录，方便搜索和自动分析。SSH/Telnet 长短命令都在接收时实时显示远端输出，并将清理后的完整正文保存在 `result.output`；`execute()` 结束摘要不重复打印正文。
+终端面向人工阅读，会用带空行的摘要块突出操作状态、源/目标、命令结果和错误；`run.log` 仍保留单行 JSON 操作记录，方便搜索和自动分析。用户显式调用的 SSH/Telnet 长短命令仍实时显示远端输出，并将清理后的完整正文保存在 `result.output`；框架内部的远端文件枚举、大小查询、逐文件传输、编码判断和异常堆栈不刷屏，只进入 `run.log`。批量下载摘要显示 matched/completed/retained 计数，Web 将下载进度事件原地更新为进度条。
 
 ## 安全说明
 

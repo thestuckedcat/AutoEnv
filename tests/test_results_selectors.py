@@ -261,3 +261,45 @@ def test_recorder_formats_upload_failure_as_readable_console_block(tmp_path):
     log_line = log_path.read_text(encoding="utf-8").strip()
     assert "SFTP UPLOAD {" in log_line
     assert "\n" not in log_line
+
+
+def test_recorder_stores_quiet_results_and_prints_only_batch_counts(tmp_path):
+    console = io.StringIO()
+    log_path = tmp_path / "run.log"
+    quiet_command = _command_result(
+        command="internal inventory",
+        stdout="diaglog-001.log.zip\0diaglog-002.log.zip\0",
+        raw_output="diaglog-001.log.zip\0diaglog-002.log.zip\0",
+    )
+    batch = {
+        "operation_id": "0008",
+        "protocol": "scp",
+        "target_name": "log_server",
+        "remote_dir": "/var/log/product",
+        "glob": "diaglog*.log.zip",
+        "destination": r"D:\\AutoEnv\\logs\\run\\raw\\source-002",
+        "files": [
+            {"name": "diaglog-001.log.zip"},
+            {"name": "diaglog-002.log.zip"},
+        ],
+        "matched_count": 300,
+        "completed_count": 40,
+        "success": False,
+        "status": "download_failed",
+        "duration_ms": 1234,
+        "error_type": "OSError",
+        "error_message": "connection reset",
+    }
+
+    with RunRecorder(log_path, console=console) as recorder:
+        recorder.record_result("SSH EXECUTE", quiet_command, console=False)
+        recorder.record_result("SCP BATCH DOWNLOAD", batch)
+
+    console_text = console.getvalue()
+    assert "internal inventory" not in console_text
+    assert "diaglog-001.log.zip" not in console_text
+    assert "files: matched=300 completed=40 retained=2" in console_text
+    assert "error: OSError: connection reset" in console_text
+    stored = log_path.read_text(encoding="utf-8")
+    assert "internal inventory" in stored
+    assert "diaglog-001.log.zip" in stored

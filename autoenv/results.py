@@ -147,7 +147,10 @@ class RemoteDownloadedFile:
     name: str
     remote_file: str
     local_file: str
-    remote_size: int
+    # Log batch downloads trust successful SCP completion and therefore do not
+    # query or compare each remote file's size.  Single-file download APIs keep
+    # their existing size verification.
+    remote_size: int | None
     remote_mtime: float
 
 
@@ -168,6 +171,10 @@ class RemoteBatchDownloadResult:
     duration_ms: int
     destination: str
     files: tuple[RemoteDownloadedFile, ...] = ()
+    # Keep attempted progress even when all-or-nothing cleanup removes the
+    # completed local files after a later transfer fails.
+    matched_count: int = 0
+    completed_count: int = 0
     error_type: str | None = None
     error_message: str | None = None
 

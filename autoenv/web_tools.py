@@ -157,7 +157,22 @@ def run_workflow_tool(
         except Exception as exc:
             success, status = False, "program_error"
             error_type, error_message = type(exc).__name__, str(exc)
-            context.recorder.log("UNHANDLED EXCEPTION\n" + "".join(traceback.format_exception(exc)))
+            # Full tracebacks are essential diagnostics but overwhelm the Web
+            # output.  Store the trace in run.log and print one compact error
+            # line; TOOL END below keeps the final state and run directory.
+            context.recorder.log(
+                "UNHANDLED EXCEPTION\n"
+                + "".join(traceback.format_exception(exc)),
+                console=False,
+            )
+            compact_error = " ".join((str(exc) or repr(exc)).splitlines())
+            # Keep the Web line bounded even when an exception embeds a large
+            # payload; the complete message and traceback remain in run.log.
+            if len(compact_error) > 500:
+                compact_error = compact_error[:497] + "..."
+            context.recorder.log(
+                f"TOOL ERROR type={type(exc).__name__} message={compact_error}"
+            )
         context.close()
         finished = datetime.now().astimezone()
         result = ScriptResult(

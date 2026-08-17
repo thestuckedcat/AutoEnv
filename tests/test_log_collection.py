@@ -217,6 +217,60 @@ def test_confirmed_log_samples_generate_expected_targets_and_index(tmp_path: Pat
     assert "password" not in json.dumps(manifest).lower()
 
 
+def test_invalid_calendar_date_is_retained_with_question_mark_in_source_order(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "cpdt_invalid_date.log"
+    fixture.write_text(
+        "2026-08-16 08:00:00 [AUTH] valid before\n"
+        "0000-00-00 08:01:00 [AUTH] invalid calendar\n"
+        "[AUTH] inherits last valid timestamp\n"
+        "2026-08-16 08:02:00 [AUTH] valid after\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "invalid-date-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="invalid-date-run", run_dir=run_dir, recorder=Recorder()
+    )
+    assert collection.download(
+        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
+
+    matched = group.match_line(r"\[AUTH\]", "auth.log")
+
+    assert matched.success and matched.output_count == 4
+    assert collection.finalize().success
+    assert (collection.targets_dir / "auth.log").read_text(encoding="utf-8") == (
+        "[2026-08-16 08:00:00] 2026-08-16 08:00:00 [AUTH] valid before\n"
+        "[?] 0000-00-00 08:01:00 [AUTH] invalid calendar\n"
+        "[2026-08-16 08:00:00] [AUTH] inherits last valid timestamp\n"
+        "[2026-08-16 08:02:00] 2026-08-16 08:02:00 [AUTH] valid after\n"
+    )
+    with sqlite3.connect(collection.index_path) as connection:
+        rows = connection.execute(
+            "SELECT sequence, timestamp_source, clock_seconds, date_key "
+            "FROM records ORDER BY sequence"
+        ).fetchall()
+    assert rows == [
+        (1, "parsed", 8 * 3600, "2026-08-16"),
+        (2, "invalid", None, None),
+        (3, "inherited", 8 * 3600, "2026-08-16"),
+        (4, "parsed", 8 * 3600 + 2 * 60, "2026-08-16"),
+    ]
+    queried = query_log_records(
+        tmp_path, "invalid-date-run", "auth.log", page=1, limit=20
+    )
+    assert [item["timestamp"] for item in queried["records"]] == [
+        "2026-08-16 08:00:00",
+        "?",
+        "2026-08-16 08:00:00",
+        "2026-08-16 08:02:00",
+    ]
+
+
 def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Path):
     first_fixture = tmp_path / "first-fixture"
     second_fixture = tmp_path / "second-fixture"
@@ -701,6 +755,40 @@ def test_workflow_tool_runner_uses_run_context_and_writes_unified_result(
     assert result.success and result.script_name == definition.name
     assert observed == ["ok"]
     assert (Path(result.run_dir) / "result.json").is_file()
+
+
+def test_workflow_tool_keeps_traceback_in_run_log_and_prints_compact_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def body(_ctx):
+        raise ValueError("first line\nsecond line")
+
+    definition = WebToolDefinition(
+        name="offline-workflow-error-test",
+        title="Offline workflow error",
+        description="",
+        fields=(),
+        body=body,
+        source=__file__,
+        kind="workflow",
+    )
+    monkeypatch.setitem(web_tools._TOOLS, definition.name, definition)
+    console = io.StringIO()
+
+    result = run_workflow_tool(
+        tmp_path,
+        definition.name,
+        parameters={},
+        console=console,
+    )
+
+    assert not result.success and result.status == "program_error"
+    console_text = console.getvalue()
+    assert "TOOL ERROR type=ValueError message=first line second line" in console_text
+    assert "Traceback (most recent call last)" not in console_text
+    run_log = (Path(result.run_dir) / "run.log").read_text(encoding="utf-8")
+    assert "UNHANDLED EXCEPTION" in run_log
+    assert "Traceback (most recent call last)" in run_log
 
 
 def test_web_tool_scaffold_and_validator_support_workflow_kind(tmp_path: Path):
