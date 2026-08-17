@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import codecs
 import errno
+import fnmatch
 import hashlib
 import math
+import os
 import posixpath
 import shlex
 import socket
@@ -26,6 +28,8 @@ from .results import (
     CommandStatus,
     UploadResult,
     RemoteDownloadResult,
+    RemoteBatchDownloadResult,
+    RemoteDownloadedFile,
 )
 from .selectors import (
     LocalFileSelector,
@@ -545,6 +549,123 @@ class SSHHost:
         overwrite: bool = True,
     ) -> RemoteDownloadResult:
         return self._download("sftp", remote_dir, remote_file, pattern, overwrite)
+
+    def scp_download_many(
+        self,
+        remote_dir: str,
+        *,
+        glob: str,
+        destination: Path | str,
+    ) -> RemoteBatchDownloadResult:
+        """Download every basename matched by a glob into an empty run artifact directory."""
+
+        remote_dir = self._normalize_remote_dir(remote_dir)
+        glob = _text(glob, "glob")
+        destination_path = Path(destination).resolve()
+        run_dir = self.package_dir.parent.resolve()
+        try:
+            destination_path.relative_to(run_dir)
+        except ValueError as exc:
+            raise ValueError("destination must be inside the current run directory") from exc
+        if destination_path == run_dir:
+            raise ValueError("destination must be a child of the current run directory")
+        if destination_path.exists() and any(destination_path.iterdir()):
+            raise ValueError("destination must be empty")
+        destination_path.mkdir(parents=True, exist_ok=True)
+
+        operation_id = self.recorder.next_operation_id()
+        started = datetime.now().astimezone()
+        downloaded: list[RemoteDownloadedFile] = []
+        success = False
+        status = "download_failed"
+        error_type: str | None = None
+        error_message: str | None = None
+        try:
+            self._ensure_transport()
+            entries = self._list_remote_file_metadata(remote_dir)
+            matches = sorted(
+                (item for item in entries if fnmatch.fnmatchcase(item[0], glob)),
+                key=lambda item: (item[2], item[0].casefold(), item[0]),
+            )
+            if not matches:
+                raise _RemoteDownloadError(
+                    "remote_file_not_found",
+                    "REMOTE_FILE_NOT_FOUND",
+                    f"no file in {remote_dir!r} matched glob {glob!r}",
+                )
+            names = [item[0] for item in matches]
+            if len(set(names)) != len(names):
+                raise _RemoteDownloadError(
+                    "remote_list_failed",
+                    "REMOTE_LIST_FAILED",
+                    "remote file enumeration returned duplicate basenames",
+                )
+            scp_client = self._get_scp()
+            try:
+                for name, size, mtime in matches:
+                    remote_path = self._remote_file(remote_dir, name)
+                    local_path = (destination_path / name).resolve()
+                    local_path.relative_to(destination_path)
+                    pending = local_path.with_name(local_path.name + ".part")
+                    pending.unlink(missing_ok=True)
+                    try:
+                        scp_client.get(remote_path, local_path=str(pending))
+                        if pending.stat().st_size != size:
+                            raise _RemoteDownloadError(
+                                "size_verification_failed",
+                                "SIZE_VERIFICATION_FAILED",
+                                f"downloaded size mismatch for {name}: remote={size}, local={pending.stat().st_size}",
+                            )
+                        pending.replace(local_path)
+                        os.utime(local_path, (mtime, mtime))
+                        downloaded.append(
+                            RemoteDownloadedFile(
+                                name=name,
+                                remote_file=remote_path,
+                                local_file=str(local_path),
+                                remote_size=size,
+                                remote_mtime=mtime,
+                            )
+                        )
+                    finally:
+                        pending.unlink(missing_ok=True)
+            finally:
+                self._close_scp()
+            success, status = True, "success"
+        except _RemoteDownloadError as exc:
+            status, error_type, error_message = exc.status, exc.error_type, str(exc)
+        except paramiko.AuthenticationException as exc:
+            status, error_type, error_message = "auth_failed", "AUTHENTICATION_FAILED", str(exc) or "SSH authentication failed"
+            self._invalidate_connection()
+        except (socket.timeout, TimeoutError) as exc:
+            status, error_type, error_message = "connection_timeout", "CONNECTION_TIMEOUT", str(exc) or "SSH operation timed out"
+            self._invalidate_connection()
+        except Exception as exc:
+            status, error_type, error_message = "download_failed", type(exc).__name__, str(exc) or repr(exc)
+        if not success:
+            for item in downloaded:
+                Path(item.local_file).unlink(missing_ok=True)
+            downloaded.clear()
+        finished = datetime.now().astimezone()
+        result = RemoteBatchDownloadResult(
+            run_id=self.run_id,
+            operation_id=operation_id,
+            protocol="scp",
+            target_name=self.name,
+            remote_dir=remote_dir,
+            glob=glob,
+            success=success,
+            status=status,
+            started_at=started,
+            finished_at=finished,
+            duration_ms=max(0, int((finished - started).total_seconds() * 1000)),
+            destination=str(destination_path),
+            files=tuple(downloaded),
+            error_type=error_type,
+            error_message=error_message,
+        )
+        self.recorder.record_result("SCP BATCH DOWNLOAD", result)
+        return result
 
     def _download(
         self,
@@ -1087,6 +1208,46 @@ class SSHHost:
         if not result.success:
             raise _RemoteDownloadError("remote_list_failed", "REMOTE_LIST_FAILED", result.error_message or result.output or "failed to list remote directory")
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def _list_remote_file_metadata(self, remote_dir: str) -> list[tuple[str, int, float]]:
+        command = (
+            f"find {shlex.quote(remote_dir)} -maxdepth 1 -type f "
+            "-printf '%f\\t%s\\t%T@\\n'"
+        )
+        result = self.execute(command, timeout=self.info.connect_timeout)
+        if not result.success:
+            raise _RemoteDownloadError(
+                "remote_list_failed",
+                "REMOTE_LIST_FAILED",
+                result.error_message or result.output or "failed to list remote directory",
+            )
+        entries: list[tuple[str, int, float]] = []
+        for line in result.stdout.splitlines():
+            parts = line.rsplit("\t", 2)
+            if len(parts) != 3:
+                raise _RemoteDownloadError(
+                    "remote_list_failed", "REMOTE_LIST_FAILED", f"cannot parse remote metadata: {line!r}"
+                )
+            name, raw_size, raw_mtime = parts
+            if not name or name != posixpath.basename(name):
+                raise _RemoteDownloadError(
+                    "remote_list_failed", "REMOTE_LIST_FAILED", f"unsafe remote filename: {name!r}"
+                )
+            try:
+                size = int(raw_size)
+                mtime = float(raw_mtime)
+            except ValueError as exc:
+                raise _RemoteDownloadError(
+                    "remote_list_failed", "REMOTE_LIST_FAILED", f"cannot parse remote metadata: {line!r}"
+                ) from exc
+            if size < 0 or not math.isfinite(mtime):
+                raise _RemoteDownloadError(
+                    "remote_list_failed",
+                    "REMOTE_LIST_FAILED",
+                    f"invalid remote metadata: {line!r}",
+                )
+            entries.append((name, size, mtime))
+        return entries
 
     def _remote_size(self, remote_path: str, protocol: str) -> int:
         if protocol == "sftp":

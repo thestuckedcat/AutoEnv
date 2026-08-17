@@ -116,6 +116,7 @@ class RunContext:
         self._hdfs_client = hdfs_client
         self._package_manager: object | None = None
         self._extractor: object | None = None
+        self._log_collections: list[object] = []
         self._uploaded_files = UploadedFileRegistry()
         self._closed = False
 
@@ -493,6 +494,20 @@ class RunContext:
         return self.extractor.extract(
             source, target_file=target_file, target_dir=target_dir
         )
+
+    def create_log_collection(self, alias: str = ""):
+        from .logs import LogCollection
+
+        if self._log_collections:
+            raise RuntimeError("only one log collection may be created per run")
+        collection = LogCollection(
+            run_id=self.run_id,
+            run_dir=self.run_dir,
+            recorder=self.recorder,
+            alias=alias,
+        )
+        self._log_collections.append(collection)
+        return collection
 
     def resolve_local_file(self, selector: LocalFileSelector) -> ResolvedLocalFile:
         return resolve_local_file(

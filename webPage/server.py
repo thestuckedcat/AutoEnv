@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import base64
 import json
 import mimetypes
@@ -22,6 +21,9 @@ ROOT_DIR = WEB_DIR.parent
 ENV_DIR = ROOT_DIR / "environments"
 UPLOAD_DIR = WEB_DIR / "uploads"
 SETTINGS_PATH = WEB_DIR / "settings.json"
+WEB_HOST = "127.0.0.1"
+WEB_PORT = 8765
+WEB_URL = f"http://{WEB_HOST}:{WEB_PORT}/"
 
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -173,7 +175,12 @@ def _start_agent_shell(
 
 
 AUTOENV_SESSION = ProcessSession()
+TOOL_SESSION = ProcessSession()
 AGENT_SESSION = TerminalSession()
+
+
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = False
 
 
 def _json_file(path: Path, default: object) -> object:
@@ -314,6 +321,35 @@ class Handler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/tools":
                 from autoenv.web_tools import describe_tools
                 self.json({"tools": describe_tools(ROOT_DIR)})
+            elif parsed.path == "/api/tools/workflow/events":
+                cursor = int(parse_qs(parsed.query).get("cursor", ["0"])[0])
+                with TOOL_SESSION.lock:
+                    self.json({
+                        "events": TOOL_SESSION.events[cursor:],
+                        "next": len(TOOL_SESSION.events),
+                        "generation": TOOL_SESSION.generation,
+                    })
+            elif parsed.path == "/api/log-batches":
+                from autoenv.log_query import list_log_batches
+                self.json({"batches": list_log_batches(ROOT_DIR)})
+            elif parsed.path == "/api/log-batches/targets":
+                from autoenv.log_query import list_log_targets
+                query = parse_qs(parsed.query)
+                self.json({"targets": list_log_targets(ROOT_DIR, query.get("batch", [""])[0])})
+            elif parsed.path == "/api/log-batches/query":
+                from autoenv.log_query import query_log_records
+                query = parse_qs(parsed.query)
+                self.json(query_log_records(
+                    ROOT_DIR,
+                    query.get("batch", [""])[0],
+                    query.get("target", [""])[0],
+                    page=int(query.get("page", ["1"])[0]),
+                    limit=int(query.get("limit", ["200"])[0]),
+                    query_date=query.get("date", [""])[0],
+                    query_time=query.get("time", [""])[0],
+                    window_minutes=int(query.get("window", ["60"])[0]),
+                    keyword=query.get("keyword", [""])[0],
+                ))
             elif parsed.path in {"/api/run/events", "/api/agent/events"}:
                 session = AUTOENV_SESSION if "/run/" in parsed.path else AGENT_SESSION
                 cursor = int(parse_qs(parsed.query).get("cursor", ["0"])[0])
@@ -364,6 +400,16 @@ class Handler(SimpleHTTPRequestHandler):
                 name = str(data.get("name", "")); values = data.get("values", {})
                 if not isinstance(values, dict): raise ValueError("values must be an object")
                 self.json({"result": run_web_tool(ROOT_DIR, name, values)})
+            elif self.path == "/api/tools/workflow/start":
+                request_path = WEB_DIR / ".runtime" / f"tool-request-{uuid.uuid4().hex}.json"
+                _write_json(request_path, data)
+                TOOL_SESSION.start(
+                    [sys.executable, "-X", "utf8", str(ROOT_DIR / "adapt_tool_interface.py"), "--request", str(request_path)],
+                    cwd=ROOT_DIR,
+                )
+                self.json({"ok": True, "generation": TOOL_SESSION.generation})
+            elif self.path == "/api/tools/workflow/stop":
+                TOOL_SESSION.stop(); self.json({"ok": True})
             elif self.path == "/api/settings":
                 upload_dir = Path(str(data.get("upload_dir", UPLOAD_DIR))).expanduser().resolve()
                 command = str(data.get("agent_command") or "").strip()
@@ -408,25 +454,22 @@ class Handler(SimpleHTTPRequestHandler):
             self.json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--no-browser", action="store_true")
-    args = parser.parse_args(argv)
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    url = f"http://{args.host}:{args.port}/"
-    print(f"AutoEnv Web: {url}")
-    if not args.no_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+def main() -> int:
+    try:
+        server = ExclusiveThreadingHTTPServer((WEB_HOST, WEB_PORT), Handler)
+    except OSError as exc:
+        print(
+            f"AutoEnv Web cannot listen on its fixed endpoint {WEB_URL}; "
+            f"stop the process already using it and retry ({exc})",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"AutoEnv Web: {WEB_URL}")
+    threading.Timer(0.5, lambda: webbrowser.open(WEB_URL)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        AUTOENV_SESSION.stop(); AGENT_SESSION.stop(); server.server_close()
+        AUTOENV_SESSION.stop(); TOOL_SESSION.stop(); AGENT_SESSION.stop(); server.server_close()
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -17,7 +17,7 @@
 | `.agents/skills/*/SKILL.md` | AutoEnv 脚本、Web Tool 和导入流程约束 | Agent |
 | `sdd/README.md` 与 `sdd/*/SKILL.md` | 通用底软 SDD 流程、模板和门禁 | 跨项目开发者/Agent |
 
-`frontend/` 已明确标记为历史原型；当前 Web 只在 `webPage/` 演进。
+Web 只保留 `startWeb.py` → `webPage/server.py` 一条启动链；旧 Web 原型已删除，不提供兼容入口或端口回退。
 
 ## 2. 实现到文档/测试映射
 
@@ -29,9 +29,10 @@
 | RUN/TAR/ZIP 安全提取 | `RunContext.extract_file_from()` | 详细设计、Web 接手说明 §4 | `test_package_extractor.py` |
 | JSON/直接参数非交互启动 | `adapt_interface.py` / `LaunchRequest` | Web 快速入门、Web 接手说明 §2 | `test_interfaces_web_ftp.py` |
 | 环境档案和脚本拉起 | `startWeb.py` / `/api/environments` / `/api/runs` | Web 快速入门、Web 接手说明 §1/§2 | API 冒烟 + 接口 UT |
-| 动态 Tools | `register_web_tool()` | Web 快速入门、Web 接手说明 §5 | `test_interfaces_web_ftp.py` + tool validator |
+| 动态 local/workflow Tools | `register_web_tool()` / `adapt_tool_interface.py` | Web 快速入门、Web 接手说明 §5 | `test_interfaces_web_ftp.py`、`test_log_collection.py` + tool validator |
+| Tool 注册模板 | `webPage/tools/_template.py` / `scaffold_tool.py` | Web 快速入门“添加 Tool”、Web 使用说明 §9.1 | 模板验证器 + 自动发现隔离 UT |
 | Agent CLI 路径转换 | `/api/agent/*` | Web 快速入门、Web 接手说明 §6/§7 | 上传边界 UT + 本机冒烟 |
-| 日志下载/解压/解析实例 | `download_and_parse_logs` | Web 接手说明 §4 | 脚本静态契约；解析规则明确待样例 |
+| 日志下载/解压/解析与关联查询 | `RunContext.create_log_collection()` / `log-collection` | Web 快速入门、Web 接手说明 §4-5 | `test_log_collection.py`、`test_ssh_host.py` |
 
 ## 3. 本轮修正
 
@@ -39,7 +40,7 @@
 2. 把追加的一级标题整理为原文档的正式章节，补齐相对链接。
 3. README 能力清单补入 SCP/SFTP 下载、ZIP、FTP、结构化入口和 Web/SDD 导航。
 4. 测试总览补入 fake 下载/FTP、接口/Web/导入 UT，明确离线证据边界。
-5. 将 `frontend/` 标为历史原型，并在接手文档集中列出 Agent CLI、日志解析和错误码 Tool 的已知限制。
+5. 删除旧 Web 原型，固定唯一启动命令与 `127.0.0.1:8765` 端点，并在接手文档集中列出 Agent CLI、日志解析和错误码 Tool 的已知限制。
 6. 示例 LaunchRequest 标明是结构占位，运行前必须替换真实环境或参数。
 
 ## 4. 一致性检查规则

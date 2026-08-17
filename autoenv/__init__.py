@@ -6,10 +6,14 @@ from .results import (
     CommandStatus,
     DownloadResult,
     RemoteDownloadResult,
+    RemoteBatchDownloadResult,
+    RemoteDownloadedFile,
+    LogOperationResult,
     ExtractResult,
     ScriptResult,
     UploadResult,
 )
+from .logs import LogCollection, LogGroup, TimestampPattern
 from .selectors import extra_file, match, package
 from .ssh_host import SSHDefaults
 from .ftp_host import FTPDefaults
@@ -22,7 +26,13 @@ __all__ = [
     "CommandStatus",
     "DownloadResult",
     "RemoteDownloadResult",
+    "RemoteBatchDownloadResult",
+    "RemoteDownloadedFile",
+    "LogOperationResult",
     "ExtractResult",
+    "LogCollection",
+    "LogGroup",
+    "TimestampPattern",
     "SSHDefaults",
     "FTPDefaults",
     "ScriptResult",

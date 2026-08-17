@@ -6,7 +6,7 @@
 2. 点击“拉起环境”后，Python 程序如何被触发；
 3. 已注册环境如何按照脚本声明，转换成 SSH、Telnet、FTP、HDFS 和普通参数。
 
-本文描述的是当前 `webPage/` 实现。`frontend/` 是历史原型，不参与当前调用链。
+当前仓库只保留 `webPage/` 一套 Web 实现，不保留可运行的旧原型或兼容入口。
 
 ## 1. Web 框架是什么
 
@@ -21,7 +21,7 @@
 python -X utf8 startWeb.py
 ```
 
-`startWeb.py` 直接调用 `webPage.server.main()`。默认地址为：
+`startWeb.py` 直接调用 `webPage.server.main()`。固定地址为：
 
 ```text
 http://127.0.0.1:8765/
@@ -32,13 +32,13 @@ http://127.0.0.1:8765/
 - 把 `webPage/` 目录作为静态文件目录，返回 HTML、JavaScript 和 CSS；
 - 提供 `/api/...` JSON 接口，完成环境保存、脚本发现、任务启动、输出轮询和终止。
 
-默认只监听 `127.0.0.1`，且没有登录鉴权。它是本机开发控制台，不应直接改为 `0.0.0.0` 暴露到局域网或公网。
+服务只监听 `127.0.0.1:8765`，不接受 host/port 参数，端口冲突时直接失败而不切换端口。它没有登录鉴权，是本机开发控制台，不应增加 `0.0.0.0`、备用端口或其他启动器。需要恢复旧行为时从 Git commit 回退。
 
 ## 2. 主要模块与职责
 
 | 模块 | 职责 |
 |---|---|
-| `startWeb.py` | 启动本地 HTTP 服务 |
+| `startWeb.py` | 唯一 Web 启动入口；拒绝所有启动参数 |
 | `webPage/index.html` | 环境库、环境启动、Tools、Agent CLI 页面结构 |
 | `webPage/app.js` | 表单渲染、按钮事件、构造请求、轮询输出 |
 | `webPage/server.py` | HTTP API、环境 JSON 校验、Python 子进程管理 |
@@ -482,6 +482,34 @@ python -X utf8 adapt_interface.py `
 python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name for item in list_scripts()])"
 ```
 
+## 9.1 Tools 如何区分 local 与 workflow
+
+`webPage/tools/` 是唯一 Tool 自动发现目录，每个非下划线 `.py` 文件在导入时调用一次 `register_web_tool()`。Tool 注册表与 `scripts/` 注册表独立，所以 Tool 不会出现在环境启动下拉框。
+
+local Tool 的起点是 `webPage/tools/_template.py`。复制为一个非下划线文件名，替换所有 `replace-*` 占位符，保留唯一的 `@register_web_tool()` 函数，然后运行 Tool 验证器。模板虽然包含完整可校验示例，但因文件名以下划线开头而永远不会自动注册。workflow Tool 应使用脚手架生成，以免遗漏 `RunContext`、resource inference 或 renderer 契约：
+
+```powershell
+python -X utf8 .agents/skills/autoenv-web-tool/scripts/scaffold_tool.py `
+  sample-workflow --title "Sample workflow" --kind workflow
+python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py `
+  webPage/tools/sample_workflow.py
+```
+
+- `kind="local"` 是兼容默认值：函数接收页面 values 字典，由 `POST /api/tools/run` 在服务进程中调用，结果必须可 JSON 序列化。
+- `kind="workflow"`：函数接收 `RunContext`，资源由函数中的字面量 `ctx.register_*()` 调用静态发现。页面把资源逻辑名绑定到环境档案后，`POST /api/tools/workflow/start` 启动固定入口 `adapt_tool_interface.py`；输出从 `/api/tools/workflow/events` 分页轮询，停止使用 `/api/tools/workflow/stop`。
+
+日志 Tool 使用 `renderer="log_collection"`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
+
+```text
+GET /api/log-batches
+GET /api/log-batches/targets?batch=<run_id>
+GET /api/log-batches/query?batch=<run_id>&target=auth.log&page=1&limit=200&time=08:21:00&window=60&keyword=login
+```
+
+`window=60` 表示中心前后各 30 分钟；省略日期时按一天内时钟距离跨所有日期匹配，指定日期时完整时间支持跨午夜，缺日期的记录仍按时钟距离匹配。`keyword` 是最长 200 字符、不区分大小写的正文包含筛选，并与时间条件取交集；每个日志窗口独立保存 Find 条件并高亮命中词。没有时间的 `[-]` 记录只在普通分页或仅关键词筛选中显示。
+
+workflow 请求示例见 `docs/examples/tool-request.json`。该示例会尝试真实 SCP，未得到目标实验环境授权时只检查发现、绑定和离线测试，不实际运行。
+
 ## 10. Agent 页签如何复用本地命令行
 
 Agent 页签不经过 `adapt_interface.py`。它使用一条独立链路：
@@ -557,7 +585,7 @@ ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANS
 
 - 环境密码按当前项目约定明文保存在 `environments/*.json`；该目录默认被 Git 忽略；
 - 请求文件保存在 `webPage/.runtime/`，也默认被 Git 忽略；
-- 服务端只启动固定的 `adapt_interface.py`，页面不能直接提交任意 Python 文件路径；
+- 服务端只启动固定的 `adapt_interface.py` 或 `adapt_tool_interface.py`，页面不能直接提交任意 Python 文件路径；
 - Web 没有用户登录、权限隔离或 CSRF 防护，只适合本机可信开发场景；
 - `POST /api/run/stop` 会终止当前 AutoEnv 子进程，可能使远端操作停在中间状态；
 - 离线测试只能验证参数和控制面契约，不能证明真实 SSH、Telnet、FTP 或 HDFS 环境可用。
@@ -569,6 +597,7 @@ ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANS
 - 环境脚本写法：[`ENVIRONMENT_REGISTRATION_GUIDE.md`](ENVIRONMENT_REGISTRATION_GUIDE.md)
 - 全接口脚本模板：[`../scripts/template.py`](../scripts/template.py)
 - adapt 入口：[`../adapt_interface.py`](../adapt_interface.py)
+- workflow Tool 入口：[`../adapt_tool_interface.py`](../adapt_tool_interface.py)
 - 参数绑定实现：[`../autoenv/interface.py`](../autoenv/interface.py)
 - HTTP 服务：[`../webPage/server.py`](../webPage/server.py)
 - 前端按钮逻辑：[`../webPage/app.js`](../webPage/app.js)

@@ -436,6 +436,75 @@ def upload_rig(
     )
 
 
+def test_scp_batch_download_matches_all_files_and_preserves_remote_mtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, recorder, _, _, fs, _, scp_factory, _, _ = upload_rig(tmp_path)
+    fs.seed_file("/logs/cpdt_a.log", b"a")
+    fs.seed_file("/logs/cpdt_b.log.gz", b"bb")
+    fs.seed_file("/logs/other.txt", b"other")
+    monkeypatch.setattr(
+        host,
+        "_list_remote_file_metadata",
+        lambda _remote_dir: [
+            ("other.txt", 5, 30.0),
+            ("cpdt_b.log.gz", 2, 20.0),
+            ("cpdt_a.log", 1, 10.0),
+        ],
+    )
+    destination = tmp_path / "log_collection" / "raw"
+    result = host.scp_download_many("/logs", glob="cpdt_*", destination=destination)
+    assert result.success
+    assert [item.name for item in result.files] == ["cpdt_a.log", "cpdt_b.log.gz"]
+    assert [Path(item.local_file).read_bytes() for item in result.files] == [b"a", b"bb"]
+    assert int((destination / "cpdt_a.log").stat().st_mtime) == 10
+    assert scp_factory.created[0].close_count == 1
+    assert recorder.results[-1][0] == "SCP BATCH DOWNLOAD"
+
+
+def test_scp_batch_download_reports_zero_matches_without_partial_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _, _, _, _, _, _, _, _ = upload_rig(tmp_path)
+    monkeypatch.setattr(host, "_list_remote_file_metadata", lambda _remote_dir: [])
+    destination = tmp_path / "log_collection" / "raw"
+    result = host.scp_download_many("/logs", glob="cpdt_*", destination=destination)
+    assert not result.success
+    assert result.status == "remote_file_not_found"
+    assert list(destination.iterdir()) == []
+
+
+def test_scp_batch_download_cleans_completed_and_temporary_files_after_partial_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
+    fs.seed_file("/logs/cpdt_a.log", b"a")
+    fs.seed_file("/logs/cpdt_b.log", b"bb")
+    monkeypatch.setattr(
+        host,
+        "_list_remote_file_metadata",
+        lambda _remote_dir: [
+            ("cpdt_a.log", 1, 10.0),
+            ("cpdt_b.log", 2, 20.0),
+        ],
+    )
+
+    class FailingSCP(FakeSCP):
+        def get(self, remote_path: str, *, local_path: str) -> None:
+            if remote_path.endswith("cpdt_b.log"):
+                Path(local_path).write_bytes(b"partial")
+                raise OSError("simulated transfer failure")
+            super().get(remote_path, local_path=local_path)
+
+    client = FailingSCP(fs)
+    host._scp_factory = lambda _transport: client
+    destination = tmp_path / "log_collection" / "raw"
+    result = host.scp_download_many("/logs", glob="cpdt_*", destination=destination)
+    assert not result.success and result.status == "download_failed"
+    assert list(destination.iterdir()) == []
+    assert client.close_count == 1
+
+
 def test_defaults_are_normalized_and_connection_defaults_require_identity() -> None:
     assert SSHDefaults() == SSHDefaults(
         host="", port=22, username="root", password="", connect_timeout=30.0

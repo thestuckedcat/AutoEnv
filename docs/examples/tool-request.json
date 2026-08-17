@@ -1,0 +1,14 @@
+{
+  "tool": "log-collection",
+  "environments": {
+    "log_server": {
+      "environment": "lab-a"
+    }
+  },
+  "parameters": {
+    "arguments": {
+      "remote_dir": "/var/log/product",
+      "alias": "问题单示例"
+    }
+  }
+}

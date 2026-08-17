@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import stat
+import subprocess
 import sys
 import threading
 import time
@@ -24,7 +24,6 @@ from autoenv.resources import (
 from autoenv.results import RemoteDownloadResult
 from autoenv.selectors import extra_file, resolve_local_file
 from autoenv.web_tools import describe_tools, run_web_tool
-from scripts.download_and_parse_logs import _unpack_all_zips
 
 
 class Recorder:
@@ -373,7 +372,7 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
-    assert "app.js?v=20260815-environment-save" in html
+    assert "app.js?v=20260817-log-find" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript
@@ -385,9 +384,98 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'f.elements.namedItem("name")' in javascript
     assert 'f.elements.namedItem("title")' in javascript
     assert '保存失败：${error.message}' in javascript
+    assert 'post("/api/tools/workflow/start"' in javascript
+    assert 'api("/api/log-batches")' in javascript
+    assert "distance<=300" in javascript
+    assert "data-pane-find" in javascript
+    assert "markKeyword" in javascript
+    assert "keyword:state.logFinds[index]" in javascript
     server = (root / "webPage" / "server.py").read_text(encoding="utf-8")
     assert "shutil.which" not in server
     assert 'self.send_header("Cache-Control", "no-store")' in server
+    assert 'parsed.path == "/api/log-batches/query"' in server
+    assert 'self.path == "/api/tools/workflow/stop"' in server
+    assert "class ExclusiveThreadingHTTPServer" in server
+
+
+def test_web_has_one_launcher_fixed_endpoint_and_no_legacy_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    root = Path(__file__).resolve().parents[1]
+    start_source = (root / "startWeb.py").read_text(encoding="utf-8")
+    server_source = (root / "webPage" / "server.py").read_text(encoding="utf-8")
+
+    assert not (root / "frontend").exists()
+    assert "from webPage.server import WEB_URL, main" in start_source
+    assert "len(sys.argv) != 1" in start_source
+    assert "--host" not in server_source
+    assert "--port" not in server_source
+    assert "--no-browser" not in server_source
+    assert 'if __name__ == "__main__"' not in server_source
+    assert server_source.count("8765") == 1
+
+    server_implementations = []
+    for path in root.rglob("*.py"):
+        relative = path.relative_to(root)
+        if relative.parts[0] in {".git", ".agents", "build", "tests"}:
+            continue
+        if "serve_forever(" in path.read_text(encoding="utf-8", errors="ignore"):
+            server_implementations.append(relative.as_posix())
+    assert server_implementations == ["webPage/server.py"]
+
+    rejected = subprocess.run(
+        [sys.executable, "-X", "utf8", str(root / "startWeb.py"), "--port", "9999"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert rejected.returncode == 2
+    assert "one fixed startup endpoint" in rejected.stderr
+
+    from webPage import server
+
+    observed: dict[str, object] = {}
+
+    class FakeServer:
+        def __init__(self, address, handler):
+            observed["address"] = address
+            observed["handler"] = handler
+
+        def serve_forever(self):
+            observed["served"] = True
+
+        def server_close(self):
+            observed["closed"] = True
+
+    class FakeTimer:
+        def __init__(self, delay, callback):
+            observed["timer_delay"] = delay
+            observed["browser_callback"] = callback
+
+        def start(self):
+            observed["timer_started"] = True
+
+    monkeypatch.setattr(server, "ExclusiveThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(server.threading, "Timer", FakeTimer)
+
+    assert server.main() == 0
+    assert observed["address"] == ("127.0.0.1", 8765)
+    assert observed["served"] is True
+    assert observed["closed"] is True
+    assert observed["timer_started"] is True
+
+    attempts: list[tuple[str, int]] = []
+
+    def fail_to_bind(address, _handler):
+        attempts.append(address)
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(server, "ExclusiveThreadingHTTPServer", fail_to_bind)
+    assert server.main() == 2
+    assert attempts == [("127.0.0.1", 8765)]
+    assert "fixed endpoint" in capsys.readouterr().err
 
 
 def test_web_tool_discovery_and_execution():
@@ -405,25 +493,3 @@ def test_import_skill_safe_extract_rejects_traversal(tmp_path: Path):
     import subprocess, sys
     completed=subprocess.run([sys.executable,str(script),str(archive),str(tmp_path/"out")],capture_output=True,text=True)
     assert completed.returncode != 0 and "unsafe archive path" in completed.stderr
-
-
-@pytest.mark.parametrize("member", ["../outside.log", "C:/outside.log", "/outside.log"])
-def test_log_script_rejects_unsafe_zip_paths(tmp_path: Path, member: str):
-    archive = tmp_path / "bad.zip"
-    with zipfile.ZipFile(archive, "w") as value:
-        value.writestr(member, "bad")
-
-    with pytest.raises(ValueError, match="unsafe ZIP member"):
-        _unpack_all_zips(archive, tmp_path / "output")
-
-
-def test_log_script_rejects_zip_links(tmp_path: Path):
-    archive = tmp_path / "link.zip"
-    member = zipfile.ZipInfo("linked.log")
-    member.create_system = 3
-    member.external_attr = (stat.S_IFLNK | 0o777) << 16
-    with zipfile.ZipFile(archive, "w") as value:
-        value.writestr(member, "target.log")
-
-    with pytest.raises(ValueError, match="ZIP links are not allowed"):
-        _unpack_all_zips(archive, tmp_path / "output")

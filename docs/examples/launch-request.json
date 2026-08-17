@@ -1,17 +1,14 @@
 {
-  "script": "download_and_parse_logs",
+  "script": "example_host_environment",
   "mode": "run",
   "environments": {
-    "log_server": {
+    "example_host": {
       "environment": "lab-a"
     }
   },
   "parameters": {
-    "arguments": {
-      "remote_dir": "/var/log/device",
-      "remote_file": "device-logs.zip",
-      "remote_pattern": "",
-      "log_pattern": ""
+    "packages": {
+      "A1": {}
     }
   }
 }

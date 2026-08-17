@@ -1029,6 +1029,41 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 
 注册脚本通过实际调用自动形成两类 Web 元数据：`package("A1", alias="A1 主安装包", description="...")` 形成 HDFS 输入；`register_ssh_host()`、`register_telnet()` 和 `register_ftp_host()` 形成资源交互点，协议由函数确定，标签取 `resource_label`。`name` 是脚本内部绑定名；`alias` 默认使用 `name`，`description` 默认空字符串。普通业务输入仍在装饰器使用 `parameters=({"name": "value", ...},)` 声明，并通过 `ctx.argument("value")` 读取。结构化入口 `adapt_interface.py` 与 Web 不会回退到交互输入。
 
+## 25. 日志批次 SDK
+
+日志收集 workflow 可以复用同一个 `RunContext` 和已注册 SSH Host：
+
+```python
+from autoenv import TimestampPattern
+
+collection = ctx.create_log_collection(alias="问题单 1234")
+result = collection.download(host, remote_dir="/var/log/product", glob="cpdt_*", protocol="scp")
+if not result.success:
+    return result
+result = collection.extract_all()
+if not result.success:
+    return result
+
+timestamp = TimestampPattern(
+    r"(?:(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+)?"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+)
+group = collection.group(glob="cpdt*.log", timestamp=timestamp)
+result = group.match_line(r"\[AUTH\]", "auth.log")
+if not result.success:
+    return result
+result = group.match_block(r"\[DB\] BEGIN\b", r"\[DB\] END\b", "database.log")
+if not result.success:
+    return result
+return collection.finalize()
+```
+
+`download()` 在当前远端目录按 basename glob 下载全部匹配普通文件；零匹配或任一文件失败均返回失败结果。`extract_all()` 递归支持 ZIP、GZ、TAR.GZ、TGZ，并拒绝路径穿越、链接、特殊文件、冲突及超过 10,000 文件/5 GiB 的展开。
+
+group 文件按远端 mtime 和相对路径稳定排序。时间正则必须提供 `hour`、`minute` 命名组，可选 `year`、`month`、`day`、`second`。`match_line()` 的时间只在单个源文件内继承；`match_block()` 排除边界行，显式块统一使用 begin 时间，隐式块使用块内首个时间或块前时间。未知时间输出 `[-]`。同一目标的多条规则在 finalize 时按源文件、源行、规则声明顺序合并；目标名必须是无目录的 `.log` 文件名。
+
+默认编码按 UTF-8、UTF-8-SIG、GB18030、Latin-1 尝试并记录实际值。成功 `finalize()` 后批次包含人工可读的 `targets/*.log`、SQLite 逐行索引和不含连接密码的 `manifest.json`；失败或未 finalize 的批次不会进入 Web 查询列表。
+
 Web 为每个自动发现的包生成路径输入，并在启动时写入 `LaunchRequest.parameters.packages.<name>`。输入留空时发送空对象，运行时优先使用 `config.json` 的 `link`，否则从 `base_link` 自动选择最新目录；填写路径时使用 `path_override`。
 
 可用资源标签统一维护在 `autoenv/resource_labels.json`；环境档案中的每个 IP 必须绑定目录中一个与协议类型相符的标签，同一环境不能重复占用标签。修改目录时保持标签唯一，并仅使用 `network` 或 `serial` 类型。Web 选择脚本后，按元数据逐项展示连接资源与 HDFS 包；连接资源分别选择包含匹配标签的环境/IP，因此一个脚本可绑定多个环境，包链接也按提示逐项填写。

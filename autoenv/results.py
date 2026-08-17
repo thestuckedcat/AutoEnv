@@ -143,6 +143,36 @@ class RemoteDownloadResult:
 
 
 @dataclass(frozen=True)
+class RemoteDownloadedFile:
+    name: str
+    remote_file: str
+    local_file: str
+    remote_size: int
+    remote_mtime: float
+
+
+@dataclass(frozen=True)
+class RemoteBatchDownloadResult:
+    """Result of downloading every glob-matched file from one remote directory."""
+
+    run_id: str
+    operation_id: str
+    protocol: str
+    target_name: str
+    remote_dir: str
+    glob: str
+    success: bool
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    destination: str
+    files: tuple[RemoteDownloadedFile, ...] = ()
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class UploadResult:
     run_id: str
     operation_id: str
@@ -201,6 +231,21 @@ class ExtractResult:
 
 
 @dataclass(frozen=True)
+class LogOperationResult:
+    run_id: str
+    operation_id: str
+    success: bool
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    batch_dir: str
+    output_count: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class ScriptResult:
     run_id: str
     script_name: str
@@ -217,7 +262,13 @@ class ScriptResult:
 
 
 OperationResult = (
-    CommandResult | DownloadResult | RemoteDownloadResult | UploadResult | ExtractResult
+    CommandResult
+    | DownloadResult
+    | RemoteDownloadResult
+    | RemoteBatchDownloadResult
+    | UploadResult
+    | ExtractResult
+    | LogOperationResult
 )
 
 

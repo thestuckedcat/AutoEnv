@@ -17,9 +17,11 @@ from .results import (
     CommandResult,
     DownloadResult,
     ExtractResult,
+    LogOperationResult,
     ScriptResult,
     UploadResult,
     RemoteDownloadResult,
+    RemoteBatchDownloadResult,
     result_to_dict,
 )
 from .runtime import DEFAULT_PACKAGE_CACHE_LIMIT, LastRunNotFoundError, RunContext, RunMode
@@ -424,8 +426,10 @@ def _validate_body_result(
         CommandResult,
         DownloadResult,
         RemoteDownloadResult,
+        RemoteBatchDownloadResult,
         UploadResult,
         ExtractResult,
+        LogOperationResult,
         ScriptResult,
     )
     if value is None or isinstance(value, allowed):

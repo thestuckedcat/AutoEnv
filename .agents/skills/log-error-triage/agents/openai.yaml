@@ -1,0 +1,4 @@
+interface:
+  display_name: "Log Error Triage"
+  short_description: "从 [ERROR] 日志关联本地代码并完成组件定界"
+  default_prompt: "Use $log-error-triage to analyze the provided logs, trace [ERROR] entries into local component code, and produce an evidence-based boundary report."

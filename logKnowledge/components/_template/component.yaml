@@ -1,0 +1,11 @@
+schema_version: 1
+name: replace-with-component-name
+aliases:
+  - replace-with-log-alias
+code_roots:
+  - path/from/repository/root
+log_markers:
+  - replace-with-logger-or-process-name
+owners: []
+dependencies: []
+notes: "Replace every placeholder before using this component descriptor."

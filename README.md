@@ -1,8 +1,8 @@
 # AutoEnv
 
-本分支提供本地开发者 Web 控制台：运行 `python -X utf8 startWeb.py`，即可注册环境、非交互拉起脚本、使用动态 Tools，以及启动支持文件路径转换的 Agent CLI。环境页和后端校验使用同一份 `autoenv/resource_labels.json` 资源标签目录。快速使用见 `webPage/QUICK_START.md`，后续开发接手见 `docs/WEB_ARCHITECTURE_AND_HANDOFF.md`。
+本分支提供本地开发者 Web 控制台：唯一启动命令是 `python -X utf8 startWeb.py`，固定使用 `http://127.0.0.1:8765/`，不接受 host/port 参数，也不会在冲突时回退其他端口。控制台可注册环境、非交互拉起脚本、使用动态 Tools，以及启动支持文件路径转换的 Agent CLI。环境页和后端校验使用同一份 `autoenv/resource_labels.json` 资源标签目录。快速使用见 `webPage/QUICK_START.md`，后续开发接手见 `docs/WEB_ARCHITECTURE_AND_HANDOFF.md`。
 
-AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 包下载、SCP/SFTP 远端文件下载、显式文件/目录及 ZIP 提取、SCP/SFTP/FTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、结构化非交互启动、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。
+AutoEnv 是一个面向 Windows 的顺序式远端环境启动工具。环境脚本使用普通 Python 代码组织执行顺序，通用层提供 WebHDFS 包下载、SCP/SFTP 远端文件下载、显式文件/目录及 ZIP 提取、SCP/SFTP/FTP 单文件上传、SSH/Telnet 命令执行、按输出关键词发送原始字节、结构化非交互启动、启动后固定 func 菜单、统一结果、自动日志和上次参数复用。Web Tools 另有独立注册表，既支持原有本地 JSON 小工具，也支持绑定环境资源、在独立子进程中运行的 `RunContext` workflow。
 
 AutoEnv 不包含工作流 DAG、Step 依赖或并发调度。脚本中的代码顺序就是实际执行顺序。
 
@@ -128,6 +128,10 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 SCP/SFTP 下载使用已声明的 SSH Host，可指定精确远端文件，或在一个远端目录中用正则进行唯一匹配。下载成功的 `RemoteDownloadResult` 会注册到本次 `packages/`，可直接传给 SCP、SFTP 或 FTP 上传；远端模糊匹配没有 HDFS `newest` 语义，零匹配和多匹配都会失败。完整示例见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用)。
 
+日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载一个远端目录中的全部匹配文件，并通过 `ctx.create_log_collection()` 完成递归安全解压、稳定分组、line/block 解析、带时间前缀目标日志、SQLite 索引和批次 manifest。内置 `webPage/tools/log_collection.py` 固定处理已确认的 `cpdt_*` 样例规则；它只出现在 Tools 页签，不进入环境启动脚本列表。
+
+新增 local Web Tool 时，复制 [`webPage/tools/_template.py`](webPage/tools/_template.py) 为非下划线 `.py` 文件并替换全部占位符；workflow Tool 使用 `.agents/skills/autoenv-web-tool/scripts/scaffold_tool.py --kind workflow` 生成。下划线模板不会被自动发现，正式文件则会自动注册到 Tools 页，无需修改 Web 核心页面。完整流程见 [Web 快速入门](webPage/QUICK_START.md#添加-tool)。
+
 ## 运行记录
 
 每个注册脚本调用都有独立目录：
@@ -167,6 +171,10 @@ logs/<run_id>/
 仓库内置了 [`autoenv-script-generator`](.agents/skills/autoenv-script-generator/SKILL.md) 项目级 skill。Codex 和 OpenCode 都能从仓库的 `.agents/skills/` 自动发现它，不需要分别安装或维护副本。
 
 从仓库目录启动 agent 后，可以直接提出“使用 autoenv-script-generator 生成一个环境脚本”，也可以粘贴一整段已有 shell 脚本让它转换。skill 会逐项确认连接对象、包来源、脚本中的文件映射、提取/上传、命令顺序、超时、成功条件和组合关系；得到最终确认后才写入 `scripts/`，随后进行统一脚本契约、编译、注册发现和单元测试检查。
+
+## 使用 Agent 定位日志错误
+
+把日志文件或目录交给 Agent，并要求使用 `log-error-triage`，即可提取 `[ERROR]` 及上下文、按时间和关联 ID 聚类、在本地源码中追踪错误发出点，并区分触发组件、实际失败组件与报告/受害组件。Skill 默认只读分析；只有人工明确确认后，才会把可复用结论写入 [`logKnowledge/`](logKnowledge/README.md)。Skill 定义和辅助脚本位于 [`.agents/skills/log-error-triage/`](.agents/skills/log-error-triage/SKILL.md)。
 
 根目录 `AGENTS.md` 同时提供加载入口，便于其他支持项目指令但不能自动发现 skills 的 agent 读取并遵循同一流程。
 
