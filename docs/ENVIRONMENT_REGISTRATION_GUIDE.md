@@ -1037,7 +1037,12 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 from autoenv import TimestampPattern
 
 collection = ctx.create_log_collection(alias="问题单 1234")
-result = collection.download(host, remote_dir="/var/log/product", glob="cpdt_*", protocol="scp")
+result = collection.download_many(
+    host,
+    remote_dirs=["/var/log/product", "/var/log/product-backup"],
+    glob="cpdt_*",
+    protocol="scp",
+)
 if not result.success:
     return result
 result = collection.extract_all()
@@ -1058,7 +1063,7 @@ if not result.success:
 return collection.finalize()
 ```
 
-`download()` 在当前远端目录按 basename glob 下载全部匹配普通文件；零匹配或任一文件失败均返回失败结果。`extract_all()` 递归支持 ZIP、GZ、TAR.GZ、TGZ，并拒绝路径穿越、链接、特殊文件、冲突及超过 10,000 文件/5 GiB 的展开。
+`download()` 在单个远端目录按 basename glob 下载全部匹配普通文件。`download_many()` 接收非空、无重复的目录序列，并把每个目录隔离到 `raw/source-NNN/`，所以相同 basename 不会互相覆盖；任一目录零匹配或下载失败时，整个多目录批次失败并清理已下载文件。远端设备只需 BusyBox ash 及常见的 `test`、`wc`、`stat`、`printf` applet，不依赖 GNU `find -printf`。`extract_all()` 递归支持 ZIP、GZ、TAR.GZ、TGZ，并拒绝路径穿越、链接、特殊文件、冲突及超过 10,000 文件/5 GiB 的展开。
 
 group 文件按远端 mtime 和相对路径稳定排序。时间正则必须提供 `hour`、`minute` 命名组，可选 `year`、`month`、`day`、`second`。`match_line()` 的时间只在单个源文件内继承；`match_block()` 排除边界行，显式块统一使用 begin 时间，隐式块使用块内首个时间或块前时间。未知时间输出 `[-]`。同一目标的多条规则在 finalize 时按源文件、源行、规则声明顺序合并；目标名必须是无目录的 `.log` 文件名。
 

@@ -7,7 +7,7 @@
   },
   "parameters": {
     "arguments": {
-      "remote_dir": "/var/log/product",
+      "remote_dirs": "/var/log/product\n/var/log/product-backup",
       "alias": "问题单示例"
     }
   }

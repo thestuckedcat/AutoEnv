@@ -1,3 +1,10 @@
+"""Read-only queries over finalized log-collection SQLite indexes.
+
+Collection and query are intentionally decoupled: the workflow process owns
+remote access and file creation, while the local Web server only reads batches
+whose atomic manifest says ``ready``.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +14,8 @@ from pathlib import Path
 
 
 def list_log_batches(root_dir: Path | str) -> list[dict[str, object]]:
+    """List complete batches, ignoring building, failed, or damaged manifests."""
+
     root = Path(root_dir).resolve()
     batches: list[dict[str, object]] = []
     logs = root / "logs"
@@ -54,6 +63,14 @@ def query_log_records(
     window_minutes: int = 60,
     keyword: str = "",
 ) -> dict[str, object]:
+    """Filter one derived target by keyword/time and then apply pagination.
+
+    Filtering before pagination makes Find operate over the whole target rather
+    than only the current page.  Rows without a timestamp remain visible during
+    ordinary browsing but are excluded from time-window queries because their
+    temporal distance cannot be established safely.
+    """
+
     if page < 1:
         raise ValueError("page must be at least 1")
     if not 1 <= limit <= 500:
@@ -77,6 +94,9 @@ def query_log_records(
     center = _parse_clock(query_time) if query_time else None
     half_window = window_minutes * 60 / 2
     batch = _batch_dir(root_dir, batch_id)
+    # Fetch in target sequence order.  The index is bounded to a local batch and
+    # target names come from its ready manifest, preventing arbitrary file/table
+    # selection through HTTP query parameters.
     with sqlite3.connect(batch / "index.sqlite3") as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
@@ -92,6 +112,8 @@ def query_log_records(
             if clock is None:
                 continue
             if wanted_date_value is not None and row_date:
+                # Full dates use an absolute distance, so a window centered just
+                # after midnight can include records from the preceding date.
                 row_date_value = date_type.fromisoformat(str(row_date))
                 row_value = datetime.combine(row_date_value, time_type())
                 center_value = datetime.combine(wanted_date_value, time_type())
@@ -99,6 +121,8 @@ def query_log_records(
                     (row_value - center_value).total_seconds() + int(clock) - center
                 )
             else:
+                # Logs that only contain a clock use circular 24-hour distance;
+                # e.g. 23:59 and 00:01 are two minutes apart, not 23h58m.
                 distance = _clock_distance(int(clock), center)
             if distance > half_window:
                 continue

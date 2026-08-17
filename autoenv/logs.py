@@ -1,3 +1,18 @@
+"""Safe, deterministic processing primitives for one collected log batch.
+
+The module deliberately separates the pipeline into five phases:
+
+1. download one or more remote directories into ``raw/``;
+2. recursively expand supported archives into ``expanded/``;
+3. select source files and establish their stable processing order;
+4. apply line/block rules and retain structured records in memory;
+5. write human-readable targets, a query index, and ``manifest.json``.
+
+Keeping these phases explicit is important when product-specific log rules are
+refined: rule changes belong in :class:`LogGroup` or the calling Web Tool, while
+remote transfer and archive-safety behavior remain unchanged.
+"""
+
 from __future__ import annotations
 
 import fnmatch
@@ -55,6 +70,14 @@ class LogTimestamp:
 
 
 class TimestampPattern:
+    """Parse timestamps from log lines through a small named-group contract.
+
+    A caller owns the concrete regular expression because products format time
+    differently.  The framework only understands the six names in
+    ``_TIME_FIELDS`` and requires ``hour`` plus ``minute`` so that the Web query
+    layer can always calculate a time-of-day value.
+    """
+
     def __init__(self, regex: str) -> None:
         if not isinstance(regex, str) or not regex.strip():
             raise ValueError("timestamp regex must not be empty")
@@ -105,6 +128,14 @@ class _Record:
 
 
 class LogCollection:
+    """Own the artifacts and state transitions of a single log collection run.
+
+    A collection is intentionally single-use.  Download happens once (from one
+    or many remote directories), followed by extraction, matching, and final
+    output.  ``_failed`` prevents a partially processed batch from becoming
+    queryable, while ``manifest.json`` exposes the current state to operators.
+    """
+
     def __init__(
         self,
         *,
@@ -134,7 +165,10 @@ class LogCollection:
         self._records: list[_Record] = []
         self._source_mtimes: dict[Path, float] = {}
         self._source_encodings: dict[str, str] = {}
-        self._download: RemoteBatchDownloadResult | None = None
+        # Retain one result per remote directory.  Apart from making the
+        # manifest auditable, this avoids flattening away the source directory
+        # when two servers paths contain the same basename.
+        self._downloads: list[RemoteBatchDownloadResult] = []
         self._extracted = False
         self._failed = False
         self._finalized = False
@@ -148,6 +182,9 @@ class LogCollection:
         glob: str = "cpdt_*",
         protocol: str = "scp",
     ) -> RemoteBatchDownloadResult:
+        """Download one remote directory while preserving the original API."""
+
+        self._ensure_download_not_started()
         if protocol != "scp":
             raise ValueError("log collection currently supports protocol='scp' only")
         method = getattr(host, "scp_download_many", None)
@@ -156,9 +193,8 @@ class LogCollection:
         result = method(remote_dir, glob=glob, destination=self.raw_dir)
         if not isinstance(result, RemoteBatchDownloadResult):
             raise TypeError("scp_download_many returned an invalid result")
-        self._download = result
-        for item in result.files:
-            self._source_mtimes[Path(item.local_file).resolve()] = item.remote_mtime
+        self._downloads.append(result)
+        self._remember_downloaded_files(result)
         if not result.success:
             self._failed = True
             self._write_manifest(
@@ -166,16 +202,96 @@ class LogCollection:
             )
         return result
 
+    def download_many(
+        self,
+        host: object,
+        *,
+        remote_dirs: Sequence[str],
+        glob: str = "cpdt_*",
+        protocol: str = "scp",
+    ) -> LogOperationResult:
+        """Download matching files from several remote directories as one batch.
+
+        Every directory receives a local ``source-NNN`` namespace.  This is not
+        cosmetic: remote directories commonly reuse names such as
+        ``cpdt_journal.log`` and flattening them into ``raw/`` would overwrite a
+        source before analysis.  The namespace is carried into ``expanded/``
+        and the SQLite ``source_file`` column, so a displayed line remains
+        traceable to its collection source.
+
+        The operation is all-or-nothing.  If any directory cannot be listed or
+        downloaded, files obtained from earlier directories are removed and the
+        manifest remains ``failed``.  Analysis therefore never presents a
+        partial multi-directory batch as complete.
+        """
+
+        self._ensure_download_not_started()
+        if protocol != "scp":
+            raise ValueError("log collection currently supports protocol='scp' only")
+        if isinstance(remote_dirs, (str, bytes)):
+            raise TypeError("remote_dirs must be a sequence of directory strings")
+        directories = tuple(self._normalize_remote_dirs(remote_dirs))
+        method = getattr(host, "scp_download_many", None)
+        if method is None:
+            raise TypeError("host must be a registered SSHHost")
+
+        started = datetime.now().astimezone()
+        operation_id = self.recorder.next_operation_id()
+        output_count = 0
+        failure: RemoteBatchDownloadResult | None = None
+
+        for index, remote_dir in enumerate(directories, start=1):
+            # scp_download_many requires an empty destination.  A dedicated
+            # child directory also guarantees that equal basenames from two
+            # remote paths can coexist without renaming the original files.
+            destination = self.raw_dir / f"source-{index:03d}"
+            result = method(remote_dir, glob=glob, destination=destination)
+            if not isinstance(result, RemoteBatchDownloadResult):
+                raise TypeError("scp_download_many returned an invalid result")
+            self._downloads.append(result)
+            if not result.success:
+                failure = result
+                break
+            self._remember_downloaded_files(result)
+            output_count += len(result.files)
+
+        if failure is not None:
+            self._failed = True
+            # The per-directory transfer result is already recorded by SSHHost;
+            # keep its diagnostics in the manifest before removing local data.
+            self._write_manifest(
+                "failed", error=failure.error_message, download=self._download_manifest()
+            )
+            self._clear_raw_downloads()
+            result = self._operation_result(
+                operation_id,
+                started,
+                False,
+                failure.status,
+                output_count,
+                error_type=failure.error_type,
+                error_message=failure.error_message,
+            )
+        else:
+            result = self._operation_result(
+                operation_id, started, True, "success", output_count
+            )
+        self.recorder.record_result("LOG DOWNLOAD MANY", result)
+        return result
+
     def extract_all(self) -> LogOperationResult:
+        """Copy/expand every downloaded source into the analysis tree."""
+
         started = datetime.now().astimezone()
         operation_id = self.recorder.next_operation_id()
         try:
-            if self._download is None or not self._download.success:
+            if not self._downloads or any(not item.success for item in self._downloads):
                 raise RuntimeError("a successful download is required before extraction")
             counter = [0, 0]
-            for item in self._download.files:
-                source = Path(item.local_file).resolve()
-                self._expand_top_level(source, item.remote_mtime, counter)
+            for download in self._downloads:
+                for item in download.files:
+                    source = Path(item.local_file).resolve()
+                    self._expand_top_level(source, item.remote_mtime, counter)
             self._extracted = True
             result = self._operation_result(operation_id, started, True, "success", counter[0])
         except Exception as exc:
@@ -196,6 +312,8 @@ class LogCollection:
         timestamp: TimestampPattern,
         encoding: str | Sequence[str] = ("utf-8", "utf-8-sig", "gb18030", "latin-1"),
     ) -> "LogGroup":
+        """Select analyzable log files and freeze their deterministic order."""
+
         if not self._extracted:
             raise RuntimeError("extract_all() must succeed before group()")
         encodings = (encoding,) if isinstance(encoding, str) else tuple(encoding)
@@ -206,6 +324,9 @@ class LogCollection:
             for path in self.expanded_dir.rglob("*")
             if path.is_file() and fnmatch.fnmatchcase(path.name, glob)
         ]
+        # Remote mtime reconstructs chronology across rotated archives.  The
+        # relative-path tie breakers make repeated runs deterministic even when
+        # several remote directories report the same mtime.
         files.sort(
             key=lambda path: (
                 self._source_mtimes.get(path.resolve(), path.stat().st_mtime),
@@ -224,6 +345,8 @@ class LogCollection:
         return LogGroup(self, files, timestamp, encodings)
 
     def finalize(self) -> LogOperationResult:
+        """Persist matched records and atomically mark the batch queryable."""
+
         started = datetime.now().astimezone()
         operation_id = self.recorder.next_operation_id()
         try:
@@ -231,6 +354,9 @@ class LogCollection:
                 raise RuntimeError("log collection is already finalized")
             if self._failed:
                 raise RuntimeError("log collection contains a failed operation")
+            # Rules may append to the same target in several passes.  Sorting by
+            # source position first and declaration order last restores original
+            # file order instead of grouping records by the rule that found them.
             ordered = sorted(
                 self._records,
                 key=lambda item: (
@@ -268,15 +394,23 @@ class LogCollection:
         return result
 
     def _expand_top_level(self, source: Path, remote_mtime: float, counter: list[int]) -> None:
-        target = self.expanded_dir / source.name
+        # Preserve the raw source namespace for multi-directory collections.
+        # A single-directory collection still has a one-component relative path
+        # and therefore retains its historical expanded layout.
+        relative_source = source.relative_to(self.raw_dir)
+        target = self.expanded_dir / relative_source
         if target.exists():
-            raise FileExistsError(f"expanded path already exists: {target.name}")
+            raise FileExistsError(f"expanded path already exists: {relative_source}")
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         self._source_mtimes[target.resolve()] = remote_mtime
         self._count_file(target, counter)
         self._expand_archive_recursive(target, remote_mtime, counter)
 
     def _expand_archive_recursive(self, archive: Path, inherited_mtime: float, counter: list[int]) -> None:
+        # Archives are kept beside their expanded directory.  Keeping the
+        # original file is useful for incident review and makes recursive
+        # expansion explicit (``x.zip.expanded/y.log.gz.expanded``).
         archive_type = _archive_type(archive)
         if archive_type is None:
             return
@@ -308,6 +442,9 @@ class LogCollection:
         except Exception:
             shutil.rmtree(destination, ignore_errors=True)
             raise
+        # All descendants inherit the top-level remote mtime.  Archive member
+        # mtimes are inconsistent between formats and would otherwise disturb
+        # cross-file ordering.
         for path in sorted(destination.rglob("*")):
             if path.is_file():
                 self._count_file(path, counter)
@@ -326,6 +463,9 @@ class LogCollection:
             raise ValueError(f"expanded bytes exceed {MAX_EXPANDED_BYTES}")
 
     def _write_index(self, records: Iterable[_Record]) -> None:
+        # Rebuild rather than mutate an old index.  A batch only becomes visible
+        # after the ready manifest is atomically written, so readers never need
+        # to observe a half-populated database.
         self.index_path.unlink(missing_ok=True)
         with sqlite3.connect(self.index_path) as connection:
             connection.execute(
@@ -384,13 +524,28 @@ class LogCollection:
         os.replace(pending, self.manifest_path)
 
     def _download_manifest(self) -> dict[str, object] | None:
-        if self._download is None:
+        if not self._downloads:
             return None
+        first = self._downloads[0]
         return {
-            "protocol": self._download.protocol,
-            "target_name": self._download.target_name,
-            "remote_dir": self._download.remote_dir,
-            "glob": self._download.glob,
+            "protocol": first.protocol,
+            "target_name": first.target_name,
+            # remote_dir remains for consumers of schema v1.  New consumers
+            # should use remote_dirs, which is complete for both one and many.
+            "remote_dir": first.remote_dir if len(self._downloads) == 1 else None,
+            "remote_dirs": [item.remote_dir for item in self._downloads],
+            "glob": first.glob,
+            "directories": [
+                {
+                    "remote_dir": download.remote_dir,
+                    "success": download.success,
+                    "status": download.status,
+                    "error_type": download.error_type,
+                    "error_message": download.error_message,
+                    "file_count": len(download.files),
+                }
+                for download in self._downloads
+            ],
             "files": [
                 {
                     "name": item.name,
@@ -398,9 +553,45 @@ class LogCollection:
                     "remote_size": item.remote_size,
                     "remote_mtime": item.remote_mtime,
                 }
-                for item in self._download.files
+                for download in self._downloads
+                for item in download.files
             ],
         }
+
+    def _ensure_download_not_started(self) -> None:
+        if self._downloads:
+            raise RuntimeError("log collection download has already started")
+        if self._failed or self._extracted or self._finalized:
+            raise RuntimeError("log collection is not ready for download")
+
+    @staticmethod
+    def _normalize_remote_dirs(remote_dirs: Sequence[str]) -> list[str]:
+        directories: list[str] = []
+        seen: set[str] = set()
+        for value in remote_dirs:
+            if not isinstance(value, str):
+                raise TypeError("each remote directory must be a string")
+            directory = value.strip()
+            if not directory:
+                raise ValueError("remote directories must not contain empty entries")
+            if directory in seen:
+                raise ValueError(f"duplicate remote directory: {directory}")
+            seen.add(directory)
+            directories.append(directory)
+        if not directories:
+            raise ValueError("at least one remote directory is required")
+        return directories
+
+    def _remember_downloaded_files(self, result: RemoteBatchDownloadResult) -> None:
+        for item in result.files:
+            self._source_mtimes[Path(item.local_file).resolve()] = item.remote_mtime
+
+    def _clear_raw_downloads(self) -> None:
+        # Keep the collection directory shape stable for diagnostics while
+        # ensuring a failed all-or-nothing transfer leaves no misleading files.
+        shutil.rmtree(self.raw_dir, ignore_errors=True)
+        self.raw_dir.mkdir()
+        self._source_mtimes.clear()
 
     def _operation_result(
         self,
@@ -410,6 +601,8 @@ class LogCollection:
         status: str,
         output_count: int,
         error: Exception | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
     ) -> LogOperationResult:
         finished = datetime.now().astimezone()
         return LogOperationResult(
@@ -422,12 +615,14 @@ class LogCollection:
             duration_ms=max(0, int((finished - started).total_seconds() * 1000)),
             batch_dir=str(self.batch_dir),
             output_count=output_count,
-            error_type=type(error).__name__ if error else None,
-            error_message=str(error) if error else None,
+            error_type=error_type or (type(error).__name__ if error else None),
+            error_message=error_message or (str(error) if error else None),
         )
 
 
 class LogGroup:
+    """Apply product rules to an ordered set of decoded log files."""
+
     def __init__(
         self,
         collection: LogCollection,
@@ -442,6 +637,8 @@ class LogGroup:
         self._rule_order = 0
 
     def match_line(self, regex: str, target_file: str) -> LogOperationResult:
+        """Copy matching lines, inheriting the last timestamp in the same file."""
+
         pattern = re.compile(regex)
         target = _target_file(target_file)
         started = datetime.now().astimezone()
@@ -450,6 +647,8 @@ class LogGroup:
         count = 0
         try:
             for file_order, path in enumerate(self.files):
+                # Reset at each file boundary: a rotated file may start a new
+                # process/session and must not inherit time from its predecessor.
                 previous: LogTimestamp | None = None
                 for line_number, line in enumerate(self._read_lines(path), start=1):
                     parsed = self.timestamp.parse(line)
@@ -476,6 +675,15 @@ class LogGroup:
         return result
 
     def match_block(self, begin_regex: str, end_regex: str, target_file: str) -> LogOperationResult:
+        """Extract block bodies with explicit and implicit boundary handling.
+
+        Begin/end marker lines are deliberately excluded.  Text before the
+        first begin (or after an end) is an implicit block; this preserves
+        useful payload emitted by truncated/rotated logs.  A repeated begin
+        inside an explicit block is treated as content-free metadata rather
+        than resetting the already collected body.
+        """
+
         begin = re.compile(begin_regex)
         end = re.compile(end_regex)
         target = _target_file(target_file)
@@ -495,6 +703,10 @@ class LogGroup:
                     nonlocal count, buffer
                     if not buffer:
                         return
+                    # One block has one correlation time.  Explicit blocks use
+                    # the begin marker (or the timestamp just before it);
+                    # implicit blocks prefer their first timestamp and finally
+                    # fall back to the previous completed segment.
                     selected = anchor if explicit else next((stamp for _, _, stamp in buffer if stamp), segment_previous)
                     if explicit and selected:
                         source = "block_begin"
@@ -523,11 +735,15 @@ class LogGroup:
                         previous = parsed
                     if begin.search(line):
                         if not explicit:
+                            # A real begin supersedes any implicit preamble
+                            # accumulated since the file start or previous end.
                             buffer = []
                             explicit = True
                             anchor = parsed or before
                         continue
                     if end.search(line):
+                        # Consecutive end markers are valid: flush is a no-op
+                        # when the implicit/explicit body is empty.
                         flush(incomplete=False)
                         buffer = []
                         explicit = False
@@ -536,6 +752,8 @@ class LogGroup:
                         continue
                     buffer.append((line_number, line, parsed))
                 if explicit:
+                    # EOF before an end marker retains the block but marks every
+                    # row incomplete in SQLite for downstream diagnostics.
                     flush(incomplete=True)
             result = self.collection._operation_result(operation_id, started, True, "success", count)
         except Exception as exc:
@@ -548,6 +766,9 @@ class LogGroup:
         return result
 
     def _read_lines(self, path: Path) -> list[str]:
+        # Decode the whole file once per rule.  Strict decoding is intentional:
+        # the first codec that can represent every byte becomes auditable in the
+        # manifest; replacement characters would hide corruption.
         payload = path.read_bytes()
         last_error: UnicodeDecodeError | None = None
         for encoding in self.encodings:
