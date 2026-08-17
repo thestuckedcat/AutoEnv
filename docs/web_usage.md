@@ -498,7 +498,7 @@ python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py `
 - `kind="local"` 是兼容默认值：函数接收页面 values 字典，由 `POST /api/tools/run` 在服务进程中调用，结果必须可 JSON 序列化。
 - `kind="workflow"`：函数接收 `RunContext`，资源由函数中的字面量 `ctx.register_*()` 调用静态发现。页面把资源逻辑名绑定到环境档案后，`POST /api/tools/workflow/start` 启动固定入口 `adapt_tool_interface.py`；输出从 `/api/tools/workflow/events` 分页轮询，停止使用 `/api/tools/workflow/stop`。
 
-日志 Tool 使用 `renderer="log_collection"`。页面只提交所选 SSH 环境；远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py::LOG_SOURCES`，不能由 Web 请求覆盖。不同来源下载到 `raw/source-NNN/`，递归解压后由 `source_groups()` 直接形成独立 Group，因此同名日志不会覆盖，也不会通过第二个 basename glob 混入其他来源。任一路径失败都会使整个批次失败并清理已经下载的原始文件。远端枚举兼容 BusyBox，不依赖 GNU `find -printf`。批量 SCP 的进度事件不会追加成几百行文本，而是更新页面中的原生进度条；LIVE TASK OUTPUT 只显示关键阶段和最终 matched/completed/retained 计数，逐文件证据、内部枚举、编码判断与完整异常堆栈写入该次 `run.log`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
+日志 Tool 使用 `renderer="log_collection"`。页面只提交所选 SSH 环境；远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py::LOG_SOURCES`，不能由 Web 请求覆盖。不同来源下载到 `raw/source-NNN/`，递归解压后由 `source_groups()` 直接形成独立 Group，因此同名日志不会覆盖，也不会通过第二个 basename glob 混入其他来源。同一 SSH transport 最多并行四个独立 SCP channel；返回文件仍按 mtime/名称排序，任一路径失败都会等待活动 channel 收尾并清理已经下载的原始文件。远端枚举兼容 BusyBox，不依赖 GNU `find -printf`。批量 SCP 的进度事件不会追加成几百行文本，而是更新页面中的原生进度条；LIVE TASK OUTPUT 只显示关键阶段和最终 matched/completed/retained 计数，逐文件证据、内部枚举、编码判断与完整异常堆栈写入该次 `run.log`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
 
 ```text
 GET /api/log-batches
@@ -506,7 +506,7 @@ GET /api/log-batches/targets?batch=<run_id>
 GET /api/log-batches/query?batch=<run_id>&target=auth.log&page=1&limit=200&time=08:21:00&window=60&keyword=login
 ```
 
-`window=60` 表示中心前后各 30 分钟；省略日期时按一天内时钟距离跨所有日期匹配，指定日期时完整时间支持跨午夜，缺日期的记录仍按时钟距离匹配。`keyword` 是最长 200 字符、不区分大小写的正文包含筛选，并与时间条件取交集；每个日志窗口独立保存 Find 条件并高亮命中词。完全没有时间的 `[-]` 与日期正则命中但日历值非法的 `[?]` 记录只在普通分页或仅关键词筛选中按原始顺序显示。
+`window=60` 表示中心前后各 30 分钟；省略日期时按一天内时钟距离跨所有日期匹配，指定日期时完整时间支持跨午夜，缺日期的记录仍按时钟距离匹配。`keyword` 是最长 200 字符、不区分大小写的正文包含筛选，并与时间条件取交集；`context=0..50` 指定 Find 命中的前后行数。服务端先分页命中，再展开上下文、去重并恢复 target sequence，因此响应的 `total`/`has_more` 描述命中数，`returned_count` 描述本页实际返回行数；每行 `find_role` 为 `match` 或 `context`。上下文不受时间窗二次过滤。完全没有时间的 `[-]` 与日期正则命中但日历值非法的 `[?]` 记录只在普通分页、仅关键词筛选或命中上下文中按原始顺序显示。
 
 workflow 请求示例见 `docs/examples/tool-request.json`。该示例会尝试真实 SCP，未得到目标实验环境授权时只检查发现、绑定和离线测试，不实际运行。
 

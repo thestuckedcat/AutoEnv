@@ -62,13 +62,21 @@ def query_log_records(
     query_time: str = "",
     window_minutes: int = 60,
     keyword: str = "",
+    context_lines: int = 0,
 ) -> dict[str, object]:
-    """Filter one derived target by keyword/time and then apply pagination.
+    """Filter one derived target and optionally include lines around Find hits.
 
     Filtering before pagination makes Find operate over the whole target rather
-    than only the current page.  Rows without a timestamp remain visible during
-    ordinary browsing but are excluded from time-window queries because their
-    temporal distance cannot be established safely.
+    than only the current page.  When ``context_lines`` is non-zero, pagination
+    is applied to matching rows first and each page is then expanded in target
+    sequence order.  This guarantees that a hit is returned together with all
+    available preceding/following context, including across an ordinary page
+    boundary.  Context is intentionally not constrained by the time filter: it
+    explains a selected hit rather than becoming another hit itself.
+
+    Rows without a timestamp remain visible during ordinary browsing but are
+    excluded from time-window hits because their temporal distance cannot be
+    established safely.
     """
 
     if page < 1:
@@ -77,6 +85,10 @@ def query_log_records(
         raise ValueError("limit must be between 1 and 500")
     if not 1 <= window_minutes <= 24 * 60:
         raise ValueError("window_minutes must be between 1 and 1440")
+    if isinstance(context_lines, bool) or not isinstance(context_lines, int):
+        raise TypeError("context_lines must be an integer")
+    if not 0 <= context_lines <= 50:
+        raise ValueError("context_lines must be between 0 and 50")
     if not isinstance(keyword, str):
         raise TypeError("keyword must be a string")
     normalized_keyword = keyword.strip()
@@ -102,8 +114,8 @@ def query_log_records(
         rows = connection.execute(
             "SELECT * FROM records WHERE target = ? ORDER BY sequence", (target,)
         ).fetchall()
-    selected: list[dict[str, object]] = []
-    for row in rows:
+    hit_indexes: list[int] = []
+    for index, row in enumerate(rows):
         if folded_keyword and folded_keyword not in str(row["text"]).casefold():
             continue
         clock = row["clock_seconds"]
@@ -126,28 +138,63 @@ def query_log_records(
                 distance = _clock_distance(int(clock), center)
             if distance > half_window:
                 continue
-        selected.append(
-            {
-                "id": row["id"],
-                "sequence": row["sequence"],
-                "text": row["text"],
-                "source_file": row["source_file"],
-                "source_line": row["source_line"],
-                "timestamp": _display_timestamp(row),
-                "clock_seconds": clock,
-                "date_key": row_date,
-                "timestamp_source": row["timestamp_source"],
-                "incomplete_block": bool(row["incomplete_block"]),
-            }
-        )
+        hit_indexes.append(index)
+
     start = (page - 1) * limit
+    page_hits = hit_indexes[start : start + limit]
+    effective_context = context_lines if folded_keyword else 0
+    visible_indexes = set(page_hits)
+    if effective_context:
+        for index in page_hits:
+            first = max(0, index - effective_context)
+            last = min(len(rows), index + effective_context + 1)
+            visible_indexes.update(range(first, last))
+
+    # A row may be context for two nearby hits.  The set removes duplicates and
+    # sorting restores the exact target-file sequence.  Only hits selected by
+    # the keyword/time filter receive the match role; nearby text that happens
+    # to contain the same word but is outside the time window stays context.
+    hit_set = set(hit_indexes)
+    selected = [
+        _record_dict(
+            rows[index],
+            find_role=(
+                "match"
+                if folded_keyword and index in hit_set
+                else "context" if effective_context else ""
+            ),
+        )
+        for index in sorted(visible_indexes)
+    ]
     return {
-        "records": selected[start : start + limit],
+        "records": selected,
         "page": page,
         "limit": limit,
-        "total": len(selected),
-        "has_more": start + limit < len(selected),
+        # For Find queries, total and pagination describe actual hits rather
+        # than the variable number of expanded context rows returned per page.
+        "total": len(hit_indexes),
+        "has_more": start + limit < len(hit_indexes),
         "keyword": normalized_keyword,
+        "context_lines": effective_context,
+        "returned_count": len(selected),
+    }
+
+
+def _record_dict(row: sqlite3.Row, *, find_role: str) -> dict[str, object]:
+    """Serialize one indexed row with its Web Find presentation role."""
+
+    return {
+        "id": row["id"],
+        "sequence": row["sequence"],
+        "text": row["text"],
+        "source_file": row["source_file"],
+        "source_line": row["source_line"],
+        "timestamp": _display_timestamp(row),
+        "clock_seconds": row["clock_seconds"],
+        "date_key": row["date_key"],
+        "timestamp_source": row["timestamp_source"],
+        "incomplete_block": bool(row["incomplete_block"]),
+        "find_role": find_role,
     }
 
 

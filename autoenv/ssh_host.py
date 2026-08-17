@@ -13,9 +13,11 @@ import socket
 import stat
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
 import paramiko
@@ -42,6 +44,10 @@ from .selectors import (
 
 _READ_SIZE = 64 * 1024
 _POLL_INTERVAL = 0.01
+# One Paramiko transport can multiplex multiple SCP channels.  Four workers
+# materially improve large log batches without creating an unbounded number of
+# channels on resource-constrained BusyBox devices.
+_SCP_BATCH_WORKERS = 4
 
 
 def _default_scp_factory(transport: Any) -> Any:
@@ -606,7 +612,7 @@ class SSHHost:
             f"glob={glob!r} destination={str(destination_path)!r}"
         )
         try:
-            self._ensure_transport()
+            transport = self._ensure_transport()
             entries = self._list_remote_file_metadata(remote_dir)
             # Stable chronological ordering is captured in the result and later
             # reused by LogCollection after archives are expanded.  Filename is
@@ -633,79 +639,127 @@ class SSHHost:
                     "REMOTE_LIST_FAILED",
                     "remote file enumeration returned duplicate basenames",
                 )
-            scp_client = self._get_scp()
-            try:
-                self.recorder.log(
-                    "SCP BATCH PROGRESS "
-                    f"operation_id={operation_id} completed=0 total={matched_count}"
+            self.recorder.log(
+                "SCP BATCH PROGRESS "
+                f"operation_id={operation_id} completed=0 total={matched_count}"
+            )
+            worker_count = min(_SCP_BATCH_WORKERS, matched_count)
+            self.recorder.log(
+                "SCP BATCH PARALLEL "
+                f"operation_id={operation_id} workers={worker_count}",
+                console=False,
+            )
+            completion_lock = Lock()
+
+            def transfer_one(
+                index: int,
+                name: str,
+                mtime: float,
+            ) -> tuple[int, RemoteDownloadedFile]:
+                """Transfer one file on a dedicated SCP channel.
+
+                ``SCPClient`` owns mutable per-channel state and is not shared
+                between workers.  Paramiko's connected transport is shared and
+                multiplexes those channels over the existing SSH connection.
+                """
+
+                nonlocal completed_count
+                remote_path = self._remote_file(remote_dir, name)
+                local_path = (destination_path / name).resolve()
+                local_path.relative_to(destination_path)
+                # Each worker has a unique basename and therefore a unique
+                # pending file.  Final names become visible only after a
+                # successful protocol return; no remote/local size comparison
+                # is introduced by parallel execution.
+                pending = local_path.with_name(local_path.name + ".part")
+                pending.unlink(missing_ok=True)
+                self._record_batch_file_event(
+                    operation_id=operation_id,
+                    event="start",
+                    index=index,
+                    total=matched_count,
+                    name=name,
+                    remote_path=remote_path,
+                    local_path=local_path,
                 )
-                for index, (name, mtime) in enumerate(matches, start=1):
-                    remote_path = self._remote_file(remote_dir, name)
-                    local_path = (destination_path / name).resolve()
-                    local_path.relative_to(destination_path)
-                    # Never expose an in-progress file under its final name.
-                    # Log collection deliberately trusts a successful return
-                    # from SCP instead of running ``wc`` and comparing sizes;
-                    # the completed .part is still atomically renamed.
-                    pending = local_path.with_name(local_path.name + ".part")
-                    pending.unlink(missing_ok=True)
+                scp_client: Any | None = None
+                try:
+                    scp_client = self._scp_factory(transport)
+                    scp_client.get(remote_path, local_path=str(pending))
+                    pending.replace(local_path)
+                    os.utime(local_path, (mtime, mtime))
+                    item = RemoteDownloadedFile(
+                        name=name,
+                        remote_file=remote_path,
+                        local_file=str(local_path),
+                        remote_size=None,
+                        remote_mtime=mtime,
+                    )
                     self._record_batch_file_event(
                         operation_id=operation_id,
-                        event="start",
+                        event="complete",
                         index=index,
                         total=matched_count,
                         name=name,
                         remote_path=remote_path,
                         local_path=local_path,
                     )
-                    try:
-                        scp_client.get(remote_path, local_path=str(pending))
-                        pending.replace(local_path)
-                        os.utime(local_path, (mtime, mtime))
+                    # Counter mutation and its emitted progress line share one
+                    # lock, so concurrent completions always produce a strict
+                    # 1..N sequence even when files finish out of order.
+                    with completion_lock:
                         completed_count += 1
-                        downloaded.append(
-                            RemoteDownloadedFile(
-                                name=name,
-                                remote_file=remote_path,
-                                local_file=str(local_path),
-                                remote_size=None,
-                                remote_mtime=mtime,
-                            )
-                        )
-                        self._record_batch_file_event(
-                            operation_id=operation_id,
-                            event="complete",
-                            index=index,
-                            total=matched_count,
-                            name=name,
-                            remote_path=remote_path,
-                            local_path=local_path,
-                        )
-                        # The Web bridge recognizes this structured line and
-                        # updates one progress bar in place.  It is also flushed
-                        # to run.log, so an interrupted batch retains its exact
-                        # last completed count without printing file names.
                         self.recorder.log(
                             "SCP BATCH PROGRESS "
                             f"operation_id={operation_id} "
                             f"completed={completed_count} total={matched_count}"
                         )
+                    return index, item
+                except Exception as exc:
+                    self._record_batch_file_event(
+                        operation_id=operation_id,
+                        event="failed",
+                        index=index,
+                        total=matched_count,
+                        name=name,
+                        remote_path=remote_path,
+                        local_path=local_path,
+                        error=exc,
+                    )
+                    raise
+                finally:
+                    if scp_client is not None:
+                        try:
+                            scp_client.close()
+                        except Exception:
+                            pass
+                    pending.unlink(missing_ok=True)
+
+            completed_by_index: dict[int, RemoteDownloadedFile] = {}
+            first_error: Exception | None = None
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="autoenv-scp",
+            ) as executor:
+                futures = [
+                    executor.submit(transfer_one, index, name, mtime)
+                    for index, (name, mtime) in enumerate(matches, start=1)
+                ]
+                for future in as_completed(futures):
+                    try:
+                        index, item = future.result()
+                        completed_by_index[index] = item
                     except Exception as exc:
-                        self._record_batch_file_event(
-                            operation_id=operation_id,
-                            event="failed",
-                            index=index,
-                            total=matched_count,
-                            name=name,
-                            remote_path=remote_path,
-                            local_path=local_path,
-                            error=exc,
-                        )
-                        raise
-                    finally:
-                        pending.unlink(missing_ok=True)
-            finally:
-                self._close_scp()
+                        # Let already-running transfers close their channels and
+                        # pending files.  The batch is still all-or-nothing and
+                        # every successful final file is removed below.
+                        if first_error is None:
+                            first_error = exc
+            downloaded.extend(
+                completed_by_index[index] for index in sorted(completed_by_index)
+            )
+            if first_error is not None:
+                raise first_error
             success, status = True, "success"
         except _RemoteDownloadError as exc:
             status, error_type, error_message = exc.status, exc.error_type, str(exc)

@@ -204,7 +204,7 @@ logs/<run_id>/
 └── packages/     # 下载、提取和生成的本地文件
 ```
 
-排查顺序通常是：终端最后一条错误 → `result.json` 的 `status/error_type/error_message` → `run.log` 中对应操作 → `params.json` 中实际使用的地址和路径。批量 SCP 的页面只显示进度条和最终 matched/completed/retained 计数；要确认中断前正在处理哪个文件，可在 `run.log` 搜索 `SCP BATCH FILE`，按同一 `operation_id` 查看最后一个 start/complete/failed 事件。
+排查顺序通常是：终端最后一条错误 → `result.json` 的 `status/error_type/error_message` → `run.log` 中对应操作 → `params.json` 中实际使用的地址和路径。批量 SCP 的页面只显示进度条和最终 matched/completed/retained 计数；下载会有最多四个并行 worker，因此 `run.log` 中可能同时存在多条未完成的 start。可搜索 `SCP BATCH FILE`，按同一 `operation_id` 和 `index` 配对 start/complete/failed 事件。
 
 ## 7. 常见问题快速定位
 
