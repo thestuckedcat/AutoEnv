@@ -128,7 +128,7 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 SCP/SFTP 下载使用已声明的 SSH Host，可指定精确远端文件，或在一个远端目录中用正则进行唯一匹配。下载成功的 `RemoteDownloadResult` 会注册到本次 `packages/`，可直接传给 SCP、SFTP 或 FTP 上传；远端模糊匹配没有 HDFS `newest` 语义，零匹配和多匹配都会失败。完整示例见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用)。
 
-日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载远端目录中的全部匹配文件；内置页面支持每行填写一个远端目录，并将各目录隔离到 `source-NNN` 后再统一分析。远端枚举只使用 BusyBox 可提供的 ash glob、`test`、`wc`、`stat` 和 `printf`，不依赖 GNU `find -printf`。`ctx.create_log_collection()` 随后完成递归安全解压、稳定分组、line/block 解析、带时间前缀目标日志、SQLite 索引和批次 manifest。内置 `webPage/tools/log_collection.py` 固定处理已确认的 `cpdt_*` 样例规则；它只出现在 Tools 页签，不进入环境启动脚本列表。
+日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载远端目录中的全部匹配文件；内置页面只选择 SSH 环境，远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py` 的 `LOG_SOURCES`。每个来源隔离到 `source-NNN`，递归安全解压后直接形成独立 `LogGroup`，不再由页面提交路径或用第二个文件名 glob 重新混组。远端枚举只使用 BusyBox 可提供的 ash glob、`test`、`wc`、`stat` 和 `printf`，不依赖 GNU `find -printf`。Group 可用 `match_line()`/`match_block()` 生成 target；block 规则还可用 `exclude_regex` 删除命中的正文行。日志 Tool 只出现在 Tools 页签，不进入环境启动脚本列表。
 
 新增 local Web Tool 时，复制 [`webPage/tools/_template.py`](webPage/tools/_template.py) 为非下划线 `.py` 文件并替换全部占位符；workflow Tool 使用 `.agents/skills/autoenv-web-tool/scripts/scaffold_tool.py --kind workflow` 生成。下划线模板不会被自动发现，正式文件则会自动注册到 Tools 页，无需修改 Web 核心页面。完整流程见 [Web 快速入门](webPage/QUICK_START.md#添加-tool)。
 

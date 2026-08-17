@@ -1,25 +1,16 @@
 from __future__ import annotations
 
-from autoenv import SSHDefaults, TimestampPattern
+from autoenv import LogSource, SSHDefaults, TimestampPattern
 from autoenv.web_tools import register_web_tool
 
 
-def _parse_remote_dirs(value: object) -> list[str]:
-    """Convert the Web textarea into an ordered list of remote directories.
-
-    One path per line avoids ambiguous separators: spaces and commas are legal
-    POSIX filename characters and therefore must not split a remote path.  Empty
-    lines are ignored so operators can visually group entries.  Duplicate paths
-    are left intact here and rejected by ``LogCollection.download_many()`` with
-    an explicit message rather than being collected twice silently.
-    """
-
-    if not isinstance(value, str):
-        raise TypeError("remote_dirs must be submitted as text")
-    directories = [line.strip() for line in value.splitlines() if line.strip()]
-    if not directories:
-        raise ValueError("at least one remote log directory is required")
-    return directories
+LOG_SOURCES = (
+    LogSource(
+        name="cpdt",
+        remote_dir="/var/log/product",
+        glob="cpdt_*",
+    ),
+)
 
 
 @register_web_tool(
@@ -28,22 +19,7 @@ def _parse_remote_dirs(value: object) -> list[str]:
     description="通过已注册 SSH 环境批量收集、解压、分类并关联查看日志。",
     kind="workflow",
     renderer="log_collection",
-    fields=[
-        {
-            "name": "remote_dirs",
-            "label": "远端日志目录（每行一个）",
-            "type": "textarea",
-            "required": True,
-            "placeholder": "/var/log/product\n/var/log/product-backup",
-        },
-        {
-            "name": "alias",
-            "label": "本次日志别名（可选）",
-            "type": "text",
-            "required": False,
-            "placeholder": "例如：问题单 1234 复现",
-        },
-    ],
+    fields=[],
 )
 def collect_logs(ctx):
     """Collect cpdt logs, extract archives, and build two analysis targets.
@@ -61,20 +37,16 @@ def collect_logs(ctx):
         "log_server",
         resource_label="1260网口",
         alias="日志服务器网口",
-        description="通过 SCP 从所填多个目录批量收集 cpdt_* 日志。",
+        description="通过 SCP 按脚本固化的路径和通配符收集日志。",
         defaults=SSHDefaults(),
     )
-    remote_dirs = _parse_remote_dirs(ctx.argument("remote_dirs", required=True))
-    alias = str(ctx.argument("alias", default="") or "").strip()
 
-    # Phase 1: each remote directory is downloaded into its own source-NNN
-    # namespace.  The batch is all-or-nothing, so a missing directory cannot
-    # produce a deceptively complete analysis result.
-    collection = ctx.create_log_collection(alias=alias)
-    result = collection.download_many(
+    # The Web request selects only the registered SSH resource.  Remote scope is
+    # code-reviewed here: every source binds one fixed path to one download glob.
+    collection = ctx.create_log_collection()
+    result = collection.download_sources(
         log_server,
-        remote_dirs=remote_dirs,
-        glob="cpdt_*",
+        sources=LOG_SOURCES,
         protocol="scp",
     )
     if not result.success:
@@ -93,10 +65,12 @@ def collect_logs(ctx):
         r"(?:(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+)?"
         r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
     )
-    # Only extracted cpdt*.log files enter business analysis.  The framework
-    # orders them across all remote directories by inherited remote mtime and
-    # then stable relative path.
-    group = collection.group(glob="cpdt*.log", timestamp=timestamp)
+    # Each configured source becomes one group containing its direct plain files
+    # plus all non-archive descendants produced by recursive extraction.  There
+    # is no second filename glob after download, so the source table is the full
+    # collection boundary.
+    groups = collection.source_groups(timestamp=timestamp)
+    group = groups["cpdt"]
 
     # AUTH is a line rule: emit only matching lines.  A line without its own
     # timestamp inherits the last timestamp from the same source file.

@@ -40,6 +40,42 @@ _TIME_FIELDS = ("year", "month", "day", "hour", "minute", "second")
 
 
 @dataclass(frozen=True)
+class LogSource:
+    """One script-owned remote directory and the basename glob collected from it.
+
+    ``name`` is the stable key returned by :meth:`LogCollection.source_groups`.
+    Keeping the path and glob in Python makes the collection scope reviewable in
+    Git instead of accepting an arbitrary remote path from the Web request.
+    """
+
+    name: str
+    remote_dir: str
+    glob: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("log source name must be a string")
+        name = self.name.strip()
+        if not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            raise ValueError(
+                "log source name must use letters, digits, '.', '_' or '-'"
+            )
+        if not isinstance(self.remote_dir, str):
+            raise TypeError("log source remote_dir must be a string")
+        remote_dir = self.remote_dir.strip()
+        if not remote_dir:
+            raise ValueError("log source remote_dir must not be empty")
+        if not isinstance(self.glob, str):
+            raise TypeError("log source glob must be a string")
+        glob = self.glob.strip()
+        if not glob:
+            raise ValueError("log source glob must not be empty")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "remote_dir", remote_dir)
+        object.__setattr__(self, "glob", glob)
+
+
+@dataclass(frozen=True)
 class LogTimestamp:
     year: int | None = None
     month: int | None = None
@@ -169,6 +205,7 @@ class LogCollection:
         # manifest auditable, this avoids flattening away the source directory
         # when two servers paths contain the same basename.
         self._downloads: list[RemoteBatchDownloadResult] = []
+        self._sources: tuple[LogSource, ...] = ()
         self._extracted = False
         self._failed = False
         self._finalized = False
@@ -225,27 +262,81 @@ class LogCollection:
         partial multi-directory batch as complete.
         """
 
-        self._ensure_download_not_started()
-        if protocol != "scp":
-            raise ValueError("log collection currently supports protocol='scp' only")
         if isinstance(remote_dirs, (str, bytes)):
             raise TypeError("remote_dirs must be a sequence of directory strings")
         directories = tuple(self._normalize_remote_dirs(remote_dirs))
+        sources = tuple(
+            LogSource(
+                name=f"source-{index:03d}",
+                remote_dir=remote_dir,
+                glob=glob,
+            )
+            for index, remote_dir in enumerate(directories, start=1)
+        )
+        return self._download_sources(
+            host,
+            sources=sources,
+            protocol=protocol,
+            recorder_name="LOG DOWNLOAD MANY",
+        )
+
+    def download_sources(
+        self,
+        host: object,
+        *,
+        sources: Sequence[LogSource],
+        protocol: str = "scp",
+    ) -> LogOperationResult:
+        """Download script-declared path/glob pairs into isolated source trees.
+
+        Every source receives ``raw/source-NNN`` and later one independent
+        :class:`LogGroup`.  Source names must be unique, and repeating the same
+        path/glob pair is rejected before any remote operation.  Different
+        globs may intentionally read the same remote directory as separate
+        groups.
+        """
+
+        normalized = self._normalize_sources(sources)
+        return self._download_sources(
+            host,
+            sources=normalized,
+            protocol=protocol,
+            recorder_name="LOG DOWNLOAD SOURCES",
+        )
+
+    def _download_sources(
+        self,
+        host: object,
+        *,
+        sources: tuple[LogSource, ...],
+        protocol: str,
+        recorder_name: str,
+    ) -> LogOperationResult:
+        """Shared all-or-nothing transfer implementation for configured sources."""
+
+        self._ensure_download_not_started()
+        if protocol != "scp":
+            raise ValueError("log collection currently supports protocol='scp' only")
         method = getattr(host, "scp_download_many", None)
         if method is None:
             raise TypeError("host must be a registered SSHHost")
+        self._sources = sources
 
         started = datetime.now().astimezone()
         operation_id = self.recorder.next_operation_id()
         output_count = 0
         failure: RemoteBatchDownloadResult | None = None
 
-        for index, remote_dir in enumerate(directories, start=1):
+        for index, source in enumerate(sources, start=1):
             # scp_download_many requires an empty destination.  A dedicated
             # child directory also guarantees that equal basenames from two
             # remote paths can coexist without renaming the original files.
             destination = self.raw_dir / f"source-{index:03d}"
-            result = method(remote_dir, glob=glob, destination=destination)
+            result = method(
+                source.remote_dir,
+                glob=source.glob,
+                destination=destination,
+            )
             if not isinstance(result, RemoteBatchDownloadResult):
                 raise TypeError("scp_download_many returned an invalid result")
             self._downloads.append(result)
@@ -276,7 +367,7 @@ class LogCollection:
             result = self._operation_result(
                 operation_id, started, True, "success", output_count
             )
-        self.recorder.record_result("LOG DOWNLOAD MANY", result)
+        self.recorder.record_result(recorder_name, result)
         return result
 
     def extract_all(self) -> LogOperationResult:
@@ -343,6 +434,62 @@ class LogCollection:
             )
             raise FileNotFoundError(f"no expanded file matched glob {glob!r}")
         return LogGroup(self, files, timestamp, encodings)
+
+    def source_groups(
+        self,
+        *,
+        timestamp: TimestampPattern,
+        encoding: str | Sequence[str] = ("utf-8", "utf-8-sig", "gb18030", "latin-1"),
+    ) -> dict[str, "LogGroup"]:
+        """Build one group from every script-declared source after extraction.
+
+        The remote glob decides which top-level files enter a source.  Archive
+        containers remain in ``expanded`` for audit but are not decoded as log
+        text; their recursively expanded non-archive descendants, together with
+        directly downloaded plain files, become that source's group.  No second
+        basename glob is applied after extraction.
+        """
+
+        if not self._extracted:
+            raise RuntimeError("extract_all() must succeed before source_groups()")
+        if not self._sources:
+            raise RuntimeError("download_sources() or download_many() is required")
+        encodings = (encoding,) if isinstance(encoding, str) else tuple(encoding)
+        if not encodings or any(not isinstance(item, str) or not item for item in encodings):
+            raise ValueError("encoding must contain at least one valid codec name")
+
+        groups: dict[str, LogGroup] = {}
+        file_order_start = 0
+        for index, source in enumerate(self._sources, start=1):
+            source_root = self.expanded_dir / f"source-{index:03d}"
+            files = [
+                path
+                for path in source_root.rglob("*")
+                if path.is_file() and _archive_type(path) is None
+            ]
+            files.sort(
+                key=lambda path: (
+                    self._source_mtimes.get(path.resolve(), path.stat().st_mtime),
+                    str(path.relative_to(self.expanded_dir)).casefold(),
+                    str(path.relative_to(self.expanded_dir)),
+                )
+            )
+            if not files:
+                self._failed = True
+                message = f"log source {source.name!r} produced no analyzable files"
+                self._write_manifest(
+                    "failed", error=message, download=self._download_manifest()
+                )
+                raise FileNotFoundError(message)
+            groups[source.name] = LogGroup(
+                self,
+                files,
+                timestamp,
+                encodings,
+                file_order_start=file_order_start,
+            )
+            file_order_start += len(files)
+        return groups
 
     def finalize(self) -> LogOperationResult:
         """Persist matched records and atomically mark the batch queryable."""
@@ -534,17 +681,27 @@ class LogCollection:
             # should use remote_dirs, which is complete for both one and many.
             "remote_dir": first.remote_dir if len(self._downloads) == 1 else None,
             "remote_dirs": [item.remote_dir for item in self._downloads],
-            "glob": first.glob,
+            "glob": first.glob if all(item.glob == first.glob for item in self._downloads) else None,
+            "sources": [
+                {
+                    "name": source.name,
+                    "remote_dir": source.remote_dir,
+                    "glob": source.glob,
+                }
+                for source in self._sources
+            ],
             "directories": [
                 {
+                    "name": self._sources[index].name if index < len(self._sources) else None,
                     "remote_dir": download.remote_dir,
+                    "glob": download.glob,
                     "success": download.success,
                     "status": download.status,
                     "error_type": download.error_type,
                     "error_message": download.error_message,
                     "file_count": len(download.files),
                 }
-                for download in self._downloads
+                for index, download in enumerate(self._downloads)
             ],
             "files": [
                 {
@@ -581,6 +738,29 @@ class LogCollection:
         if not directories:
             raise ValueError("at least one remote directory is required")
         return directories
+
+    @staticmethod
+    def _normalize_sources(sources: Sequence[LogSource]) -> tuple[LogSource, ...]:
+        if isinstance(sources, (str, bytes)):
+            raise TypeError("sources must be a sequence of LogSource values")
+        values = tuple(sources)
+        if not values:
+            raise ValueError("at least one log source is required")
+        if any(not isinstance(item, LogSource) for item in values):
+            raise TypeError("each source must be a LogSource")
+        names: set[str] = set()
+        pairs: set[tuple[str, str]] = set()
+        for source in values:
+            if source.name in names:
+                raise ValueError(f"duplicate log source name: {source.name}")
+            pair = (source.remote_dir, source.glob)
+            if pair in pairs:
+                raise ValueError(
+                    f"duplicate log source path/glob: {source.remote_dir} {source.glob}"
+                )
+            names.add(source.name)
+            pairs.add(pair)
+        return values
 
     def _remember_downloaded_files(self, result: RemoteBatchDownloadResult) -> None:
         for item in result.files:
@@ -629,11 +809,14 @@ class LogGroup:
         files: list[Path],
         timestamp: TimestampPattern,
         encodings: tuple[str, ...],
+        *,
+        file_order_start: int = 0,
     ) -> None:
         self.collection = collection
         self.files = files
         self.timestamp = timestamp
         self.encodings = encodings
+        self.file_order_start = file_order_start
         self._rule_order = 0
 
     def match_line(self, regex: str, target_file: str) -> LogOperationResult:
@@ -646,7 +829,7 @@ class LogGroup:
         self._rule_order += 1
         count = 0
         try:
-            for file_order, path in enumerate(self.files):
+            for file_order, path in enumerate(self.files, start=self.file_order_start):
                 # Reset at each file boundary: a rotated file may start a new
                 # process/session and must not inherit time from its predecessor.
                 previous: LogTimestamp | None = None
@@ -674,25 +857,39 @@ class LogGroup:
         self.collection.recorder.record_result("LOG MATCH LINE", result)
         return result
 
-    def match_block(self, begin_regex: str, end_regex: str, target_file: str) -> LogOperationResult:
+    def match_block(
+        self,
+        begin_regex: str,
+        end_regex: str,
+        target_file: str,
+        *,
+        exclude_regex: str | None = None,
+    ) -> LogOperationResult:
         """Extract block bodies with explicit and implicit boundary handling.
 
         Begin/end marker lines are deliberately excluded.  Text before the
         first begin (or after an end) is an implicit block; this preserves
         useful payload emitted by truncated/rotated logs.  A repeated begin
         inside an explicit block is treated as content-free metadata rather
-        than resetting the already collected body.
+        than resetting the already collected body.  ``exclude_regex`` removes
+        matching body lines after the block and its correlation timestamp have
+        been selected; boundary recognition and time inheritance are unchanged.
         """
 
         begin = re.compile(begin_regex)
         end = re.compile(end_regex)
+        if exclude_regex is not None and not isinstance(exclude_regex, str):
+            raise TypeError("exclude_regex must be a string or None")
+        if isinstance(exclude_regex, str) and not exclude_regex.strip():
+            raise ValueError("exclude_regex must not be empty")
+        exclude = re.compile(exclude_regex) if exclude_regex is not None else None
         target = _target_file(target_file)
         started = datetime.now().astimezone()
         operation_id = self.collection.recorder.next_operation_id()
         self._rule_order += 1
         count = 0
         try:
-            for file_order, path in enumerate(self.files):
+            for file_order, path in enumerate(self.files, start=self.file_order_start):
                 previous: LogTimestamp | None = None
                 segment_previous: LogTimestamp | None = None
                 explicit = False
@@ -716,7 +913,12 @@ class LogGroup:
                         source = "block_inherited"
                     else:
                         source = "unknown"
-                    for line_number, text, _stamp in buffer:
+                    retained = [
+                        item
+                        for item in buffer
+                        if exclude is None or exclude.search(item[1]) is None
+                    ]
+                    for line_number, text, _stamp in retained:
                         self.collection._records.append(
                             _Record(
                                 target, file_order, line_number, self._rule_order, text,

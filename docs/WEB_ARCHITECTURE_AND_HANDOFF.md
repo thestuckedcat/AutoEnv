@@ -50,14 +50,16 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 公共 `Extractor` 支持 `.run`、`.tar.gz`、`.tgz`、`.zip`，并拒绝路径穿越和 ZIP 符号链接。
 
-`RunContext.create_log_collection()` 创建当前运行唯一的日志批次目录。单目录处理链为 `download()` → `extract_all()` → `group()` → 一个或多个 `match_line()`/`match_block()` → `finalize()`；多目录把首步换成 `download_many(remote_dirs=[...])`：
+`RunContext.create_log_collection()` 创建当前运行唯一的日志批次目录。兼容处理链仍支持 `download()`/`download_many()` → `extract_all()` → `group()` → 匹配规则 → `finalize()`；内置 Tool 使用脚本化来源链 `download_sources()` → `extract_all()` → `source_groups()` → 匹配规则 → `finalize()`：
 
 - `download_many()` 将每个远端目录下载到 `raw/source-NNN/`，允许不同目录存在同名文件；任一路径失败会清理此前已下载文件并使整个批次失败。目录列表和逐目录状态写入 manifest。
+- `LogSource(name, remote_dir, glob)` 把一个脚本内固定路径绑定到一个下载通配符。`download_sources()` 按声明顺序下载，每个来源独立使用自己的 glob；Web 请求不能覆盖路径或 glob。
 - `extract_all()` 递归处理 ZIP、GZ、TAR.GZ 和 TGZ；拒绝路径穿越、绝对路径、链接、特殊文件、同名/父子路径冲突，并限制总文件数与展开大小。失败的展开目录会清理。
 - `group()` 递归匹配 basename glob，按继承的远端 mtime、相对路径稳定排序。每个文件独立尝试 UTF-8、UTF-8-SIG、GB18030、Latin-1，并在 manifest 记录实际编码。
+- `source_groups()` 按 `LogSource.name` 返回独立 Group。直接下载的普通文件和该来源压缩包递归展开后的非压缩文件全部入组；压缩包容器保留审计但不作为文本解码，不再执行第二次文件名 glob。
 - `TimestampPattern` 使用 `year/month/day/hour/minute/second` 命名组；`hour` 和 `minute` 必须存在，日期与秒可缺失。
 - `match_line()` 扫描全部原始行更新时间，匹配行继承本文件上一时间；文件之间不继承。
-- `match_block()` 排除 begin/end 行，支持文件头和 end 后的隐式块、重复 begin、连续 end 与显式块 EOF 输出；同一块统一时间。未取得时间时统一输出 `[-]`。
+- `match_block()` 排除 begin/end 行，支持文件头和 end 后的隐式块、重复 begin、连续 end 与显式块 EOF 输出；同一块统一时间。可选 `exclude_regex` 在块和时间确定后删除命中的正文行。未取得时间时统一输出 `[-]`。
 - `finalize()` 生成 `targets/*.log`、逐行 SQLite 索引和不含密码的 `manifest.json`。只有 manifest 状态为 `ready` 的批次可查询。
 
 旧的 `scripts/download_and_parse_logs.py` 已删除；日志采集是 Tool workflow，不是环境启动脚本。
@@ -107,7 +109,7 @@ python -X utf8 -m pytest
 ## 9. 已知限制与后续优先级
 
 1. Agent CLI 已使用 ConPTY 并同步页面尺寸；页面尚未提供完整 xterm.js 颜色、鼠标和 IME 能力。
-2. 日志 Tool 当前固定使用已确认的 `cpdt_*`/`cpdt*.log`、AUTH line 和 DB block 规则；新增组件规则时直接修改 Tool Python 并增加样例精确断言。
+2. 日志 Tool 当前在 `LOG_SOURCES` 固定使用 `/var/log/product` 与 `cpdt_*`，并保留 AUTH line 和 DB block 规则；新增来源或组件规则时直接修改 Tool Python 并增加样例精确断言。
 3. 错误码工具仅有动态 Tool 契约示例，尚无业务规则。
 4. 环境密码按已确认需求允许明文保存；若未来允许远程访问 Web，必须先增加鉴权、CSRF/来源限制、传输保护和密钥存储方案。
 5. 离线 UT 和本机 HTTP 冒烟只能证明控制面契约；不能替代真实设备、文件服务器或 Agent CLI 验收。日志 SCP 仍需在一个明确授权且含 `1260网口` 的实验环境单独冒烟。
