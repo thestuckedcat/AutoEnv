@@ -498,7 +498,7 @@ python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py `
 - `kind="local"` 是兼容默认值：函数接收页面 values 字典，由 `POST /api/tools/run` 在服务进程中调用，结果必须可 JSON 序列化。
 - `kind="workflow"`：函数接收 `RunContext`，资源由函数中的字面量 `ctx.register_*()` 调用静态发现。页面把资源逻辑名绑定到环境档案后，`POST /api/tools/workflow/start` 启动固定入口 `adapt_tool_interface.py`；输出从 `/api/tools/workflow/events` 分页轮询，停止使用 `/api/tools/workflow/stop`。
 
-日志 Tool 使用 `renderer="log_collection"`。页面只提交所选 SSH 环境；远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py::LOG_SOURCES`，不能由 Web 请求覆盖。不同来源下载到 `raw/source-NNN/`，递归解压后由 `source_groups()` 直接形成独立 Group，因此同名日志不会覆盖，也不会通过第二个 basename glob 混入其他来源。任一路径失败都会使整个批次失败并清理已经下载的原始文件。远端枚举兼容 BusyBox，不依赖 GNU `find -printf`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
+日志 Tool 使用 `renderer="log_collection"`。页面只提交所选 SSH 环境；远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py::LOG_SOURCES`，不能由 Web 请求覆盖。不同来源下载到 `raw/source-NNN/`，递归解压后由 `source_groups()` 直接形成独立 Group，因此同名日志不会覆盖，也不会通过第二个 basename glob 混入其他来源。任一路径失败都会使整个批次失败并清理已经下载的原始文件。远端枚举兼容 BusyBox，不依赖 GNU `find -printf`。批量 SCP 的进度事件不会追加成几百行文本，而是更新页面中的原生进度条；LIVE TASK OUTPUT 只显示关键阶段和最终 matched/completed/retained 计数，逐文件证据、内部枚举、编码判断与完整异常堆栈写入该次 `run.log`。一次成功运行会在 `logs/<run_id>/log_collection/` 保存 `raw/`、`expanded/`、`targets/`、`index.sqlite3` 与 `manifest.json`。查询接口只读取 `status=ready` 的 manifest：
 
 ```text
 GET /api/log-batches
@@ -571,7 +571,7 @@ ConPTY 提供真实终端进程和持续刷新能力；前端目前是轻量 ANS
 
 ### 12.4 页面收到 `{"ok": true}`，但环境随后失败
 
-`ok` 只表示 Python 子进程成功创建。继续查看 LIVE TASK OUTPUT、`run.log` 和最终 `result.json`。
+`ok` 只表示 Python 子进程成功创建。继续查看 LIVE TASK OUTPUT、批量下载进度条、`run.log` 和最终 `result.json`。
 
 ### 12.5 脚本停在启动后的 func 菜单
 

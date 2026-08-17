@@ -703,6 +703,40 @@ def test_workflow_tool_runner_uses_run_context_and_writes_unified_result(
     assert (Path(result.run_dir) / "result.json").is_file()
 
 
+def test_workflow_tool_keeps_traceback_in_run_log_and_prints_compact_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def body(_ctx):
+        raise ValueError("first line\nsecond line")
+
+    definition = WebToolDefinition(
+        name="offline-workflow-error-test",
+        title="Offline workflow error",
+        description="",
+        fields=(),
+        body=body,
+        source=__file__,
+        kind="workflow",
+    )
+    monkeypatch.setitem(web_tools._TOOLS, definition.name, definition)
+    console = io.StringIO()
+
+    result = run_workflow_tool(
+        tmp_path,
+        definition.name,
+        parameters={},
+        console=console,
+    )
+
+    assert not result.success and result.status == "program_error"
+    console_text = console.getvalue()
+    assert "TOOL ERROR type=ValueError message=first line second line" in console_text
+    assert "Traceback (most recent call last)" not in console_text
+    run_log = (Path(result.run_dir) / "run.log").read_text(encoding="utf-8")
+    assert "UNHANDLED EXCEPTION" in run_log
+    assert "Traceback (most recent call last)" in run_log
+
+
 def test_web_tool_scaffold_and_validator_support_workflow_kind(tmp_path: Path):
     root = Path(__file__).resolve().parents[1]
     scaffold = root / ".agents/skills/autoenv-web-tool/scripts/scaffold_tool.py"

@@ -50,13 +50,13 @@ python -X utf8 -m pytest -q
 | `test_runtime_registry.py` | 临时项目、注入输入、内存 console | 调用点自动元数据、RunContext、last-run、package `!newest` 快捷选择、组合脚本、`register_func` 生命周期 | `autoenv/registry.py`、`autoenv/runtime.py`、`result.json` |
 | `test_command_files.py` | 纯内存上传映射、临时输出文件 | `S{file_name}`、Host 隔离、完整 shell 文本生成 | `autoenv/command_files.py` |
 | `test_generated_script_contract.py` | 临时 Python 片段和 AST 验证器 | skill 生成脚本的统一静态契约，包括调用点元数据字面量和两类命令接口的上传目标 | 失败消息对应行、验证器和生成脚本 |
-| `test_ssh_host.py` | fake Paramiko/SFTP/SCP/远端文件系统 | SSH 状态、连接复用、按输出响应、单/批量传输、BusyBox 枚举、远端 mtime、部分失败清理、上传校验、占位符目标 | `autoenv/ssh_host.py` 和 fake 收到的命令/响应/文件 |
+| `test_ssh_host.py` | fake Paramiko/SFTP/SCP/远端文件系统 | SSH 状态、连接复用、按输出响应、单/批量传输、BusyBox 枚举、远端 mtime、批量进度/静默逐文件明细、部分失败清理、上传校验、占位符目标 | `autoenv/ssh_host.py` 和 fake 收到的命令/响应/文件 |
 | `test_telnet_client.py` | fake Socket、Clock、提示符字节流 | Telnet 模式探测、按输出响应、退出结果、断连、上传来源 | `autoenv/telnet_client.py` 和预置收发字节流 |
 | `test_package_extractor.py` | fake HDFS、临时压缩包、注入 `.run` runner | 下载路径、原子文件、提取安全和摘要 | `package_manager.py`、`extractor.py`、临时包内容 |
-| `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏 | `results.py`、`selectors.py`、`recorder.py` |
+| `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏、静默写入与批量计数摘要 | `results.py`、`selectors.py`、`recorder.py` |
 | `test_cli.py` | monkeypatch 注册表和执行函数 | 菜单选择、命令模式和退出码 | `autoenv/cli.py` 的参数/输出映射 |
-| `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP/HTTP server、动态模块 | LaunchRequest 合并、多环境标签绑定、脚本连接/HDFS/普通输入元数据、唯一 Web 启动链与固定端口、模板 Web 契约、下载结果复用、FTP、local Web Tool 和导入边界 | `startWeb.py`、`webPage/server.py`、`interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
-| `test_log_collection.py` | 三份确认日志、脚本化路径/glob 来源、同名多目录日志、压缩包、临时 SQLite、离线 workflow | 来源独立 Group 与 manifest、ZIP/GZ/TAR.GZ/TGZ 递归安全解压、block 正文排除、稳定 group 顺序、line/block 时间语义、精确目标日志、批次/分页/跨午夜查询、workflow Tool 隔离、注册模板校验与发现隔离 | `autoenv/logs.py`、`autoenv/log_query.py`、`autoenv/web_tools.py`、`webPage/tools/log_collection.py`、`webPage/tools/_template.py` |
+| `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP/HTTP server、动态模块 | LaunchRequest 合并、多环境标签绑定、脚本连接/HDFS/普通输入元数据、唯一 Web 启动链与固定端口、workflow 进度事件/进度条、模板 Web 契约、下载结果复用、FTP、local Web Tool 和导入边界 | `startWeb.py`、`webPage/server.py`、`interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
+| `test_log_collection.py` | 三份确认日志、脚本化路径/glob 来源、同名多目录日志、压缩包、临时 SQLite、离线 workflow | 来源独立 Group 与 manifest、ZIP/GZ/TAR.GZ/TGZ 递归安全解压、block 正文排除、稳定 group 顺序、line/block 时间语义、精确目标日志、批次/分页/跨午夜查询、workflow Tool 隔离、异常堆栈静默落盘、注册模板校验与发现隔离 | `autoenv/logs.py`、`autoenv/log_query.py`、`autoenv/web_tools.py`、`webPage/tools/log_collection.py`、`webPage/tools/_template.py` |
 | `test_log_error_triage_skill.py` | 临时普通/GZ 日志、临时知识库、子进程 CLI | `[ERROR]` 精确提取与上下文、隐藏文件忽略、编码/大小写入口、知识模板安全创建与禁止覆盖、Skill/人工确认契约 | `.agents/skills/log-error-triage/`、`logKnowledge/` |
 
 ## 4. `register_func` 每条 UT 的目的
@@ -111,10 +111,10 @@ SSH 和 Telnet 测试都把关键词拆成两个接收分片，证明接口按�
 Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 提示符不会带到 Bootloader 会话；对象本身没有永久关闭，后续操作仍可懒重连。SSH 只关闭本次 Channel，Transport 保持可复用。
 ## 8. Web、下载和 FTP 扩展 UT
 
-- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、JSON 资源标签目录及 HTTP 接口、多环境资源标签绑定、首次保存环境后立即刷新脚本/Tool 资源选择、日志分页控件的 CSS 查询与异步面板替换保护、脚本连接/HDFS/普通输入提示与模板元数据、环境保存校验、ConPTY 原始控制序列流、动态 local Web Tool 发现执行和 ZIP 导入安全限制。
+- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、JSON 资源标签目录及 HTTP 接口、多环境资源标签绑定、首次保存环境后立即刷新脚本/Tool 资源选择、日志分页控件的 CSS 查询与异步面板替换保护、SCP 进度文本到结构化事件及原生进度条的契约、脚本连接/HDFS/普通输入提示与模板元数据、环境保存校验、ConPTY 原始控制序列流、动态 local Web Tool 发现执行和 ZIP 导入安全限制。
 - 同一文件还扫描仓库中的 `serve_forever()` 实现，要求只存在 `webPage/server.py`；验证 `startWeb.py` 拒绝全部参数，服务只能绑定固定的 `127.0.0.1:8765`，且旧 Web 目录不存在。
-- `tests/test_log_collection.py`：验证 workflow Tool 的 `RunContext` 运行结果、脚本化来源按路径/glob 分组、多远端目录同名文件隔离、block 正文排除、确认日志样例的精确输出、归档安全边界、时间继承与批次查询。
+- `tests/test_log_collection.py`：验证 workflow Tool 的 `RunContext` 运行结果、未捕获异常堆栈只落 `run.log` 且页面只显示单行错误、脚本化来源按路径/glob 分组、多远端目录同名文件隔离、block 正文排除、确认日志样例的精确输出、归档安全边界、时间继承与批次查询。
 - `tests/test_log_error_triage_skill.py`：验证日志提取辅助脚本和人工知识库脚手架；所有输入、GZ 和输出均位于临时目录，不读取真实业务日志。
-- `tests/test_ssh_host.py` 新增 SFTP 精确/正则下载，以及 SCP 批量多匹配、BusyBox 非 GNU 枚举、稳定排序、远端 mtime 和失败清理。
+- `tests/test_ssh_host.py` 新增 SFTP 精确/正则下载，以及 SCP 批量多匹配、BusyBox 非 GNU 枚举、稳定排序、远端 mtime、逐文件进度、静默明细和失败清理。
 - `tests/test_package_extractor.py` 新增 ZIP 单文件提取与路径穿越拒绝。
 - 资源标签 HTTP API 使用测试进程内的本机临时端口验证；其余 Web HTTP API 另做本机冒烟测试。UT 使用假 PTY，不启动真实 SSH、Telnet、FTP、HDFS 或 Agent CLI。

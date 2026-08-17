@@ -860,9 +860,10 @@ SSH 必须在命令运行期间并行读取并实时显示 stdout/stderr，避�
 终端与 `run.log` 使用不同的展示格式，但内容来自同一结果：
 
 - `run.log` 中的操作结果保持单行 JSON，便于检索和程序解析。
-- 终端将脚本开始/结束和每个操作结果显示为带空行的摘要块，突出成功或失败状态。
+- 终端将脚本开始/结束和每个用户可见操作结果显示为带空行的摘要块，突出成功或失败状态。
 - 下载、提取和上传摘要分行显示源、目标、校验值及耗时。
-- SSH/Telnet 长短命令都实时显示远端输出并累计到 `result.output`；结束摘要分行显示 command、status、phase、exit code、耗时和错误，不重复整段正文。
+- 用户显式调用的 SSH/Telnet 长短命令都实时显示远端输出并累计到 `result.output`；结束摘要分行显示 command、status、phase、exit code、耗时和错误，不重复整段正文。
+- 框架内部的远端枚举、大小查询、逐文件传输、编码判断和异常堆栈只写入 `run.log`。批量 SCP 对外显示 matched/completed/retained 计数；Web 以结构化 `completed/total` 事件更新原生进度条。
 
 脚本层不公开 `ctx.logger`，避免日志内容和结构失控。
 

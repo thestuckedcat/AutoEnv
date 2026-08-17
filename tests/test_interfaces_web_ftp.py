@@ -386,6 +386,38 @@ def test_log_query_uses_css_selectors_and_ignores_replaced_panels():
     assert "state.logQueryTokens[index]===token&&container" in javascript
 
 
+def test_scp_progress_lines_become_workflow_progress_bar_events():
+    from webPage.server import _parse_scp_progress
+
+    event = _parse_scp_progress(
+        "[2026-08-17T12:00:00.000+00:00] "
+        "SCP BATCH PROGRESS operation_id=0003 completed=40 total=300"
+    )
+    assert event == {
+        "type": "progress",
+        "operation_id": "0003",
+        "completed": 40,
+        "total": 300,
+    }
+    assert _parse_scp_progress("ordinary output") is None
+    assert _parse_scp_progress(
+        "[2026-08-17T12:00:00.000+00:00] "
+        "SCP BATCH PROGRESS operation_id=0003 completed=301 total=300"
+    ) is None
+    assert _parse_scp_progress(
+        "[2026-08-17T12:00:00.000+00:00] SSH host STDOUT "
+        "SCP BATCH PROGRESS operation_id=0003 completed=1 total=2"
+    ) is None
+
+    root = Path(__file__).resolve().parents[1]
+    javascript = (root / "webPage" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "webPage" / "logs.css").read_text(encoding="utf-8")
+    assert 'event.type==="progress"' in javascript
+    assert "function updateToolProgress(event)" in javascript
+    assert 'id="toolProgressBar"' in javascript
+    assert ".tool-progress progress" in styles
+
+
 def test_agent_page_types_and_drops_files_directly_in_terminal():
     root = Path(__file__).resolve().parents[1]
     html = (root / "webPage" / "index.html").read_text(encoding="utf-8")
@@ -394,7 +426,8 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
-    assert "app.js?v=20260817-log-find" in html
+    assert "app.js?v=20260817-transfer-progress" in html
+    assert "logs.css?v=20260817-transfer-progress" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript

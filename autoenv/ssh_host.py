@@ -4,6 +4,7 @@ import codecs
 import errno
 import fnmatch
 import hashlib
+import json
 import math
 import os
 import posixpath
@@ -234,6 +235,7 @@ class SSHHost:
         expect_disconnect: bool,
         keyword: str | None = None,
         send_data: bytes | None = None,
+        console: bool = True,
     ) -> CommandResult:
         command = self.uploaded_files.resolve(command, target_name=self.name)
         timeout = _timeout(timeout, "SSH command timeout")
@@ -272,7 +274,14 @@ class SSHHost:
             else:
                 stderr_parts.append(text)
             raw_parts.append(text)
-            self.recorder.stream(f"SSH {self.name} {stream.upper()}", text)
+            # Internal discovery commands may emit hundreds of NUL-delimited
+            # file records.  Preserve them in run.log without flooding the Web
+            # event stream; explicit user commands keep streaming by default.
+            self.recorder.stream(
+                f"SSH {self.name} {stream.upper()}",
+                text,
+                console=console,
+            )
             if keyword is not None and not response_sent:
                 candidate = match_tails[stream] + text
                 if keyword in candidate:
@@ -483,7 +492,11 @@ class SSHHost:
                 if tail:
                     parts.append(tail)
                     raw_parts.append(tail)
-                    self.recorder.stream(f"SSH {self.name} {stream.upper()}", tail)
+                    self.recorder.stream(
+                        f"SSH {self.name} {stream.upper()}",
+                        tail,
+                        console=console,
+                    )
             if channel is not None:
                 try:
                     channel.close()
@@ -511,7 +524,7 @@ class SSHHost:
             expected_disconnect=expect_disconnect,
             disconnected=disconnected,
         )
-        self.recorder.record_result("SSH EXECUTE", result)
+        self.recorder.record_result("SSH EXECUTE", result, console=console)
         return result
 
     def scp_upload(
@@ -581,10 +594,17 @@ class SSHHost:
         operation_id = self.recorder.next_operation_id()
         started = datetime.now().astimezone()
         downloaded: list[RemoteDownloadedFile] = []
+        matched_count = 0
+        completed_count = 0
         success = False
         status = "download_failed"
         error_type: str | None = None
         error_message: str | None = None
+        self.recorder.log(
+            "SCP BATCH START "
+            f"operation_id={operation_id} remote_dir={remote_dir!r} "
+            f"glob={glob!r} destination={str(destination_path)!r}"
+        )
         try:
             self._ensure_transport()
             entries = self._list_remote_file_metadata(remote_dir)
@@ -594,6 +614,11 @@ class SSHHost:
             matches = sorted(
                 (item for item in entries if fnmatch.fnmatchcase(item[0], glob)),
                 key=lambda item: (item[2], item[0].casefold(), item[0]),
+            )
+            matched_count = len(matches)
+            self.recorder.log(
+                "SCP BATCH MATCHED "
+                f"operation_id={operation_id} count={matched_count}"
             )
             if not matches:
                 raise _RemoteDownloadError(
@@ -610,7 +635,11 @@ class SSHHost:
                 )
             scp_client = self._get_scp()
             try:
-                for name, size, mtime in matches:
+                self.recorder.log(
+                    "SCP BATCH PROGRESS "
+                    f"operation_id={operation_id} completed=0 total={matched_count}"
+                )
+                for index, (name, size, mtime) in enumerate(matches, start=1):
                     remote_path = self._remote_file(remote_dir, name)
                     local_path = (destination_path / name).resolve()
                     local_path.relative_to(destination_path)
@@ -619,6 +648,16 @@ class SSHHost:
                     # replace inside the same destination directory.
                     pending = local_path.with_name(local_path.name + ".part")
                     pending.unlink(missing_ok=True)
+                    self._record_batch_file_event(
+                        operation_id=operation_id,
+                        event="start",
+                        index=index,
+                        total=matched_count,
+                        name=name,
+                        remote_path=remote_path,
+                        local_path=local_path,
+                        size=size,
+                    )
                     try:
                         scp_client.get(remote_path, local_path=str(pending))
                         if pending.stat().st_size != size:
@@ -629,6 +668,7 @@ class SSHHost:
                             )
                         pending.replace(local_path)
                         os.utime(local_path, (mtime, mtime))
+                        completed_count += 1
                         downloaded.append(
                             RemoteDownloadedFile(
                                 name=name,
@@ -638,6 +678,38 @@ class SSHHost:
                                 remote_mtime=mtime,
                             )
                         )
+                        self._record_batch_file_event(
+                            operation_id=operation_id,
+                            event="complete",
+                            index=index,
+                            total=matched_count,
+                            name=name,
+                            remote_path=remote_path,
+                            local_path=local_path,
+                            size=size,
+                        )
+                        # The Web bridge recognizes this structured line and
+                        # updates one progress bar in place.  It is also flushed
+                        # to run.log, so an interrupted batch retains its exact
+                        # last completed count without printing file names.
+                        self.recorder.log(
+                            "SCP BATCH PROGRESS "
+                            f"operation_id={operation_id} "
+                            f"completed={completed_count} total={matched_count}"
+                        )
+                    except Exception as exc:
+                        self._record_batch_file_event(
+                            operation_id=operation_id,
+                            event="failed",
+                            index=index,
+                            total=matched_count,
+                            name=name,
+                            remote_path=remote_path,
+                            local_path=local_path,
+                            size=size,
+                            error=exc,
+                        )
+                        raise
                     finally:
                         pending.unlink(missing_ok=True)
             finally:
@@ -674,11 +746,47 @@ class SSHHost:
             duration_ms=max(0, int((finished - started).total_seconds() * 1000)),
             destination=str(destination_path),
             files=tuple(downloaded),
+            matched_count=matched_count,
+            completed_count=completed_count,
             error_type=error_type,
             error_message=error_message,
         )
         self.recorder.record_result("SCP BATCH DOWNLOAD", result)
         return result
+
+    def _record_batch_file_event(
+        self,
+        *,
+        operation_id: str,
+        event: str,
+        index: int,
+        total: int,
+        name: str,
+        remote_path: str,
+        local_path: Path,
+        size: int,
+        error: Exception | None = None,
+    ) -> None:
+        """Write per-file transfer evidence to run.log, never to the console."""
+
+        detail: dict[str, object] = {
+            "operation_id": operation_id,
+            "event": event,
+            "index": index,
+            "total": total,
+            "name": name,
+            "remote_file": remote_path,
+            "local_file": str(local_path),
+            "remote_size": size,
+        }
+        if error is not None:
+            detail["error_type"] = type(error).__name__
+            detail["error_message"] = str(error) or repr(error)
+        self.recorder.log(
+            "SCP BATCH FILE "
+            + json.dumps(detail, ensure_ascii=False, sort_keys=True),
+            console=False,
+        )
 
     def _download(
         self,
@@ -1220,7 +1328,12 @@ class SSHHost:
         # plus test/printf keeps the same non-recursive semantics and works in
         # BusyBox ash without requiring SFTP to be enabled on the device.
         command = self._busybox_list_command(remote_dir, metadata=False)
-        result = self.execute(command, timeout=self.info.connect_timeout)
+        result = self._execute(
+            command,
+            timeout=self.info.connect_timeout,
+            expect_disconnect=False,
+            console=False,
+        )
         if not result.success:
             raise _RemoteDownloadError("remote_list_failed", "REMOTE_LIST_FAILED", result.error_message or result.output or "failed to list remote directory")
         # NUL delimiters preserve spaces, tabs, and newlines in legal filenames;
@@ -1241,7 +1354,12 @@ class SSHHost:
         """
 
         command = self._busybox_list_command(remote_dir, metadata=True)
-        result = self.execute(command, timeout=self.info.connect_timeout)
+        result = self._execute(
+            command,
+            timeout=self.info.connect_timeout,
+            expect_disconnect=False,
+            console=False,
+        )
         if not result.success:
             raise _RemoteDownloadError(
                 "remote_list_failed",
@@ -1318,7 +1436,12 @@ class SSHHost:
     def _remote_size(self, remote_path: str, protocol: str) -> int:
         if protocol == "sftp":
             return int(self._get_sftp().stat(remote_path).st_size)
-        result = self.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=self.info.connect_timeout)
+        result = self._execute(
+            f"wc -c < {shlex.quote(remote_path)}",
+            timeout=self.info.connect_timeout,
+            expect_disconnect=False,
+            console=False,
+        )
         if not result.success:
             raise _RemoteDownloadError("remote_file_not_found", "REMOTE_FILE_NOT_FOUND", result.error_message or result.output or f"cannot read remote file: {remote_path}")
         try:

@@ -699,6 +699,8 @@ class LogCollection:
                     "status": download.status,
                     "error_type": download.error_type,
                     "error_message": download.error_message,
+                    "matched_count": download.matched_count,
+                    "completed_count": download.completed_count,
                     "file_count": len(download.files),
                 }
                 for index, download in enumerate(self._downloads)
@@ -978,7 +980,13 @@ class LogGroup:
                 text = payload.decode(encoding)
                 relative = str(path.relative_to(self.collection.expanded_dir))
                 self.collection._source_encodings[relative] = encoding
-                self.collection.recorder.log(f"LOG ENCODING path={path} encoding={encoding}")
+                # A collection can decode hundreds of files and may read each
+                # file once per rule.  Keep the auditable codec decision in
+                # run.log without turning the Web event stream into a file list.
+                self.collection.recorder.log(
+                    f"LOG ENCODING path={path} encoding={encoding}",
+                    console=False,
+                )
                 return text.splitlines()
             except UnicodeDecodeError as exc:
                 last_error = exc

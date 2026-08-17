@@ -26,18 +26,26 @@ def md5(data: bytes) -> str:
 class FakeRecorder:
     def __init__(self) -> None:
         self.operation = 0
-        self.streams: list[tuple[str, str]] = []
+        self.streams: list[tuple[str, str, bool]] = []
         self.results: list[tuple[str, Any]] = []
+        self.result_console: list[bool] = []
+        self.logs: list[tuple[str, bool]] = []
 
     def next_operation_id(self) -> str:
         self.operation += 1
         return f"{self.operation:04d}"
 
-    def stream(self, prefix: str, text: str) -> None:
-        self.streams.append((prefix, text))
+    def stream(self, prefix: str, text: str, *, console: bool = True) -> None:
+        self.streams.append((prefix, text, console))
 
-    def record_result(self, operation: str, result: Any) -> None:
+    def record_result(
+        self, operation: str, result: Any, *, console: bool = True
+    ) -> None:
         self.results.append((operation, result))
+        self.result_console.append(console)
+
+    def log(self, message: str, *, console: bool = True) -> None:
+        self.logs.append((message, console))
 
 
 class FakeChannel:
@@ -458,8 +466,43 @@ def test_scp_batch_download_matches_all_files_and_preserves_remote_mtime(
     assert [item.name for item in result.files] == ["cpdt_a.log", "cpdt_b.log.gz"]
     assert [Path(item.local_file).read_bytes() for item in result.files] == [b"a", b"bb"]
     assert int((destination / "cpdt_a.log").stat().st_mtime) == 10
+    assert (result.matched_count, result.completed_count) == (2, 2)
     assert scp_factory.created[0].close_count == 1
     assert recorder.results[-1][0] == "SCP BATCH DOWNLOAD"
+    details = [message for message, console in recorder.logs if not console]
+    assert len([message for message in details if message.startswith("SCP BATCH FILE ")]) == 4
+
+
+def test_scp_batch_console_has_key_progress_while_file_details_stay_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, recorder, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
+    metadata = []
+    for index in range(25):
+        name = f"diaglog-{index:03d}.log.zip"
+        payload = f"zip-{index}".encode()
+        fs.seed_file(f"/logs/{name}", payload)
+        metadata.append((name, len(payload), float(index)))
+    monkeypatch.setattr(host, "_list_remote_file_metadata", lambda _remote_dir: metadata)
+
+    result = host.scp_download_many(
+        "/logs",
+        glob="diaglog*.log.zip",
+        destination=tmp_path / "log_collection" / "raw" / "source-002",
+    )
+
+    assert result.success
+    assert (result.matched_count, result.completed_count) == (25, 25)
+    visible = [message for message, console in recorder.logs if console]
+    assert any(message.startswith("SCP BATCH START ") for message in visible)
+    assert "SCP BATCH MATCHED operation_id=0001 count=25" in visible
+    assert "SCP BATCH PROGRESS operation_id=0001 completed=0 total=25" in visible
+    assert "SCP BATCH PROGRESS operation_id=0001 completed=10 total=25" in visible
+    assert "SCP BATCH PROGRESS operation_id=0001 completed=20 total=25" in visible
+    assert "SCP BATCH PROGRESS operation_id=0001 completed=25 total=25" in visible
+    assert all("diaglog-000.log.zip" not in message for message in visible)
+    details = [message for message, console in recorder.logs if not console]
+    assert len([message for message in details if message.startswith("SCP BATCH FILE ")]) == 50
 
 
 def test_busybox_remote_metadata_listing_avoids_gnu_find_and_uses_nul_fields(
@@ -468,8 +511,16 @@ def test_busybox_remote_metadata_listing_avoids_gnu_find_and_uses_nul_fields(
     host, _, _, _, _, _, _, _, _ = upload_rig(tmp_path)
     commands: list[str] = []
 
-    def execute(command: str, *, timeout: float):
+    def execute(
+        command: str,
+        *,
+        timeout: float,
+        expect_disconnect: bool,
+        console: bool,
+    ):
         commands.append(command)
+        assert expect_disconnect is False
+        assert console is False
         return SimpleNamespace(
             success=True,
             stdout="\0".join(
@@ -487,7 +538,7 @@ def test_busybox_remote_metadata_listing_avoids_gnu_find_and_uses_nul_fields(
             output="",
         )
 
-    monkeypatch.setattr(host, "execute", execute)
+    monkeypatch.setattr(host, "_execute", execute)
     assert host._list_remote_file_metadata("/logs with spaces") == [
         ("cpdt one.log", 7, 1700000000.0),
         ("cpdt\ttwo.log", 8, 1700000001.0),
@@ -504,8 +555,8 @@ def test_busybox_remote_name_listing_preserves_newlines(
     host, _, _, _, _, _, _, _, _ = upload_rig(tmp_path)
     monkeypatch.setattr(
         host,
-        "execute",
-        lambda _command, *, timeout: SimpleNamespace(
+        "_execute",
+        lambda _command, *, timeout, expect_disconnect, console: SimpleNamespace(
             success=True,
             stdout="normal.log\0line\nbreak.log\0",
             error_message=None,
@@ -533,7 +584,7 @@ def test_scp_batch_download_reports_zero_matches_without_partial_files(
 def test_scp_batch_download_cleans_completed_and_temporary_files_after_partial_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host, _, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
+    host, recorder, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
     fs.seed_file("/logs/cpdt_a.log", b"a")
     fs.seed_file("/logs/cpdt_b.log", b"bb")
     monkeypatch.setattr(
@@ -557,8 +608,11 @@ def test_scp_batch_download_cleans_completed_and_temporary_files_after_partial_f
     destination = tmp_path / "log_collection" / "raw"
     result = host.scp_download_many("/logs", glob="cpdt_*", destination=destination)
     assert not result.success and result.status == "download_failed"
+    assert (result.matched_count, result.completed_count) == (2, 1)
     assert list(destination.iterdir()) == []
     assert client.close_count == 1
+    detail_lines = [message for message, console in recorder.logs if not console]
+    assert any('"event": "failed"' in message for message in detail_lines)
 
 
 def test_defaults_are_normalized_and_connection_defaults_require_identity() -> None:

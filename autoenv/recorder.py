@@ -79,12 +79,28 @@ class RunRecorder:
         for line in normalized.splitlines(keepends=False):
             self.log(f"{prefix} {line}", console=console)
 
-    def record_result(self, operation: str, result: Any) -> None:
+    def record_result(
+        self,
+        operation: str,
+        result: Any,
+        *,
+        console: bool = True,
+    ) -> None:
+        """Persist a complete result and optionally print its human summary.
+
+        Framework-internal commands often return large machine-readable output
+        such as a NUL-delimited remote file inventory.  Callers can keep that
+        evidence in ``run.log`` while suppressing it from the Web/terminal
+        stream by passing ``console=False``.  Public operations retain the
+        historical console summary by default.
+        """
+
         serializable = result_to_dict(result)
         data = json.dumps(serializable, ensure_ascii=False, sort_keys=True)
         self.log(f"{operation} {data}", console=False)
-        state, lines = _format_console_result(serializable)
-        self.console_block(operation, lines, state=state)
+        if console:
+            state, lines = _format_console_result(serializable)
+            self.console_block(operation, lines, state=state)
 
     def write_json(self, path: Path, value: Any, *, mask: bool = False) -> None:
         serializable = result_to_dict(value)
@@ -145,6 +161,8 @@ def _format_console_result(value: Any) -> tuple[str, list[str]]:
 
     if "command" in value:
         _append_command_summary(lines, value)
+    elif "glob" in value and "remote_dir" in value and "files" in value:
+        _append_batch_download_summary(lines, value)
     elif "remote_file" in value and "protocol" in value:
         _append_upload_summary(lines, value)
     elif "config_name" in value:
@@ -161,6 +179,30 @@ def _format_console_result(value: Any) -> tuple[str, list[str]]:
         detail = ": ".join(str(item) for item in (error_type, error_message) if item)
         lines.append(f"error: {detail}")
     return state, lines
+
+
+def _append_batch_download_summary(lines: list[str], value: dict[str, Any]) -> None:
+    """Show batch counts without dumping hundreds of file records."""
+
+    protocol = str(value.get("protocol", "download")).upper()
+    target = value.get("target_name")
+    lines.append(f"target: {protocol} {target}" if target else f"protocol: {protocol}")
+    _append_if_present(lines, "source", value.get("remote_dir"))
+    _append_if_present(lines, "glob", value.get("glob"))
+    _append_if_present(lines, "destination", value.get("destination"))
+    retained = value.get("files")
+    retained_count = len(retained) if isinstance(retained, list) else 0
+    lines.append(
+        "files: "
+        f"matched={value.get('matched_count', retained_count)} "
+        f"completed={value.get('completed_count', retained_count)} "
+        f"retained={retained_count}"
+    )
+    lines.append(
+        "result: "
+        f"status={value.get('status', 'unknown')} "
+        f"duration_ms={value.get('duration_ms', 0)}"
+    )
 
 
 def _append_command_summary(lines: list[str], value: dict[str, Any]) -> None:

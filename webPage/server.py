@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -24,6 +25,13 @@ SETTINGS_PATH = WEB_DIR / "settings.json"
 WEB_HOST = "127.0.0.1"
 WEB_PORT = 8765
 WEB_URL = f"http://{WEB_HOST}:{WEB_PORT}/"
+_SCP_PROGRESS_RE = re.compile(
+    # Require the recorder timestamp immediately before the marker.  A remote
+    # command is allowed to print arbitrary text, so searching only for the
+    # suffix could accidentally treat device stdout as a framework event.
+    r"^\[[^\]\r\n]+\] SCP BATCH PROGRESS operation_id=(?P<operation_id>\S+) "
+    r"completed=(?P<completed>\d+) total=(?P<total>\d+)$"
+)
 
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -59,7 +67,11 @@ class ProcessSession:
             text = line.rstrip("\r\n")
             if "run_dir:" in text:
                 self.last_run_dir = text.split("run_dir:", 1)[1].strip()
-            self.append({"type": "output", "text": f"{prefix}{text}"}, generation)
+            progress = _parse_scp_progress(text)
+            if progress is not None:
+                self.append(progress, generation)
+            else:
+                self.append({"type": "output", "text": f"{prefix}{text}"}, generation)
         code = process.wait()
         self.append({"type": "complete", "success": code == 0, "status": f"exit_{code}"}, generation)
 
@@ -83,6 +95,24 @@ class ProcessSession:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+
+def _parse_scp_progress(text: str) -> dict[str, object] | None:
+    """Convert recorder progress lines into Web events instead of log text."""
+
+    match = _SCP_PROGRESS_RE.search(text)
+    if match is None:
+        return None
+    completed = int(match.group("completed"))
+    total = int(match.group("total"))
+    if total <= 0 or completed < 0 or completed > total:
+        return None
+    return {
+        "type": "progress",
+        "operation_id": match.group("operation_id"),
+        "completed": completed,
+        "total": total,
+    }
 
 
 class TerminalSession:

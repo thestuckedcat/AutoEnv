@@ -198,13 +198,13 @@ python -X utf8 -m pytest tests/test_runtime_registry.py::test_registered_funcs_r
 
 ```text
 logs/<run_id>/
-├── run.log       # 完整流程、远端输出、func 执行记录
+├── run.log       # 完整流程、内部枚举、逐文件传输、异常堆栈和 func 记录
 ├── params.json   # 本次确认的连接和包参数
 ├── result.json   # 主流程结果和 func_runs
 └── packages/     # 下载、提取和生成的本地文件
 ```
 
-排查顺序通常是：终端最后一条错误 → `result.json` 的 `status/error_type/error_message` → `run.log` 中对应操作 → `params.json` 中实际使用的地址和路径。
+排查顺序通常是：终端最后一条错误 → `result.json` 的 `status/error_type/error_message` → `run.log` 中对应操作 → `params.json` 中实际使用的地址和路径。批量 SCP 的页面只显示进度条和最终 matched/completed/retained 计数；要确认中断前正在处理哪个文件，可在 `run.log` 搜索 `SCP BATCH FILE`，按同一 `operation_id` 查看最后一个 start/complete/failed 事件。
 
 ## 7. 常见问题快速定位
 

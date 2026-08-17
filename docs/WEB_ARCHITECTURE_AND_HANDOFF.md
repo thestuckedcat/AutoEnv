@@ -16,7 +16,7 @@
 - `autoenv/web_tools.py`：Tools 注册和发现契约。
 - `webPage/tools/*.py`：独立工具模块。
 
-Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程调用 `adapt_interface.py`。workflow Tool 使用独立的 `adapt_tool_interface.py` 进程和事件流，因此与环境启动可以分别停止。设备操作不会阻塞 HTTP 线程，输出通过本地事件轮询送到控制台。
+Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程调用 `adapt_interface.py`。workflow Tool 使用独立的 `adapt_tool_interface.py` 进程和事件流，因此与环境启动可以分别停止。设备操作不会阻塞 HTTP 线程，普通输出和结构化进度事件都通过本地事件轮询送到页面。
 
 ## 2. 结构化参数
 
@@ -40,7 +40,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 - `SSHHost.scp_download()`：SCP 传输，目录枚举和大小检查使用 SSH 命令。
 - `SSHHost.sftp_download()`：SFTP 枚举、传输和大小检查。
-- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`wc -c`、`stat -c %Y` 和 NUL 分隔的 `printf`。
+- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`wc -c`、`stat -c %Y` 和 NUL 分隔的 `printf`。内部枚举结果与逐文件 start/complete/failed 证据只写入 `run.log`；Web 把 `completed/total` 事件更新成一个原生进度条，结束摘要及 manifest 保留 matched/completed/retained 计数。
 - 两者的 `remote_file` 和 `pattern` 必须二选一。pattern 只搜索指定目录、不递归；零匹配和多匹配都失败，没有 newest 语义。
 - 下载写入本次 `packages/`，先使用 `.part`，大小校验成功后原子替换。
 - 成功的 `RemoteDownloadResult` 可直接传给 SCP/SFTP/FTP 上传。
