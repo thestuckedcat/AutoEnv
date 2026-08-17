@@ -147,7 +147,10 @@ class RemoteDownloadedFile:
     name: str
     remote_file: str
     local_file: str
-    remote_size: int
+    # Log batch downloads trust successful SCP completion and therefore do not
+    # query or compare each remote file's size.  Single-file download APIs keep
+    # their existing size verification.
+    remote_size: int | None
     remote_mtime: float
 
 

@@ -40,9 +40,9 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 - `SSHHost.scp_download()`：SCP 传输，目录枚举和大小检查使用 SSH 命令。
 - `SSHHost.sftp_download()`：SFTP 枚举、传输和大小检查。
-- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`wc -c`、`stat -c %Y` 和 NUL 分隔的 `printf`。内部枚举结果与逐文件 start/complete/failed 证据只写入 `run.log`；Web 把 `completed/total` 事件更新成一个原生进度条，结束摘要及 manifest 保留 matched/completed/retained 计数。
+- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`stat -c %Y` 和 NUL 分隔的 `printf`。日志批量下载不读取远端大小、不比较本地大小；SCP 正常返回后将 `.part` 原子替换为最终文件。内部枚举结果与逐文件 start/complete/failed 证据只写入 `run.log`；Web 把 `completed/total` 事件更新成一个原生进度条，结束摘要及 manifest 保留 matched/completed/retained 计数。
 - 两者的 `remote_file` 和 `pattern` 必须二选一。pattern 只搜索指定目录、不递归；零匹配和多匹配都失败，没有 newest 语义。
-- 下载写入本次 `packages/`，先使用 `.part`，大小校验成功后原子替换。
+- 单文件 SCP/SFTP 下载写入本次 `packages/`，先使用 `.part`，大小校验成功后原子替换；上述日志批量下载是明确的无大小校验例外。
 - 成功的 `RemoteDownloadResult` 可直接传给 SCP/SFTP/FTP 上传。
 - `FTPHost.upload()` 是独立普通 FTP，默认被动模式，以文件大小校验；FTP 不提供 SSH/SFTP 的通道安全性或标准 MD5 能力。
 
@@ -59,7 +59,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 - `source_groups()` 按 `LogSource.name` 返回独立 Group。直接下载的普通文件和该来源压缩包递归展开后的非压缩文件全部入组；压缩包容器保留审计但不作为文本解码，不再执行第二次文件名 glob。
 - `TimestampPattern` 使用 `year/month/day/hour/minute/second` 命名组；`hour` 和 `minute` 必须存在，日期与秒可缺失。
 - `match_line()` 扫描全部原始行更新时间，匹配行继承本文件上一时间；文件之间不继承。
-- `match_block()` 排除 begin/end 行，支持文件头和 end 后的隐式块、重复 begin、连续 end 与显式块 EOF 输出；同一块统一时间。可选 `exclude_regex` 在块和时间确定后删除命中的正文行。未取得时间时统一输出 `[-]`。
+- `match_block()` 排除 begin/end 行，支持文件头和 end 后的隐式块、重复 begin、连续 end 与显式块 EOF 输出；同一块统一时间。可选 `exclude_regex` 在块和时间确定后删除命中的正文行。未取得时间时输出 `[-]`；正则命中但 year/month/day 不能组成合法日历日期时保留记录位置、输出 `[?]`，并从时间窗查询中排除。
 - `finalize()` 生成 `targets/*.log`、逐行 SQLite 索引和不含密码的 `manifest.json`。只有 manifest 状态为 `ready` 的批次可查询。
 
 旧的 `scripts/download_and_parse_logs.py` 已删除；日志采集是 Tool workflow，不是环境启动脚本。

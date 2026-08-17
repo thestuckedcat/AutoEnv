@@ -613,7 +613,7 @@ class SSHHost:
             # a deterministic tie breaker for coarse/equal remote mtimes.
             matches = sorted(
                 (item for item in entries if fnmatch.fnmatchcase(item[0], glob)),
-                key=lambda item: (item[2], item[0].casefold(), item[0]),
+                key=lambda item: (item[1], item[0].casefold(), item[0]),
             )
             matched_count = len(matches)
             self.recorder.log(
@@ -639,13 +639,14 @@ class SSHHost:
                     "SCP BATCH PROGRESS "
                     f"operation_id={operation_id} completed=0 total={matched_count}"
                 )
-                for index, (name, size, mtime) in enumerate(matches, start=1):
+                for index, (name, mtime) in enumerate(matches, start=1):
                     remote_path = self._remote_file(remote_dir, name)
                     local_path = (destination_path / name).resolve()
                     local_path.relative_to(destination_path)
-                    # Never expose a truncated file under its final name.  Size
-                    # verification happens on .part, followed by an atomic local
-                    # replace inside the same destination directory.
+                    # Never expose an in-progress file under its final name.
+                    # Log collection deliberately trusts a successful return
+                    # from SCP instead of running ``wc`` and comparing sizes;
+                    # the completed .part is still atomically renamed.
                     pending = local_path.with_name(local_path.name + ".part")
                     pending.unlink(missing_ok=True)
                     self._record_batch_file_event(
@@ -656,16 +657,9 @@ class SSHHost:
                         name=name,
                         remote_path=remote_path,
                         local_path=local_path,
-                        size=size,
                     )
                     try:
                         scp_client.get(remote_path, local_path=str(pending))
-                        if pending.stat().st_size != size:
-                            raise _RemoteDownloadError(
-                                "size_verification_failed",
-                                "SIZE_VERIFICATION_FAILED",
-                                f"downloaded size mismatch for {name}: remote={size}, local={pending.stat().st_size}",
-                            )
                         pending.replace(local_path)
                         os.utime(local_path, (mtime, mtime))
                         completed_count += 1
@@ -674,7 +668,7 @@ class SSHHost:
                                 name=name,
                                 remote_file=remote_path,
                                 local_file=str(local_path),
-                                remote_size=size,
+                                remote_size=None,
                                 remote_mtime=mtime,
                             )
                         )
@@ -686,7 +680,6 @@ class SSHHost:
                             name=name,
                             remote_path=remote_path,
                             local_path=local_path,
-                            size=size,
                         )
                         # The Web bridge recognizes this structured line and
                         # updates one progress bar in place.  It is also flushed
@@ -706,7 +699,6 @@ class SSHHost:
                             name=name,
                             remote_path=remote_path,
                             local_path=local_path,
-                            size=size,
                             error=exc,
                         )
                         raise
@@ -764,7 +756,6 @@ class SSHHost:
         name: str,
         remote_path: str,
         local_path: Path,
-        size: int,
         error: Exception | None = None,
     ) -> None:
         """Write per-file transfer evidence to run.log, never to the console."""
@@ -777,7 +768,6 @@ class SSHHost:
             "name": name,
             "remote_file": remote_path,
             "local_file": str(local_path),
-            "remote_size": size,
         }
         if error is not None:
             detail["error_type"] = type(error).__name__
@@ -1345,12 +1335,14 @@ class SSHHost:
             self._validate_listed_remote_name(name)
         return names
 
-    def _list_remote_file_metadata(self, remote_dir: str) -> list[tuple[str, int, float]]:
+    def _list_remote_file_metadata(self, remote_dir: str) -> list[tuple[str, float]]:
         """List direct child files using commands supplied by BusyBox.
 
         ``stat -c %Y`` yields a whole-second Unix mtime.  That is less precise
         than GNU find's ``%T@`` but sufficient because collection ordering also
         uses case-folded and original filenames as deterministic tie breakers.
+        No remote size is requested: log batch downloads trust SCP completion
+        and skip per-file size verification.
         """
 
         command = self._busybox_list_command(remote_dir, metadata=True)
@@ -1369,18 +1361,17 @@ class SSHHost:
         parts = result.stdout.split("\0")
         if parts and parts[-1] == "":
             parts.pop()
-        if len(parts) % 3:
+        if len(parts) % 2:
             raise _RemoteDownloadError(
                 "remote_list_failed",
                 "REMOTE_LIST_FAILED",
                 f"cannot parse remote metadata field count: {len(parts)}",
             )
-        entries: list[tuple[str, int, float]] = []
-        for index in range(0, len(parts), 3):
-            name, raw_size, raw_mtime = parts[index : index + 3]
+        entries: list[tuple[str, float]] = []
+        for index in range(0, len(parts), 2):
+            name, raw_mtime = parts[index : index + 2]
             self._validate_listed_remote_name(name)
             try:
-                size = int(raw_size)
                 mtime = float(raw_mtime)
             except ValueError as exc:
                 raise _RemoteDownloadError(
@@ -1388,13 +1379,13 @@ class SSHHost:
                     "REMOTE_LIST_FAILED",
                     f"cannot parse remote metadata for {name!r}",
                 ) from exc
-            if size < 0 or not math.isfinite(mtime):
+            if not math.isfinite(mtime):
                 raise _RemoteDownloadError(
                     "remote_list_failed",
                     "REMOTE_LIST_FAILED",
                     f"invalid remote metadata for {name!r}",
                 )
-            entries.append((name, size, mtime))
+            entries.append((name, mtime))
         return entries
 
     @staticmethod
@@ -1404,9 +1395,8 @@ class SSHHost:
         quoted_dir = shlex.quote(remote_dir)
         if metadata:
             emit = (
-                'size=$(wc -c < "$path") || exit 41\n'
                 'mtime=$(stat -c %Y "$path") || exit 42\n'
-                'printf \'%s\\000%s\\000%s\\000\' "${path##*/}" "$size" "$mtime"'
+                'printf \'%s\\000%s\\000\' "${path##*/}" "$mtime"'
             )
         else:
             emit = 'printf \'%s\\000\' "${path##*/}"'

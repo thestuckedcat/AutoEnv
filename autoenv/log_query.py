@@ -182,6 +182,12 @@ def _clock_distance(left: int, right: int) -> int:
 
 
 def _display_timestamp(row: sqlite3.Row) -> str:
+    # Invalid calendar text is preserved as a different diagnostic state from
+    # a line that had no timestamp at all.  Both are excluded from time-window
+    # correlation because clock_seconds is NULL, but the Web UI renders them as
+    # ``?`` and ``-`` respectively.
+    if row["timestamp_source"] == "invalid":
+        return "?"
     if row["clock_seconds"] is None:
         return "-"
     clock = f"{int(row['hour']):02d}:{int(row['minute']):02d}"

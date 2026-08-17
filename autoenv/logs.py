@@ -25,7 +25,7 @@ import sqlite3
 import stat
 import tarfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable, Sequence
@@ -83,20 +83,33 @@ class LogTimestamp:
     hour: int | None = None
     minute: int | None = None
     second: int | None = None
+    # The regex found a complete date/time token, but its calendar date was
+    # invalid (for example year 0000 or February 30).  This is different from
+    # having no timestamp: invalid input renders as ``?`` and absent input as
+    # ``-``.
+    invalid_date: bool = False
 
     @property
     def clock_seconds(self) -> int | None:
+        # Do not let an invalid calendar date participate in Web time-window
+        # correlation merely because its hour/minute fields look plausible.
+        if self.invalid_date:
+            return None
         if self.hour is None or self.minute is None:
             return None
         return self.hour * 3600 + self.minute * 60 + (self.second or 0)
 
     @property
     def date_key(self) -> str | None:
+        if self.invalid_date:
+            return None
         if None in (self.year, self.month, self.day):
             return None
         return f"{self.year:04d}-{self.month:02d}-{self.day:02d}"
 
     def display(self) -> str:
+        if self.invalid_date:
+            return "?"
         if self.clock_seconds is None:
             return "-"
         clock = f"{self.hour:02d}:{self.minute:02d}"
@@ -134,12 +147,10 @@ class TimestampPattern:
         for name in _TIME_FIELDS:
             raw = match.groupdict().get(name)
             values[name] = int(raw) if raw not in (None, "") else None
-        value = LogTimestamp(**values)
-        self._validate(value)
-        return value
+        return self._validate(LogTimestamp(**values))
 
     @staticmethod
-    def _validate(value: LogTimestamp) -> None:
+    def _validate(value: LogTimestamp) -> LogTimestamp:
         if value.hour is not None and not 0 <= value.hour <= 23:
             raise ValueError("timestamp hour is outside 0..23")
         if value.minute is not None and not 0 <= value.minute <= 59:
@@ -147,7 +158,21 @@ class TimestampPattern:
         if value.second is not None and not 0 <= value.second <= 59:
             raise ValueError("timestamp second is outside 0..59")
         if value.year is not None and value.month is not None and value.day is not None:
-            datetime(value.year, value.month, value.day, value.hour or 0, value.minute or 0, value.second or 0)
+            try:
+                datetime(
+                    value.year,
+                    value.month,
+                    value.day,
+                    value.hour or 0,
+                    value.minute or 0,
+                    value.second or 0,
+                )
+            except ValueError:
+                # Product logs sometimes use 0000-00-00 as an explicit
+                # unknown-date marker.  Retain that evidence instead of
+                # aborting the entire collection.
+                return replace(value, invalid_date=True)
+        return value
 
 
 @dataclass(frozen=True)
@@ -837,14 +862,26 @@ class LogGroup:
                 previous: LogTimestamp | None = None
                 for line_number, line in enumerate(self._read_lines(path), start=1):
                     parsed = self.timestamp.parse(line)
-                    if parsed is not None:
+                    # A malformed date labels only the line carrying it as
+                    # ``?``.  It must not replace the last valid timestamp used
+                    # by later timestamp-less lines in this source file.
+                    if parsed is not None and not parsed.invalid_date:
                         previous = parsed
                     if pattern.search(line):
+                        selected = parsed or previous
+                        if parsed is not None and parsed.invalid_date:
+                            timestamp_source = "invalid"
+                        elif parsed is not None:
+                            timestamp_source = "parsed"
+                        elif previous is not None:
+                            timestamp_source = "inherited"
+                        else:
+                            timestamp_source = "unknown"
                         self.collection._records.append(
                             _Record(
                                 target, file_order, line_number, self._rule_order, line,
-                                parsed or previous,
-                                "parsed" if parsed else "inherited" if previous else "unknown",
+                                selected,
+                                timestamp_source,
                                 str(path.relative_to(self.collection.expanded_dir)),
                             )
                         )
@@ -907,7 +944,9 @@ class LogGroup:
                     # implicit blocks prefer their first timestamp and finally
                     # fall back to the previous completed segment.
                     selected = anchor if explicit else next((stamp for _, _, stamp in buffer if stamp), segment_previous)
-                    if explicit and selected:
+                    if selected is not None and selected.invalid_date:
+                        source = "invalid"
+                    elif explicit and selected:
                         source = "block_begin"
                     elif any(stamp for _, _, stamp in buffer):
                         source = "block_first"
@@ -935,7 +974,10 @@ class LogGroup:
                 for line_number, line in enumerate(self._read_lines(path), start=1):
                     before = previous
                     parsed = self.timestamp.parse(line)
-                    if parsed is not None:
+                    # An invalid date may make the current block's correlation
+                    # time unknown, but it does not poison later independent
+                    # segments that inherit the last valid timestamp.
+                    if parsed is not None and not parsed.invalid_date:
                         previous = parsed
                     if begin.search(line):
                         if not explicit:

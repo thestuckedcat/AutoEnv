@@ -455,9 +455,9 @@ def test_scp_batch_download_matches_all_files_and_preserves_remote_mtime(
         host,
         "_list_remote_file_metadata",
         lambda _remote_dir: [
-            ("other.txt", 5, 30.0),
-            ("cpdt_b.log.gz", 2, 20.0),
-            ("cpdt_a.log", 1, 10.0),
+            ("other.txt", 30.0),
+            ("cpdt_b.log.gz", 20.0),
+            ("cpdt_a.log", 10.0),
         ],
     )
     destination = tmp_path / "log_collection" / "raw"
@@ -473,6 +473,36 @@ def test_scp_batch_download_matches_all_files_and_preserves_remote_mtime(
     assert len([message for message in details if message.startswith("SCP BATCH FILE ")]) == 4
 
 
+def test_scp_batch_download_trusts_protocol_completion_without_size_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
+    fs.seed_file("/logs/diaglog.log.zip", b"complete remote payload")
+    monkeypatch.setattr(
+        host,
+        "_list_remote_file_metadata",
+        lambda _remote_dir: [("diaglog.log.zip", 10.0)],
+    )
+
+    class ShortSuccessfulSCP(FakeSCP):
+        def get(self, remote_path: str, *, local_path: str) -> None:
+            self.get_calls.append((remote_path, local_path))
+            # A successful protocol return is now sufficient for log batches;
+            # this intentionally proves there is no hidden length comparison.
+            Path(local_path).write_bytes(b"short")
+
+    host._scp_factory = lambda _transport: ShortSuccessfulSCP(fs)
+    destination = tmp_path / "log_collection" / "raw"
+
+    result = host.scp_download_many(
+        "/logs", glob="diaglog*.log.zip", destination=destination
+    )
+
+    assert result.success
+    assert (destination / "diaglog.log.zip").read_bytes() == b"short"
+    assert result.files[0].remote_size is None
+
+
 def test_scp_batch_console_has_key_progress_while_file_details_stay_quiet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -482,7 +512,7 @@ def test_scp_batch_console_has_key_progress_while_file_details_stay_quiet(
         name = f"diaglog-{index:03d}.log.zip"
         payload = f"zip-{index}".encode()
         fs.seed_file(f"/logs/{name}", payload)
-        metadata.append((name, len(payload), float(index)))
+        metadata.append((name, float(index)))
     monkeypatch.setattr(host, "_list_remote_file_metadata", lambda _remote_dir: metadata)
 
     result = host.scp_download_many(
@@ -526,10 +556,8 @@ def test_busybox_remote_metadata_listing_avoids_gnu_find_and_uses_nul_fields(
             stdout="\0".join(
                 [
                     "cpdt one.log",
-                    "7",
                     "1700000000",
                     "cpdt\ttwo.log",
-                    "8",
                     "1700000001",
                     "",
                 ]
@@ -540,12 +568,13 @@ def test_busybox_remote_metadata_listing_avoids_gnu_find_and_uses_nul_fields(
 
     monkeypatch.setattr(host, "_execute", execute)
     assert host._list_remote_file_metadata("/logs with spaces") == [
-        ("cpdt one.log", 7, 1700000000.0),
-        ("cpdt\ttwo.log", 8, 1700000001.0),
+        ("cpdt one.log", 1700000000.0),
+        ("cpdt\ttwo.log", 1700000001.0),
     ]
     assert len(commands) == 1
     assert "find " not in commands[0]
     assert "stat -c %Y" in commands[0]
+    assert "wc -c" not in commands[0]
     assert 'remote_dir=\'/logs with spaces\'' in commands[0]
 
 
@@ -591,8 +620,8 @@ def test_scp_batch_download_cleans_completed_and_temporary_files_after_partial_f
         host,
         "_list_remote_file_metadata",
         lambda _remote_dir: [
-            ("cpdt_a.log", 1, 10.0),
-            ("cpdt_b.log", 2, 20.0),
+            ("cpdt_a.log", 10.0),
+            ("cpdt_b.log", 20.0),
         ],
     )
 
