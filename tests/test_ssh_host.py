@@ -7,6 +7,7 @@ import posixpath
 import shlex
 import socket
 import stat
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -467,7 +468,8 @@ def test_scp_batch_download_matches_all_files_and_preserves_remote_mtime(
     assert [Path(item.local_file).read_bytes() for item in result.files] == [b"a", b"bb"]
     assert int((destination / "cpdt_a.log").stat().st_mtime) == 10
     assert (result.matched_count, result.completed_count) == (2, 2)
-    assert scp_factory.created[0].close_count == 1
+    assert len(scp_factory.created) == 2
+    assert all(client.close_count == 1 for client in scp_factory.created)
     assert recorder.results[-1][0] == "SCP BATCH DOWNLOAD"
     details = [message for message, console in recorder.logs if not console]
     assert len([message for message in details if message.startswith("SCP BATCH FILE ")]) == 4
@@ -501,6 +503,63 @@ def test_scp_batch_download_trusts_protocol_completion_without_size_verification
     assert result.success
     assert (destination / "diaglog.log.zip").read_bytes() == b"short"
     assert result.files[0].remote_size is None
+
+
+def test_scp_batch_download_runs_four_transfers_in_parallel_and_keeps_result_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _, _, _, fs, _, _, _, _ = upload_rig(tmp_path)
+    metadata: list[tuple[str, float]] = []
+    for index in range(8):
+        name = f"diaglog-{index:03d}.zip"
+        fs.seed_file(f"/logs/{name}", str(index).encode())
+        metadata.append((name, float(index)))
+    monkeypatch.setattr(
+        host,
+        "_list_remote_file_metadata",
+        lambda _remote_dir: list(reversed(metadata)),
+    )
+
+    barrier = threading.Barrier(4)
+    counter_lock = threading.Lock()
+    active = 0
+    peak = 0
+    clients: list[FakeSCP] = []
+
+    class BlockingSCP(FakeSCP):
+        def get(self, remote_path: str, *, local_path: str) -> None:
+            nonlocal active, peak
+            with counter_lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                # The first worker wave can pass only if four transfers are
+                # genuinely active at the same time.
+                barrier.wait(timeout=2)
+                super().get(remote_path, local_path=local_path)
+            finally:
+                with counter_lock:
+                    active -= 1
+
+    def factory(_transport: FakeTransport) -> BlockingSCP:
+        client = BlockingSCP(fs)
+        clients.append(client)
+        return client
+
+    host._scp_factory = factory
+    result = host.scp_download_many(
+        "/logs",
+        glob="diaglog-*.zip",
+        destination=tmp_path / "log_collection" / "raw",
+    )
+
+    assert result.success
+    assert peak == 4
+    assert [item.name for item in result.files] == [
+        f"diaglog-{index:03d}.zip" for index in range(8)
+    ]
+    assert len(clients) == 8
+    assert all(client.close_count == 1 for client in clients)
 
 
 def test_scp_batch_console_has_key_progress_while_file_details_stay_quiet(
@@ -632,14 +691,21 @@ def test_scp_batch_download_cleans_completed_and_temporary_files_after_partial_f
                 raise OSError("simulated transfer failure")
             super().get(remote_path, local_path=local_path)
 
-    client = FailingSCP(fs)
-    host._scp_factory = lambda _transport: client
+    clients: list[FailingSCP] = []
+
+    def factory(_transport: FakeTransport) -> FailingSCP:
+        client = FailingSCP(fs)
+        clients.append(client)
+        return client
+
+    host._scp_factory = factory
     destination = tmp_path / "log_collection" / "raw"
     result = host.scp_download_many("/logs", glob="cpdt_*", destination=destination)
     assert not result.success and result.status == "download_failed"
     assert (result.matched_count, result.completed_count) == (2, 1)
     assert list(destination.iterdir()) == []
-    assert client.close_count == 1
+    assert len(clients) == 2
+    assert all(client.close_count == 1 for client in clients)
     detail_lines = [message for message, console in recorder.logs if not console]
     assert any('"event": "failed"' in message for message in detail_lines)
 

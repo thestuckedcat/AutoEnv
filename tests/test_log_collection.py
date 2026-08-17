@@ -687,6 +687,80 @@ def test_log_batch_find_filters_whole_target_case_insensitively_and_combines_wit
         )
 
 
+def test_log_batch_find_returns_complete_context_windows_and_marks_roles(
+    tmp_path: Path,
+) -> None:
+    _sample_collection(tmp_path)
+
+    first_page = query_log_records(
+        tmp_path,
+        "sample-run",
+        "auth.log",
+        keyword="login",
+        context_lines=1,
+        limit=1,
+    )
+    assert first_page["total"] == 2
+    assert first_page["has_more"] is True
+    assert first_page["context_lines"] == 1
+    assert first_page["returned_count"] == 2
+    assert [row["source_line"] for row in first_page["records"]] == [
+        8,
+        9,
+    ]
+    assert [row["find_role"] for row in first_page["records"]] == [
+        "match",
+        "context",
+    ]
+
+    second_page = query_log_records(
+        tmp_path,
+        "sample-run",
+        "auth.log",
+        keyword="login",
+        context_lines=1,
+        limit=1,
+        page=2,
+    )
+    # Pagination is over Find hits, then the selected hit is expanded.  The
+    # preceding/following rows therefore remain attached across page borders.
+    assert [row["text"] for row in second_page["records"]] == [
+        "[AUTH] early message without timestamp",
+        "08:22:10 [AUTH] login failed user=bob",
+        "[AUTH] reason=invalid-token",
+    ]
+    assert [row["find_role"] for row in second_page["records"]] == [
+        "context",
+        "match",
+        "context",
+    ]
+
+    timed = query_log_records(
+        tmp_path,
+        "sample-run",
+        "auth.log",
+        keyword="login",
+        context_lines=1,
+        query_time="08:22:00",
+        window_minutes=2,
+    )
+    assert timed["total"] == 1
+    assert [row["find_role"] for row in timed["records"]] == [
+        "context",
+        "match",
+        "context",
+    ]
+
+    with pytest.raises(ValueError, match="between 0 and 50"):
+        query_log_records(
+            tmp_path,
+            "sample-run",
+            "auth.log",
+            keyword="login",
+            context_lines=51,
+        )
+
+
 @pytest.mark.parametrize("member", ["../outside.log", "C:/outside.log", "/outside.log"])
 def test_recursive_log_extraction_rejects_unsafe_zip_paths(tmp_path: Path, member: str):
     source = tmp_path / "bad.zip"

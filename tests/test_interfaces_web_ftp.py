@@ -422,12 +422,13 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     root = Path(__file__).resolve().parents[1]
     html = (root / "webPage" / "index.html").read_text(encoding="utf-8")
     javascript = (root / "webPage" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "webPage" / "logs.css").read_text(encoding="utf-8")
 
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
-    assert "app.js?v=20260817-transfer-progress" in html
-    assert "logs.css?v=20260817-transfer-progress" in html
+    assert "app.js?v=20260817-find-context-parallel-scp" in html
+    assert "logs.css?v=20260817-find-context-parallel-scp" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript
@@ -443,8 +444,14 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'api("/api/log-batches")' in javascript
     assert "distance<=300" in javascript
     assert "data-pane-find" in javascript
+    assert "data-pane-context" in javascript
+    assert "logContexts" in javascript
     assert "markKeyword" in javascript
     assert "keyword:state.logFinds[index]" in javascript
+    assert 'context:String(state.logContexts[index]??3)' in javascript
+    assert 'row.find_role==="match"' in javascript
+    assert ".log-row.find-match" in styles
+    assert ".log-row.find-context" in styles
     server = (root / "webPage" / "server.py").read_text(encoding="utf-8")
     assert "shutil.which" not in server
     assert 'self.send_header("Cache-Control", "no-store")' in server

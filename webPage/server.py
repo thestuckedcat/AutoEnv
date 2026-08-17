@@ -379,6 +379,7 @@ class Handler(SimpleHTTPRequestHandler):
                     query_time=query.get("time", [""])[0],
                     window_minutes=int(query.get("window", ["60"])[0]),
                     keyword=query.get("keyword", [""])[0],
+                    context_lines=int(query.get("context", ["0"])[0]),
                 ))
             elif parsed.path in {"/api/run/events", "/api/agent/events"}:
                 session = AUTOENV_SESSION if "/run/" in parsed.path else AGENT_SESSION

@@ -40,7 +40,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 - `SSHHost.scp_download()`：SCP 传输，目录枚举和大小检查使用 SSH 命令。
 - `SSHHost.sftp_download()`：SFTP 枚举、传输和大小检查。
-- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，按 mtime/文件名稳定排序后逐个 SCP 到本次运行目录；任一传输失败会清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`stat -c %Y` 和 NUL 分隔的 `printf`。日志批量下载不读取远端大小、不比较本地大小；SCP 正常返回后将 `.part` 原子替换为最终文件。内部枚举结果与逐文件 start/complete/failed 证据只写入 `run.log`；Web 把 `completed/total` 事件更新成一个原生进度条，结束摘要及 manifest 保留 matched/completed/retained 计数。
+- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，并在同一 Paramiko transport 上最多打开四个独立 SCP channel 并行下载；返回的 `files` 仍按 mtime/文件名稳定排序。任一传输失败会等待活动 worker 关闭 channel，再清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`stat -c %Y` 和 NUL 分隔的 `printf`。日志批量下载不读取远端大小、不比较本地大小；每个 SCP 正常返回后将自己的 `.part` 原子替换为最终文件。内部枚举结果与逐文件 start/complete/failed 证据只写入 `run.log`；Web 把线程安全的 `completed/total` 事件更新成一个原生进度条，结束摘要及 manifest 保留 matched/completed/retained 计数。
 - 两者的 `remote_file` 和 `pattern` 必须二选一。pattern 只搜索指定目录、不递归；零匹配和多匹配都失败，没有 newest 语义。
 - 单文件 SCP/SFTP 下载写入本次 `packages/`，先使用 `.part`，大小校验成功后原子替换；上述日志批量下载是明确的无大小校验例外。
 - 成功的 `RemoteDownloadResult` 可直接传给 SCP/SFTP/FTP 上传。
@@ -73,7 +73,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 - `kind="local"` 保持原契约：接收 values 字典，在 HTTP 进程运行并返回 JSON。
 - `kind="workflow"` 接收 `RunContext`，静态发现资源声明，通过环境标签绑定后在独立子进程运行，支持启动、事件轮询、停止和统一 `ScriptResult`。
-- `renderer="log_collection"` 使用日志批次、目标列表和分页查询 API。页面支持多日志窗口、每窗独立的全文关键词 Find/命中高亮、中心时间窗、跨午夜查询和五分钟关联高亮。
+- `renderer="log_collection"` 使用日志批次、目标列表和分页查询 API。页面支持多日志窗口、每窗独立的全文关键词 Find、`0..50` 行上下文、中心时间窗、跨午夜查询和五分钟关联高亮。Find 先对实际命中分页，再展开本页每个命中的上下文并按 target sequence 去重；命中行使用暖色，纯上下文行使用蓝色，时间窗只约束命中而不裁掉其解释上下文。
 
 错误码工具尚未实现业务规则。现有 `tool-contract-preview` 只证明动态子页签和结构化输出可用。
 

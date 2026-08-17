@@ -16,6 +16,8 @@
 .log-pane header, .log-pane footer { display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid var(--line); }
 .log-pane header select { flex: .8; min-width: 120px; }
 .log-pane header .log-find { flex: 1.2; min-width: 150px; }
+.log-context-control { display: flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--muted); font: 700 10px var(--mono); }
+.log-context-control input { width: 58px; min-width: 58px; }
 .log-pane footer { justify-content: center; border-top: 1px solid var(--line); border-bottom: 0; color: var(--muted); font: 600 10px var(--mono); }
 .log-records { height: 430px; overflow: auto; padding: 8px; }
 .log-row { width: 100%; display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 9px; border: 0; border-radius: 7px; padding: 6px 8px; background: transparent; color: #d7e1e8; text-align: left; font: 500 11px/1.45 var(--mono); cursor: pointer; }
@@ -23,6 +25,8 @@
 .log-row time { color: var(--cyan); }
 .log-row small { color: #647684; }
 .log-row mark { border-radius: 3px; padding: 0 2px; background: #ffe06b; color: #15110a; }
+.log-row.find-context { background: #102b3a; box-shadow: inset 3px 0 #3189b8; }
+.log-row.find-match { background: #443514; box-shadow: inset 3px 0 #f0b83f; }
 .log-row.unknown-time { opacity: .45; }
 .log-row.selected { background: #2b2548; box-shadow: inset 3px 0 var(--violet); }
 .log-row.correlated { background: #15372d; box-shadow: inset 3px 0 var(--green); }
