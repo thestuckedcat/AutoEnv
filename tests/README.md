@@ -111,7 +111,7 @@ SSH 和 Telnet 测试都把关键词拆成两个接收分片，证明接口按�
 Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 提示符不会带到 Bootloader 会话；对象本身没有永久关闭，后续操作仍可懒重连。SSH 只关闭本次 Channel，Transport 保持可复用。
 ## 8. Web、下载和 FTP 扩展 UT
 
-- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、JSON 资源标签目录及 HTTP 接口、多环境资源标签绑定、脚本连接/HDFS/普通输入提示与模板元数据、环境保存校验、ConPTY 原始控制序列流、动态 local Web Tool 发现执行和 ZIP 导入安全限制。
+- `tests/test_interfaces_web_ftp.py`：验证下载结果可直接作为上传选择器、独立 FTP 上传与大小校验、JSON 资源标签目录及 HTTP 接口、多环境资源标签绑定、首次保存环境后立即刷新脚本/Tool 资源选择、脚本连接/HDFS/普通输入提示与模板元数据、环境保存校验、ConPTY 原始控制序列流、动态 local Web Tool 发现执行和 ZIP 导入安全限制。
 - 同一文件还扫描仓库中的 `serve_forever()` 实现，要求只存在 `webPage/server.py`；验证 `startWeb.py` 拒绝全部参数，服务只能绑定固定的 `127.0.0.1:8765`，且旧 Web 目录不存在。
 - `tests/test_log_collection.py`：验证 workflow Tool 的 `RunContext` 运行结果、多远端目录同名文件隔离、确认日志样例的精确输出、归档安全边界、时间继承与批次查询。
 - `tests/test_log_error_triage_skill.py`：验证日志提取辅助脚本和人工知识库脚手架；所有输入、GZ 和输出均位于临时目录，不读取真实业务日志。

@@ -364,6 +364,16 @@ def test_empty_agent_command_opens_cmd_without_typing(tmp_path: Path):
     assert session.command[-1] == "/d"
 
 
+def test_environment_reload_refreshes_existing_workflow_tool_choices():
+    root = Path(__file__).resolve().parents[1]
+    javascript = (root / "webPage" / "app.js").read_text(encoding="utf-8")
+
+    assert 'loadEnvs(){state.envs=(await api("/api/environments")).environments;refreshEnvironmentConsumers()}' in javascript
+    assert "function refreshToolResourceChoices()" in javascript
+    assert 'element.dataset.toolResource===resource.name' in javascript
+    assert 'choices.some(choice=>choice.environment===selected)' in javascript
+
+
 def test_agent_page_types_and_drops_files_directly_in_terminal():
     root = Path(__file__).resolve().parents[1]
     html = (root / "webPage" / "index.html").read_text(encoding="utf-8")

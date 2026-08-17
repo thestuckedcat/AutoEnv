@@ -182,7 +182,7 @@ Content-Type: application/json
 }
 ```
 
-服务端校验后写入 `environments/lab_a.json`。
+服务端校验后写入 `environments/lab_a.json`。保存成功时，页面会立即重新读取环境档案，并刷新“环境启动”和当前 workflow Tool（例如日志工具）的资源选择项，无需重启 Web。刷新 Tool 时只替换资源下拉选项，当前表单参数、采集状态和日志窗口保持不变。
 
 ### 4.1 环境逻辑名与脚本逻辑名的区别
 

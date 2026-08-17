@@ -32,7 +32,7 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 `register_func` 仍是运行成功后的 CLI 循环菜单，Web 启动页没有对应的选择/输入控件。不要把依赖该菜单完成的流程当作 Web 可交互流程；`scripts/template.py` 将它拆成独立的 CLI 示例。
 
-资源标签的唯一数据源是 `autoenv/resource_labels.json`，`autoenv/resources.py` 负责加载并校验目录，`/api/resource-labels` 把同一份数据返回 Web。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。Web 初始化时先加载标签目录再创建环境资源行；目录加载完成后也会刷新已有下拉框，避免异步初始化留下空选项。注册器在导入脚本时静态解析 `register_ssh_host()`、`register_telnet()`、`register_ftp_host()` 和 `package()` 调用，不执行环境函数；连接协议由调用函数确定，标签取 `resource_label`，包名取 `package(name)`。两类调用都可携带页面 `alias` 和提示 `description`，省略时分别默认使用 `name` 和空字符串。`/api/scripts` 返回自动形成的 `resources` 和 `package_inputs`，Web 选择脚本后立即渲染这些输入：每个连接点独立选择包含匹配标签的环境/IP，每个 HDFS 包独立填写链接。包输入在启动请求中写入 `parameters.packages`；留空继续使用 `config.json` 的 `link/base_link`，填写时作为 `path_override`。
+资源标签的唯一数据源是 `autoenv/resource_labels.json`，`autoenv/resources.py` 负责加载并校验目录，`/api/resource-labels` 把同一份数据返回 Web。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。Web 初始化时先加载标签目录再创建环境资源行；目录加载完成后也会刷新已有下拉框，避免异步初始化留下空选项。保存环境后，前端重新读取环境档案，并同步刷新环境启动字段与当前 workflow Tool 的资源下拉框；Tool 工作台只更新下拉选项，不重建整个表单，因此无需重启 Web，也不会清空已填写参数或日志窗口。注册器在导入脚本时静态解析 `register_ssh_host()`、`register_telnet()`、`register_ftp_host()` 和 `package()` 调用，不执行环境函数；连接协议由调用函数确定，标签取 `resource_label`，包名取 `package(name)`。两类调用都可携带页面 `alias` 和提示 `description`，省略时分别默认使用 `name` 和空字符串。`/api/scripts` 返回自动形成的 `resources` 和 `package_inputs`，Web 选择脚本后立即渲染这些输入：每个连接点独立选择包含匹配标签的环境/IP，每个 HDFS 包独立填写链接。包输入在启动请求中写入 `parameters.packages`；留空继续使用 `config.json` 的 `link/base_link`，填写时作为 `path_override`。
 
 环境页保存的 `baud_rate` 是网络串口的档案元数据；当前 Telnet 客户端连接 TCP 端口，不能直接修改串口服务器的物理波特率。若设备要求下发频率，应在对应环境脚本中用已确认的设备命令完成。
 

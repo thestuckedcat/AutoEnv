@@ -13,7 +13,7 @@ Web 框架、按钮触发 Python 子进程和环境到脚本参数的完整说�
 
 服务固定监听 `127.0.0.1:8765`。这是唯一启动命令和端口，不支持参数覆盖或自动回退；若端口已被占用，请停止占用进程后重试。依次使用四个页签：
 
-1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。每个 IP 必须从 `autoenv/resource_labels.json` 维护的目录中选择唯一且协议匹配的资源标签。环境 JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。
+1. **环境库**：注册 SSH 网口、Telnet 串口和可选 FTP 目标。每个 IP 必须从 `autoenv/resource_labels.json` 维护的目录中选择唯一且协议匹配的资源标签。环境 JSON 保存在 `environments/`，密码按当前项目约定明文保存且目录默认不提交。首次保存后，“环境启动”和已打开 Tool 的资源下拉框会立即出现匹配环境，无需重启 Web。
 2. **环境启动**：先选脚本，页面按脚本声明的 `alias` 与 `description` 展开所有交互资源。SSH/Telnet/FTP 交互点分别选择一个包含匹配标签的环境/IP，因此一次启动可组合多个环境；每个 HDFS 包也有独立的说明和链接输入，留空使用 `config.json` 的 link/base_link 逻辑，填写则覆盖为指定 HDFS 路径。
    当前页面不提供启动后 `register_func` 菜单的输入控件；包含该菜单的脚本应从 CLI 运行，或确保输入流关闭后自动退出菜单。
 3. **Tools**：工具由 `webPage/tools/*.py` 动态发现。普通 local Tool 在 HTTP 进程返回 JSON；workflow Tool 在独立子进程中接收 `RunContext`、绑定环境资源并支持事件与停止。Tool 使用独立注册表，不会出现在“环境启动”的脚本下拉框。
