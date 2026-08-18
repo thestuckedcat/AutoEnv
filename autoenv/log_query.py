@@ -35,6 +35,9 @@ def list_log_batches(root_dir: Path | str) -> list[dict[str, object]]:
                     "updated_at": str(value.get("updated_at", "")),
                     "targets": list(value.get("targets", [])),
                     "record_count": int(value.get("record_count", 0)),
+                    "index_schema_version": value.get("index_schema_version"),
+                    "rule_schema_version": value.get("rule_schema_version"),
+                    "rules_hash": str(value.get("rules_hash", "")),
                 }
             )
     return sorted(batches, key=lambda item: str(item["collected_at"]), reverse=True)
@@ -63,6 +66,9 @@ def query_log_records(
     window_minutes: int = 60,
     keyword: str = "",
     context_lines: int = 0,
+    slot_id: str = "",
+    socket_id: str = "",
+    offset: int | None = None,
 ) -> dict[str, object]:
     """Filter one derived target and optionally include lines around Find hits.
 
@@ -81,6 +87,8 @@ def query_log_records(
 
     if page < 1:
         raise ValueError("page must be at least 1")
+    if offset is not None and (isinstance(offset, bool) or offset < 0):
+        raise ValueError("offset must be at least 0")
     if not 1 <= limit <= 500:
         raise ValueError("limit must be between 1 and 500")
     if not 1 <= window_minutes <= 24 * 60:
@@ -95,6 +103,10 @@ def query_log_records(
     if len(normalized_keyword) > 200:
         raise ValueError("keyword must not exceed 200 characters")
     folded_keyword = normalized_keyword.casefold()
+    if not isinstance(slot_id, str) or not isinstance(socket_id, str):
+        raise TypeError("slot_id and socket_id must be strings")
+    normalized_slot = slot_id.strip()
+    normalized_socket = socket_id.strip()
     targets = list_log_targets(root_dir, batch_id)
     if target not in targets:
         raise ValueError("unknown target file")
@@ -111,11 +123,60 @@ def query_log_records(
     # selection through HTTP query parameters.
     with sqlite3.connect(batch / "index.sqlite3") as connection:
         connection.row_factory = sqlite3.Row
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(records)").fetchall()
+        }
+        if not folded_keyword and center is None:
+            clauses = ["target = ?"]
+            parameters: list[object] = [target]
+            if normalized_slot:
+                if "slot_id" not in columns:
+                    return _empty_query_result(page, limit, normalized_keyword, offset)
+                clauses.append("slot_id = ?")
+                parameters.append(normalized_slot)
+            if normalized_socket:
+                if "socket_id" not in columns:
+                    return _empty_query_result(page, limit, normalized_keyword, offset)
+                clauses.append("socket_id = ?")
+                parameters.append(normalized_socket)
+            where = " AND ".join(clauses)
+            total = int(
+                connection.execute(
+                    f"SELECT count(*) FROM records WHERE {where}", parameters
+                ).fetchone()[0]
+            )
+            start = offset if offset is not None else (page - 1) * limit
+            selected_rows = connection.execute(
+                f"SELECT * FROM records WHERE {where} ORDER BY sequence LIMIT ? OFFSET ?",
+                [*parameters, limit, start],
+            ).fetchall()
+            return {
+                "records": [
+                    _record_dict(row, find_role="") for row in selected_rows
+                ],
+                "page": start // limit + 1,
+                "offset": start,
+                "limit": limit,
+                "total": total,
+                "has_more": start + limit < total,
+                "keyword": normalized_keyword,
+                "context_lines": 0,
+                "returned_count": len(selected_rows),
+            }
         rows = connection.execute(
             "SELECT * FROM records WHERE target = ? ORDER BY sequence", (target,)
         ).fetchall()
     hit_indexes: list[int] = []
     for index, row in enumerate(rows):
+        if normalized_slot and (
+            "slot_id" not in columns or row["slot_id"] != normalized_slot
+        ):
+            continue
+        if normalized_socket and (
+            "socket_id" not in columns or row["socket_id"] != normalized_socket
+        ):
+            continue
         if folded_keyword and folded_keyword not in str(row["text"]).casefold():
             continue
         clock = row["clock_seconds"]
@@ -139,6 +200,41 @@ def query_log_records(
             if distance > half_window:
                 continue
         hit_indexes.append(index)
+
+    if offset is not None:
+        effective_context = context_lines if folded_keyword else 0
+        visible_indexes = set(hit_indexes)
+        if effective_context:
+            for index in hit_indexes:
+                first = max(0, index - effective_context)
+                last = min(len(rows), index + effective_context + 1)
+                visible_indexes.update(range(first, last))
+        ordered_visible = sorted(visible_indexes)
+        selected_indexes = ordered_visible[offset : offset + limit]
+        hit_set = set(hit_indexes)
+        selected = [
+            _record_dict(
+                rows[index],
+                find_role=(
+                    "match"
+                    if folded_keyword and index in hit_set
+                    else "context" if effective_context else ""
+                ),
+            )
+            for index in selected_indexes
+        ]
+        return {
+            "records": selected,
+            "page": offset // limit + 1,
+            "offset": offset,
+            "limit": limit,
+            "total": len(hit_indexes),
+            "virtual_total": len(ordered_visible),
+            "has_more": offset + limit < len(ordered_visible),
+            "keyword": normalized_keyword,
+            "context_lines": effective_context,
+            "returned_count": len(selected),
+        }
 
     start = (page - 1) * limit
     page_hits = hit_indexes[start : start + limit]
@@ -169,6 +265,7 @@ def query_log_records(
     return {
         "records": selected,
         "page": page,
+        "offset": start,
         "limit": limit,
         # For Find queries, total and pagination describe actual hits rather
         # than the variable number of expanded context rows returned per page.
@@ -180,9 +277,168 @@ def query_log_records(
     }
 
 
+def _empty_query_result(
+    page: int, limit: int, keyword: str, offset: int | None
+) -> dict[str, object]:
+    start = offset if offset is not None else (page - 1) * limit
+    return {
+        "records": [],
+        "page": start // limit + 1,
+        "offset": start,
+        "limit": limit,
+        "total": 0,
+        "has_more": False,
+        "keyword": keyword,
+        "context_lines": 0,
+        "returned_count": 0,
+    }
+
+
+def correlate_log_records(
+    root_dir: Path | str,
+    batch_id: str,
+    target: str,
+    sequence: int,
+    window_seconds: int = 300,
+) -> dict[str, object]:
+    """Find rows in the same batch by time only, across every target."""
+
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise ValueError("sequence must be at least 1")
+    if (
+        isinstance(window_seconds, bool)
+        or not isinstance(window_seconds, int)
+        or not 1 <= window_seconds <= 86400
+    ):
+        raise ValueError("window_seconds must be between 1 and 86400")
+    targets = list_log_targets(root_dir, batch_id)
+    if target not in targets:
+        raise ValueError("unknown target file")
+    batch = _batch_dir(root_dir, batch_id)
+    with sqlite3.connect(batch / "index.sqlite3") as connection:
+        connection.row_factory = sqlite3.Row
+        selected = connection.execute(
+            "SELECT * FROM records WHERE target = ? AND sequence = ?",
+            (target, sequence),
+        ).fetchone()
+        if selected is None:
+            raise ValueError("unknown log sequence")
+        selected_clock = selected["clock_seconds"]
+        if selected_clock is None:
+            return {
+                "target": target,
+                "sequence": sequence,
+                "window_seconds": window_seconds,
+                "matches": [],
+            }
+        rows = connection.execute(
+            "SELECT * FROM records WHERE clock_seconds IS NOT NULL "
+            "ORDER BY target, sequence"
+        ).fetchall()
+
+    matches: list[dict[str, object]] = []
+    for row in rows:
+        if row["target"] == target and int(row["sequence"]) == sequence:
+            continue
+        distance = _row_time_distance(selected, row)
+        if distance > window_seconds:
+            continue
+        matches.append(
+            {
+                "target": row["target"],
+                "sequence": row["sequence"],
+                "timestamp": _display_timestamp(row),
+                "distance_seconds": distance,
+            }
+        )
+    return {
+        "target": target,
+        "sequence": sequence,
+        "window_seconds": window_seconds,
+        "matches": matches,
+    }
+
+
+def export_log_records(
+    root_dir: Path | str,
+    batch_id: str,
+    target: str,
+    *,
+    mode: str,
+    slot_id: str = "",
+    socket_id: str = "",
+) -> tuple[str, str]:
+    """Render a complete target from SQLite without Web display transforms."""
+
+    if mode not in {"raw", "metadata"}:
+        raise ValueError("export mode must be raw or metadata")
+    targets = list_log_targets(root_dir, batch_id)
+    if target not in targets:
+        raise ValueError("unknown target file")
+    batch = _batch_dir(root_dir, batch_id)
+    with sqlite3.connect(batch / "index.sqlite3") as connection:
+        connection.row_factory = sqlite3.Row
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(records)").fetchall()
+        }
+        clauses = ["target = ?"]
+        parameters: list[object] = [target]
+        for name, value in (("slot_id", slot_id.strip()), ("socket_id", socket_id.strip())):
+            if not value:
+                continue
+            if name not in columns:
+                return f"{Path(target).stem}-{mode}.log", ""
+            clauses.append(f"{name} = ?")
+            parameters.append(value)
+        rows = connection.execute(
+            f"SELECT * FROM records WHERE {' AND '.join(clauses)} ORDER BY sequence",
+            parameters,
+        ).fetchall()
+
+    lines: list[str] = []
+    for row in rows:
+        text = str(row["text"])
+        if mode == "raw":
+            lines.append(text)
+            continue
+        slot = row["slot_id"] if "slot_id" in columns and row["slot_id"] is not None else "?"
+        socket = (
+            row["socket_id"]
+            if "socket_id" in columns and row["socket_id"] is not None
+            else "?"
+        )
+        lines.append(
+            f"[{_display_timestamp(row)}] [slot_id={slot} socket_id={socket}] {text}"
+        )
+    content = "\n".join(lines) + ("\n" if lines else "")
+    return f"{Path(target).stem}-{mode}.log", content
+
+
+def _row_time_distance(left: sqlite3.Row, right: sqlite3.Row) -> int:
+    left_clock = int(left["clock_seconds"])
+    right_clock = int(right["clock_seconds"])
+    left_date = left["date_key"]
+    right_date = right["date_key"]
+    if left_date and right_date:
+        left_value = datetime.combine(date_type.fromisoformat(str(left_date)), time_type())
+        right_value = datetime.combine(date_type.fromisoformat(str(right_date)), time_type())
+        return int(abs((left_value - right_value).total_seconds() + left_clock - right_clock))
+    return _clock_distance(left_clock, right_clock)
+
+
 def _record_dict(row: sqlite3.Row, *, find_role: str) -> dict[str, object]:
     """Serialize one indexed row with its Web Find presentation role."""
 
+    columns = set(row.keys())
+    matched_spans: list[list[int]] = []
+    if "matched_spans" in columns:
+        try:
+            value = json.loads(str(row["matched_spans"]))
+            if isinstance(value, list):
+                matched_spans = value
+        except json.JSONDecodeError:
+            matched_spans = []
     return {
         "id": row["id"],
         "sequence": row["sequence"],
@@ -193,6 +449,15 @@ def _record_dict(row: sqlite3.Row, *, find_role: str) -> dict[str, object]:
         "clock_seconds": row["clock_seconds"],
         "date_key": row["date_key"],
         "timestamp_source": row["timestamp_source"],
+        "slot_id": row["slot_id"] if "slot_id" in columns else None,
+        "socket_id": row["socket_id"] if "socket_id" in columns else None,
+        "slot_id_source": (
+            row["slot_id_source"] if "slot_id_source" in columns else "unknown"
+        ),
+        "socket_id_source": (
+            row["socket_id_source"] if "socket_id_source" in columns else "unknown"
+        ),
+        "matched_spans": matched_spans,
         "incomplete_block": bool(row["incomplete_block"]),
         "find_role": find_role,
     }

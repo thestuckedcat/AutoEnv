@@ -374,15 +374,16 @@ def test_environment_reload_refreshes_existing_workflow_tool_choices():
     assert 'choices.some(choice=>choice.environment===selected)' in javascript
 
 
-def test_log_query_uses_css_selectors_and_ignores_replaced_panels():
+def test_log_query_uses_virtual_scroll_and_ignores_replaced_panels():
     root = Path(__file__).resolve().parents[1]
     javascript = (root / "webPage" / "app.js").read_text(encoding="utf-8")
 
-    assert 'document.querySelector(`[data-prev-page="${index}"]`)' in javascript
-    assert 'document.querySelector(`[data-next-page="${index}"]`)' in javascript
-    assert '$(`[data-prev-page="${index}"]`)' not in javascript
-    assert '$(`[data-next-page="${index}"]`)' not in javascript
-    assert "if(!container||!pageLabel||!previous||!next)return" in javascript
+    assert 'offset:String(Math.max(0,offset))' in javascript
+    assert 'limit:"240"' in javascript
+    assert 'class="log-virtual"' in javascript
+    assert "data-prev-page" not in javascript
+    assert "data-next-page" not in javascript
+    assert "if(!container||!virtual||!status)return" in javascript
     assert "state.logQueryTokens[index]===token&&container" in javascript
 
 
@@ -427,8 +428,8 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'id="agentInput"' not in html
     assert 'id="agentInputForm"' not in html
     assert 'id="agentConsole" tabindex="0" role="textbox"' in html
-    assert "app.js?v=20260817-find-context-parallel-scp" in html
-    assert "logs.css?v=20260817-find-context-parallel-scp" in html
+    assert "app.js?v=20260818-log-usability" in html
+    assert "logs.css?v=20260818-log-usability" in html
     assert "terminal.onpaste" in javascript
     assert 'terminal.addEventListener("drop"' in javascript
     assert "sendAgentInput(value)" in javascript
@@ -442,9 +443,21 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert '保存失败：${error.message}' in javascript
     assert 'post("/api/tools/workflow/start"' in javascript
     assert 'api("/api/log-batches")' in javascript
-    assert "distance<=300" in javascript
+    assert 'api(`/api/log-batches/correlate?${params}`)' in javascript
+    assert "window_seconds:String(windowSeconds)" in javascript
     assert "data-pane-find" in javascript
     assert "data-pane-context" in javascript
+    assert "data-pane-slot" in javascript
+    assert "data-pane-socket" in javascript
+    assert "data-pane-hide" in javascript
+    assert 'id="logCorrelationWindow"' in javascript
+    assert 'data-export-raw' in javascript
+    assert 'data-export-metadata' in javascript
+    assert 'id="logPreviewFile"' in javascript
+    assert 'post("/api/log-rules/preview"' in javascript
+    assert 'id="logFontSize"' in javascript
+    assert 'id="toggleToolNav"' in javascript
+    assert "row.source_file}</small>" not in javascript
     assert "logContexts" in javascript
     assert "markKeyword" in javascript
     assert "keyword:state.logFinds[index]" in javascript
@@ -452,10 +465,15 @@ def test_agent_page_types_and_drops_files_directly_in_terminal():
     assert 'row.find_role==="match"' in javascript
     assert ".log-row.find-match" in styles
     assert ".log-row.find-context" in styles
+    assert "resize: both" in styles
+    assert ".log-row.unknown-time { opacity:" not in styles
     server = (root / "webPage" / "server.py").read_text(encoding="utf-8")
     assert "shutil.which" not in server
     assert 'self.send_header("Cache-Control", "no-store")' in server
     assert 'parsed.path == "/api/log-batches/query"' in server
+    assert 'parsed.path == "/api/log-batches/correlate"' in server
+    assert 'parsed.path == "/api/log-batches/export"' in server
+    assert 'self.path == "/api/log-rules/preview"' in server
     assert 'self.path == "/api/tools/workflow/stop"' in server
     assert "class ExclusiveThreadingHTTPServer" in server
 

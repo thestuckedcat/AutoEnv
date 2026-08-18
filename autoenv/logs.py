@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import fnmatch
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,9 @@ from .results import LogOperationResult, RemoteBatchDownloadResult, result_to_di
 MAX_EXPANDED_FILES = 10_000
 MAX_EXPANDED_BYTES = 5 * 1024 * 1024 * 1024
 _TIME_FIELDS = ("year", "month", "day", "hour", "minute", "second")
+_METADATA_FIELDS = ("slot_id", "socket_id")
+LOG_INDEX_SCHEMA_VERSION = 2
+LOG_RULE_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -176,6 +180,46 @@ class TimestampPattern:
 
 
 @dataclass(frozen=True)
+class MetadataMatch:
+    """Values and display span extracted by one metadata pattern."""
+
+    values: dict[str, str]
+    span: tuple[int, int]
+
+
+class MetadataPattern:
+    """Extract inheritable log attributes through named regex groups.
+
+    Supported groups are deliberately bounded to stable indexed fields.  More
+    product syntaxes are represented by multiple ordered patterns rather than
+    by teaching the framework the surrounding text format.
+    """
+
+    def __init__(self, regex: str) -> None:
+        if not isinstance(regex, str) or not regex.strip():
+            raise ValueError("metadata regex must not be empty")
+        self.regex = regex
+        self.compiled = re.compile(regex)
+        names = set(self.compiled.groupindex)
+        unknown = names - set(_METADATA_FIELDS)
+        if unknown:
+            raise ValueError(f"unsupported metadata groups: {sorted(unknown)}")
+        if not names:
+            raise ValueError("metadata regex requires slot_id or socket_id named groups")
+
+    def parse(self, line: str) -> MetadataMatch | None:
+        match = self.compiled.search(line)
+        if match is None:
+            return None
+        values = {
+            name: value
+            for name in _METADATA_FIELDS
+            if (value := match.groupdict().get(name)) not in (None, "")
+        }
+        return MetadataMatch(values, match.span())
+
+
+@dataclass(frozen=True)
 class _Record:
     target: str
     file_order: int
@@ -185,7 +229,27 @@ class _Record:
     timestamp: LogTimestamp | None
     timestamp_source: str
     source_file: str
+    slot_id: str | None = None
+    socket_id: str | None = None
+    slot_id_source: str = "unknown"
+    socket_id_source: str = "unknown"
+    matched_spans: tuple[tuple[int, int], ...] = ()
     incomplete_block: bool = False
+
+
+@dataclass(frozen=True)
+class _ParsedLine:
+    line_number: int
+    text: str
+    source_file: str
+    parsed_timestamp: LogTimestamp | None
+    timestamp: LogTimestamp | None
+    timestamp_source: str
+    slot_id: str | None
+    socket_id: str | None
+    slot_id_source: str
+    socket_id_source: str
+    matched_spans: tuple[tuple[int, int], ...]
 
 
 class LogCollection:
@@ -224,6 +288,7 @@ class LogCollection:
         self.expanded_dir.mkdir()
         self.targets_dir.mkdir()
         self._records: list[_Record] = []
+        self._rules: list[dict[str, object]] = []
         self._source_mtimes: dict[Path, float] = {}
         self._source_encodings: dict[str, str] = {}
         # Retain one result per remote directory.  Apart from making the
@@ -426,6 +491,7 @@ class LogCollection:
         *,
         glob: str = "cpdt*.log",
         timestamp: TimestampPattern,
+        metadata_patterns: Sequence[MetadataPattern] = (),
         encoding: str | Sequence[str] = ("utf-8", "utf-8-sig", "gb18030", "latin-1"),
     ) -> "LogGroup":
         """Select analyzable log files and freeze their deterministic order."""
@@ -458,12 +524,15 @@ class LogCollection:
                 download=self._download_manifest(),
             )
             raise FileNotFoundError(f"no expanded file matched glob {glob!r}")
-        return LogGroup(self, files, timestamp, encodings)
+        return LogGroup(
+            self, files, timestamp, encodings, metadata_patterns=metadata_patterns
+        )
 
     def source_groups(
         self,
         *,
         timestamp: TimestampPattern,
+        metadata_patterns: Sequence[MetadataPattern] = (),
         encoding: str | Sequence[str] = ("utf-8", "utf-8-sig", "gb18030", "latin-1"),
     ) -> dict[str, "LogGroup"]:
         """Build one group from every script-declared source after extraction.
@@ -512,6 +581,7 @@ class LogCollection:
                 timestamp,
                 encodings,
                 file_order_start=file_order_start,
+                metadata_patterns=metadata_patterns,
             )
             file_order_start += len(files)
         return groups
@@ -654,6 +724,11 @@ class LogCollection:
                     clock_seconds INTEGER,
                     date_key TEXT,
                     timestamp_source TEXT NOT NULL,
+                    slot_id TEXT,
+                    socket_id TEXT,
+                    slot_id_source TEXT NOT NULL,
+                    socket_id_source TEXT NOT NULL,
+                    matched_spans TEXT NOT NULL,
                     incomplete_block INTEGER NOT NULL
                 )
                 """
@@ -668,22 +743,43 @@ class LogCollection:
                     INSERT INTO records (
                         target, sequence, text, source_file, source_line,
                         year, month, day, hour, minute, second,
-                        clock_seconds, date_key, timestamp_source, incomplete_block
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        clock_seconds, date_key, timestamp_source,
+                        slot_id, socket_id, slot_id_source, socket_id_source,
+                        matched_spans, incomplete_block
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row.target, sequence, row.text, row.source_file, row.line_number,
                         stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second,
                         stamp.clock_seconds, stamp.date_key, row.timestamp_source,
+                        row.slot_id, row.socket_id,
+                        row.slot_id_source, row.socket_id_source,
+                        json.dumps(row.matched_spans, separators=(",", ":")),
                         int(row.incomplete_block),
                     ),
                 )
             connection.execute("CREATE INDEX records_target_sequence ON records(target, sequence)")
             connection.execute("CREATE INDEX records_target_clock ON records(target, clock_seconds)")
+            connection.execute(
+                "CREATE INDEX records_target_metadata "
+                "ON records(target, slot_id, socket_id, sequence)"
+            )
+            connection.execute(
+                "CREATE INDEX records_target_socket "
+                "ON records(target, socket_id, sequence)"
+            )
+            connection.execute(
+                "CREATE INDEX records_clock_correlation "
+                "ON records(clock_seconds, date_key, target, sequence)"
+            )
 
     def _write_manifest(self, status: str, **extra: object) -> None:
         value = {
             "schema_version": 1,
+            "index_schema_version": LOG_INDEX_SCHEMA_VERSION,
+            "rule_schema_version": LOG_RULE_SCHEMA_VERSION,
+            "rules": self._rules,
+            "rules_hash": self._rules_hash(),
             "batch_id": self.run_id,
             "alias": self.alias,
             "collected_at": self.collected_at,
@@ -694,6 +790,21 @@ class LogCollection:
         pending = self.manifest_path.with_suffix(".json.tmp")
         pending.write_text(json.dumps(result_to_dict(value), ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(pending, self.manifest_path)
+
+    def _remember_rule(self, value: dict[str, object]) -> None:
+        self._rules.append(value)
+
+    def _rules_hash(self) -> str:
+        payload = json.dumps(
+            {
+                "schema_version": LOG_RULE_SCHEMA_VERSION,
+                "rules": self._rules,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
 
     def _download_manifest(self) -> dict[str, object] | None:
         if not self._downloads:
@@ -838,12 +949,17 @@ class LogGroup:
         encodings: tuple[str, ...],
         *,
         file_order_start: int = 0,
+        metadata_patterns: Sequence[MetadataPattern] = (),
     ) -> None:
         self.collection = collection
         self.files = files
         self.timestamp = timestamp
         self.encodings = encodings
         self.file_order_start = file_order_start
+        if any(not isinstance(item, MetadataPattern) for item in metadata_patterns):
+            raise TypeError("metadata_patterns must contain MetadataPattern values")
+        self.metadata_patterns = tuple(metadata_patterns)
+        self._parsed_cache: dict[Path, list[_ParsedLine]] = {}
         self._rule_order = 0
 
     def match_line(self, regex: str, target_file: str) -> LogOperationResult:
@@ -851,39 +967,17 @@ class LogGroup:
 
         pattern = re.compile(regex)
         target = _target_file(target_file)
+        self._remember_rule("line", target, regex=regex)
         started = datetime.now().astimezone()
         operation_id = self.collection.recorder.next_operation_id()
         self._rule_order += 1
         count = 0
         try:
             for file_order, path in enumerate(self.files, start=self.file_order_start):
-                # Reset at each file boundary: a rotated file may start a new
-                # process/session and must not inherit time from its predecessor.
-                previous: LogTimestamp | None = None
-                for line_number, line in enumerate(self._read_lines(path), start=1):
-                    parsed = self.timestamp.parse(line)
-                    # A malformed date labels only the line carrying it as
-                    # ``?``.  It must not replace the last valid timestamp used
-                    # by later timestamp-less lines in this source file.
-                    if parsed is not None and not parsed.invalid_date:
-                        previous = parsed
-                    if pattern.search(line):
-                        selected = parsed or previous
-                        if parsed is not None and parsed.invalid_date:
-                            timestamp_source = "invalid"
-                        elif parsed is not None:
-                            timestamp_source = "parsed"
-                        elif previous is not None:
-                            timestamp_source = "inherited"
-                        else:
-                            timestamp_source = "unknown"
+                for item in self._parsed_lines(path):
+                    if pattern.search(item.text):
                         self.collection._records.append(
-                            _Record(
-                                target, file_order, line_number, self._rule_order, line,
-                                selected,
-                                timestamp_source,
-                                str(path.relative_to(self.collection.expanded_dir)),
-                            )
+                            self._record(target, file_order, item)
                         )
                         count += 1
             result = self.collection._operation_result(operation_id, started, True, "success", count)
@@ -918,26 +1012,22 @@ class LogGroup:
 
         start = re.compile(start_regex)
         target = _target_file(target_file)
+        self._remember_rule("line_block", target, start_regex=start_regex)
         started = datetime.now().astimezone()
         operation_id = self.collection.recorder.next_operation_id()
         self._rule_order += 1
         count = 0
         try:
             for file_order, path in enumerate(self.files, start=self.file_order_start):
-                previous: LogTimestamp | None = None
                 active = False
                 anchor: LogTimestamp | None = None
-                source_file = str(path.relative_to(self.collection.expanded_dir))
-                for line_number, line in enumerate(self._read_lines(path), start=1):
-                    parsed = self.timestamp.parse(line)
+                for item in self._parsed_lines(path):
+                    parsed = item.parsed_timestamp
                     if parsed is not None:
                         # Any explicit timestamp closes the previous implicit
                         # block before this line is considered as a new start.
                         active = False
                         anchor = None
-                        if not parsed.invalid_date:
-                            previous = parsed
-
                     if active and parsed is None:
                         # Once a block is active, every timestamp-less line is
                         # continuation content.  Even if it repeats the start
@@ -947,14 +1037,14 @@ class LogGroup:
                             if anchor is not None and anchor.invalid_date
                             else "line_block_continuation"
                         )
-                    elif start.search(line):
+                    elif start.search(item.text):
                         active = True
-                        anchor = parsed or previous
+                        anchor = item.timestamp
                         if parsed is not None and parsed.invalid_date:
                             timestamp_source = "invalid"
                         elif parsed is not None:
                             timestamp_source = "parsed"
-                        elif previous is not None:
+                        elif item.timestamp is not None:
                             timestamp_source = "inherited"
                         else:
                             timestamp_source = "unknown"
@@ -962,15 +1052,12 @@ class LogGroup:
                         continue
 
                     self.collection._records.append(
-                        _Record(
+                        self._record(
                             target,
                             file_order,
-                            line_number,
-                            self._rule_order,
-                            line,
-                            anchor,
-                            timestamp_source,
-                            source_file,
+                            item,
+                            timestamp=anchor,
+                            timestamp_source=timestamp_source,
                         )
                     )
                     count += 1
@@ -995,6 +1082,8 @@ class LogGroup:
         target_file: str,
         *,
         exclude_regex: str | None = None,
+        consume_regex: str | None = None,
+        boundary_mode: str = "legacy",
     ) -> LogOperationResult:
         """Extract block bodies with explicit and implicit boundary handling.
 
@@ -1005,7 +1094,22 @@ class LogGroup:
         than resetting the already collected body.  ``exclude_regex`` removes
         matching body lines after the block and its correlation timestamp have
         been selected; boundary recognition and time inheritance are unchanged.
+        ``boundary_mode='strict'`` selects only confirmed file-head or explicit
+        blocks; ``consume_regex`` updates metadata without emitting its carrier.
         """
+
+        if boundary_mode not in {"legacy", "strict"}:
+            raise ValueError("boundary_mode must be legacy or strict")
+        if boundary_mode == "strict":
+            return self._match_block_strict(
+                begin_regex,
+                end_regex,
+                target_file,
+                consume_regex=consume_regex,
+                exclude_regex=exclude_regex,
+            )
+        if consume_regex is not None:
+            raise ValueError("consume_regex requires boundary_mode='strict'")
 
         begin = re.compile(begin_regex)
         end = re.compile(end_regex)
@@ -1015,6 +1119,14 @@ class LogGroup:
             raise ValueError("exclude_regex must not be empty")
         exclude = re.compile(exclude_regex) if exclude_regex is not None else None
         target = _target_file(target_file)
+        self._remember_rule(
+            "block",
+            target,
+            begin_regex=begin_regex,
+            end_regex=end_regex,
+            boundary_mode="legacy",
+            exclude_regex=exclude_regex,
+        )
         started = datetime.now().astimezone()
         operation_id = self.collection.recorder.next_operation_id()
         self._rule_order += 1
@@ -1025,7 +1137,7 @@ class LogGroup:
                 segment_previous: LogTimestamp | None = None
                 explicit = False
                 anchor: LogTimestamp | None = None
-                buffer: list[tuple[int, str, LogTimestamp | None]] = []
+                buffer: list[_ParsedLine] = []
 
                 def flush(*, incomplete: bool) -> None:
                     nonlocal count, buffer
@@ -1035,12 +1147,15 @@ class LogGroup:
                     # the begin marker (or the timestamp just before it);
                     # implicit blocks prefer their first timestamp and finally
                     # fall back to the previous completed segment.
-                    selected = anchor if explicit else next((stamp for _, _, stamp in buffer if stamp), segment_previous)
+                    selected = anchor if explicit else next(
+                        (item.parsed_timestamp for item in buffer if item.parsed_timestamp),
+                        segment_previous,
+                    )
                     if selected is not None and selected.invalid_date:
                         source = "invalid"
                     elif explicit and selected:
                         source = "block_begin"
-                    elif any(stamp for _, _, stamp in buffer):
+                    elif any(item.parsed_timestamp for item in buffer):
                         source = "block_first"
                     elif selected:
                         source = "block_inherited"
@@ -1049,23 +1164,26 @@ class LogGroup:
                     retained = [
                         item
                         for item in buffer
-                        if exclude is None or exclude.search(item[1]) is None
+                        if exclude is None or exclude.search(item.text) is None
                     ]
-                    for line_number, text, _stamp in retained:
+                    for item in retained:
                         self.collection._records.append(
-                            _Record(
-                                target, file_order, line_number, self._rule_order, text,
-                                selected, source,
-                                str(path.relative_to(self.collection.expanded_dir)),
-                                incomplete,
+                            self._record(
+                                target,
+                                file_order,
+                                item,
+                                timestamp=selected,
+                                timestamp_source=source,
+                                incomplete_block=incomplete,
                             )
                         )
                         count += 1
                     buffer = []
 
-                for line_number, line in enumerate(self._read_lines(path), start=1):
+                for item in self._parsed_lines(path):
+                    line = item.text
                     before = previous
-                    parsed = self.timestamp.parse(line)
+                    parsed = item.parsed_timestamp
                     # An invalid date may make the current block's correlation
                     # time unknown, but it does not poison later independent
                     # segments that inherit the last valid timestamp.
@@ -1088,7 +1206,7 @@ class LogGroup:
                         anchor = None
                         segment_previous = previous
                         continue
-                    buffer.append((line_number, line, parsed))
+                    buffer.append(item)
                 if explicit:
                     # EOF before an end marker retains the block but marks every
                     # row incomplete in SQLite for downstream diagnostics.
@@ -1103,8 +1221,222 @@ class LogGroup:
         self.collection.recorder.record_result("LOG MATCH BLOCK", result)
         return result
 
+    def _match_block_strict(
+        self,
+        begin_regex: str,
+        end_regex: str,
+        target_file: str,
+        *,
+        consume_regex: str | None,
+        exclude_regex: str | None,
+    ) -> LogOperationResult:
+        """Extract confirmed minimal blocks while retaining metadata state.
+
+        File-head text is buffered until its first boundary: an END confirms a
+        truncated leading block and a BEGIN discards the preamble.  Repeated
+        BEGIN markers inside an active block do not alter its boundary, although
+        parsing has already allowed their metadata to refresh inherited fields.
+        EOF normally closes a head or active block.
+        """
+
+        begin = re.compile(begin_regex)
+        end = re.compile(end_regex)
+        hidden_patterns: list[re.Pattern[str]] = []
+        for label, value in (
+            ("consume_regex", consume_regex),
+            ("exclude_regex", exclude_regex),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"{label} must be a string or None")
+            if isinstance(value, str) and not value.strip():
+                raise ValueError(f"{label} must not be empty")
+            if value is not None:
+                hidden_patterns.append(re.compile(value))
+        target = _target_file(target_file)
+        self._remember_rule(
+            "block",
+            target,
+            begin_regex=begin_regex,
+            end_regex=end_regex,
+            boundary_mode="strict",
+            consume_regex=consume_regex,
+            exclude_regex=exclude_regex,
+        )
+        started = datetime.now().astimezone()
+        operation_id = self.collection.recorder.next_operation_id()
+        self._rule_order += 1
+        count = 0
+
+        def consumed(item: _ParsedLine) -> bool:
+            return any(pattern.search(item.text) for pattern in hidden_patterns)
+
+        try:
+            for file_order, path in enumerate(self.files, start=self.file_order_start):
+                mode = "head"
+                head: list[_ParsedLine] = []
+
+                def retain(item: _ParsedLine) -> None:
+                    nonlocal count
+                    if consumed(item):
+                        return
+                    self.collection._records.append(
+                        self._record(target, file_order, item)
+                    )
+                    count += 1
+
+                for item in self._parsed_lines(path):
+                    is_begin = begin.search(item.text) is not None
+                    is_end = end.search(item.text) is not None
+                    if mode == "head":
+                        if is_begin:
+                            head = []
+                            mode = "active"
+                        elif is_end:
+                            for buffered in head:
+                                retain(buffered)
+                            head = []
+                            mode = "outside"
+                        else:
+                            head.append(item)
+                        continue
+                    if mode == "active":
+                        if is_begin:
+                            # Boundary is ignored, metadata was already consumed
+                            # by _parsed_lines() before this state decision.
+                            continue
+                        if is_end:
+                            mode = "outside"
+                            continue
+                        retain(item)
+                        continue
+                    if is_begin:
+                        mode = "active"
+                if mode == "head":
+                    for buffered in head:
+                        retain(buffered)
+                # mode == active closes normally at EOF; rows were streamed.
+            result = self.collection._operation_result(
+                operation_id, started, True, "success", count
+            )
+        except Exception as exc:
+            self.collection._failed = True
+            self.collection._write_manifest(
+                "failed", error=str(exc), download=self.collection._download_manifest()
+            )
+            result = self.collection._operation_result(
+                operation_id, started, False, "match_failed", count, exc
+            )
+        self.collection.recorder.record_result("LOG MATCH BLOCK", result)
+        return result
+
+    def _record(
+        self,
+        target: str,
+        file_order: int,
+        item: _ParsedLine,
+        *,
+        timestamp: LogTimestamp | None | object = Ellipsis,
+        timestamp_source: str | None = None,
+        incomplete_block: bool = False,
+    ) -> _Record:
+        selected_timestamp = item.timestamp if timestamp is Ellipsis else timestamp
+        return _Record(
+            target=target,
+            file_order=file_order,
+            line_number=item.line_number,
+            rule_order=self._rule_order,
+            text=item.text,
+            timestamp=selected_timestamp,
+            timestamp_source=timestamp_source or item.timestamp_source,
+            source_file=item.source_file,
+            slot_id=item.slot_id,
+            socket_id=item.socket_id,
+            slot_id_source=item.slot_id_source,
+            socket_id_source=item.socket_id_source,
+            matched_spans=item.matched_spans,
+            incomplete_block=incomplete_block,
+        )
+
+    def _remember_rule(self, kind: str, target: str, **settings: object) -> None:
+        self.collection._remember_rule(
+            {
+                "kind": kind,
+                "target": target,
+                "timestamp_regex": self.timestamp.regex,
+                "metadata_regexes": [item.regex for item in self.metadata_patterns],
+                **settings,
+            }
+        )
+
+    def _parsed_lines(self, path: Path) -> list[_ParsedLine]:
+        cached = self._parsed_cache.get(path)
+        if cached is not None:
+            return cached
+        source_file = str(path.relative_to(self.collection.expanded_dir))
+        previous_timestamp: LogTimestamp | None = None
+        previous_metadata: dict[str, str | None] = {
+            "slot_id": None,
+            "socket_id": None,
+        }
+        parsed_lines: list[_ParsedLine] = []
+        for line_number, line in enumerate(self._read_lines(path), start=1):
+            spans: list[tuple[int, int]] = []
+            timestamp_match = self.timestamp.compiled.search(line)
+            parsed_timestamp = self.timestamp.parse(line)
+            if timestamp_match is not None:
+                spans.append(timestamp_match.span())
+            if parsed_timestamp is not None and parsed_timestamp.invalid_date:
+                timestamp = parsed_timestamp
+                timestamp_source = "invalid"
+            elif parsed_timestamp is not None:
+                previous_timestamp = parsed_timestamp
+                timestamp = parsed_timestamp
+                timestamp_source = "parsed"
+            elif previous_timestamp is not None:
+                timestamp = previous_timestamp
+                timestamp_source = "inherited"
+            else:
+                timestamp = None
+                timestamp_source = "unknown"
+
+            direct_fields: set[str] = set()
+            for pattern in self.metadata_patterns:
+                matched = pattern.parse(line)
+                if matched is None:
+                    continue
+                spans.append(matched.span)
+                for name, value in matched.values.items():
+                    previous_metadata[name] = value
+                    direct_fields.add(name)
+            metadata_sources = {
+                name: (
+                    "parsed"
+                    if name in direct_fields
+                    else "inherited" if previous_metadata[name] is not None else "unknown"
+                )
+                for name in _METADATA_FIELDS
+            }
+            parsed_lines.append(
+                _ParsedLine(
+                    line_number=line_number,
+                    text=line,
+                    source_file=source_file,
+                    parsed_timestamp=parsed_timestamp,
+                    timestamp=timestamp,
+                    timestamp_source=timestamp_source,
+                    slot_id=previous_metadata["slot_id"],
+                    socket_id=previous_metadata["socket_id"],
+                    slot_id_source=metadata_sources["slot_id"],
+                    socket_id_source=metadata_sources["socket_id"],
+                    matched_spans=tuple(sorted(set(spans))),
+                )
+            )
+        self._parsed_cache[path] = parsed_lines
+        return parsed_lines
+
     def _read_lines(self, path: Path) -> list[str]:
-        # Decode the whole file once per rule.  Strict decoding is intentional:
+        # Decode a file once; parsed-line caching lets all compatible rules reuse
+        # this result.  Strict decoding is intentional:
         # the first codec that can represent every byte becomes auditable in the
         # manifest; replacement characters would hide corruption.
         payload = path.read_bytes()

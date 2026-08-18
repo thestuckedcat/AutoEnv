@@ -982,7 +982,7 @@ autoenv rerun start_udk
 - 普通 FTP 是独立连接对象，只提供显式上传，不共享 SSH Transport。
 - `LaunchRequest` 把环境档案与请求覆盖合并后注入 `RunContext`；非交互模式中缺参立即失败。
 - Web Tools 使用独立注册表和字段 Schema，不进入环境启动脚本列表。local Tool 保持 values→JSON；workflow Tool 接收独立 `RunContext`，仅通过已声明并按标签绑定的 AutoEnv 资源执行后台任务，支持事件与停止。
-- 日志 SDK 提供批量 SCP、ZIP/GZ/TAR.GZ/TGZ 递归安全解压、稳定 group、line、line-block（起始行加连续无时间戳续行）与 begin/end block 时间解析、目标日志/SQLite/manifest finalize 和分页时间窗查询。
+- 日志 SDK 提供批量 SCP、安全解压、稳定 group、line/line-block/block、timestamp/slot/socket 继承、目标日志/SQLite/manifest finalize，以及兼容旧批次的分块查询；Web 用虚拟连续滚动呈现分块结果。
 - Agent CLI 文件上传只负责安全落盘和路径转换，Python/ZIP 的适配由仓库 skill 静态审查。
 
 新增模块、目录、数据流、安全边界、已知限制和接手入口见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。新增行为的可操作说明见 [`ENVIRONMENT_REGISTRATION_GUIDE.md`](ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用) 和 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)。

@@ -14,7 +14,7 @@ import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -326,6 +326,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def download_text(self, filename: str, value: str) -> None:
+        payload = value.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header(
+            "Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}"
+        )
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def body(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length", "0"))
         if length > 64 * 1024 * 1024:
@@ -369,6 +381,7 @@ class Handler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/log-batches/query":
                 from autoenv.log_query import query_log_records
                 query = parse_qs(parsed.query)
+                offset_value = query.get("offset", [None])[0]
                 self.json(query_log_records(
                     ROOT_DIR,
                     query.get("batch", [""])[0],
@@ -380,7 +393,32 @@ class Handler(SimpleHTTPRequestHandler):
                     window_minutes=int(query.get("window", ["60"])[0]),
                     keyword=query.get("keyword", [""])[0],
                     context_lines=int(query.get("context", ["0"])[0]),
+                    slot_id=query.get("slot_id", [""])[0],
+                    socket_id=query.get("socket_id", [""])[0],
+                    offset=int(offset_value) if offset_value is not None else None,
                 ))
+            elif parsed.path == "/api/log-batches/correlate":
+                from autoenv.log_query import correlate_log_records
+                query = parse_qs(parsed.query)
+                self.json(correlate_log_records(
+                    ROOT_DIR,
+                    query.get("batch", [""])[0],
+                    query.get("target", [""])[0],
+                    int(query.get("sequence", ["0"])[0]),
+                    int(query.get("window_seconds", ["300"])[0]),
+                ))
+            elif parsed.path == "/api/log-batches/export":
+                from autoenv.log_query import export_log_records
+                query = parse_qs(parsed.query)
+                filename, content = export_log_records(
+                    ROOT_DIR,
+                    query.get("batch", [""])[0],
+                    query.get("target", [""])[0],
+                    mode=query.get("mode", [""])[0],
+                    slot_id=query.get("slot_id", [""])[0],
+                    socket_id=query.get("socket_id", [""])[0],
+                )
+                self.download_text(filename, content)
             elif parsed.path in {"/api/run/events", "/api/agent/events"}:
                 session = AUTOENV_SESSION if "/run/" in parsed.path else AGENT_SESSION
                 cursor = int(parse_qs(parsed.query).get("cursor", ["0"])[0])
@@ -462,6 +500,12 @@ class Handler(SimpleHTTPRequestHandler):
                 target = folder / f"{uuid.uuid4().hex[:8]}-{name}"
                 target.write_bytes(payload)
                 self.json({"path": str(target)})
+            elif self.path == "/api/log-rules/preview":
+                from autoenv.log_collection_rules import preview_log_sample
+                name = Path(str(data.get("name", "sample.log"))).name
+                raw = str(data.get("data", ""))
+                payload = base64.b64decode(raw.split(",", 1)[-1], validate=True)
+                self.json(preview_log_sample(payload, name))
             elif self.path == "/api/agent/start":
                 settings = _load_settings()
                 requested_command = data.get("command", settings.get("agent_command", "codeagent"))

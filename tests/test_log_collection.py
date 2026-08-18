@@ -16,8 +16,13 @@ from pathlib import Path
 import pytest
 
 from autoenv import web_tools
-from autoenv.log_query import list_log_batches, query_log_records
-from autoenv.logs import LogCollection, LogSource, TimestampPattern
+from autoenv.log_query import (
+    correlate_log_records,
+    export_log_records,
+    list_log_batches,
+    query_log_records,
+)
+from autoenv.logs import LogCollection, LogSource, MetadataPattern, TimestampPattern
 from autoenv.registry import list_scripts
 from autoenv.results import RemoteBatchDownloadResult, RemoteDownloadedFile
 from autoenv.web_tools import WebToolDefinition, describe_tools, run_web_tool, run_workflow_tool
@@ -392,6 +397,135 @@ def test_match_line_block_resets_active_state_at_each_file_boundary(
     )
 
 
+def test_strict_match_block_consumes_metadata_and_uses_confirmed_boundaries(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "cpdt_strict.log"
+    fixture.write_text(
+        "07:59:00 discarded preamble\n"
+        "08:00:00 slotid=1 socketid=A BEGIN EXTRACT LOG\n"
+        "08:01:00 slotid=2 socketid=B LOG_TYPE[0] seg[0]\n"
+        "context1\n"
+        "08:02:00 slotid=3 socketid=C BEGIN EXTRACT LOG\n"
+        "context2\n"
+        "08:03:00 END EXTRACT LOG\n"
+        "outside discarded\n"
+        "08:04:00 BEGIN EXTRACT LOG\n"
+        "context3\n"
+        "08:05:00 socketid=D visible partial metadata\n"
+        "context4\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "strict-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(run_id="strict-run", run_dir=run_dir, recorder=Recorder())
+    assert collection.download(
+        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(
+        glob="cpdt*.log",
+        timestamp=TIMESTAMP,
+        metadata_patterns=[
+            MetadataPattern(r"slotid=(?P<slot_id>\d+)"),
+            MetadataPattern(r"socketid=(?P<socket_id>[A-Z])"),
+        ],
+    )
+
+    matched = group.match_block(
+        r"BEGIN EXTRACT LOG",
+        r"END EXTRACT LOG",
+        "strict.log",
+        boundary_mode="strict",
+        consume_regex=r"LOG_TYPE\[\d+\]\s+seg\[\d+\]",
+    )
+
+    assert matched.success and matched.output_count == 5
+    assert collection.finalize().success
+    queried = query_log_records(tmp_path, "strict-run", "strict.log", limit=20)
+    assert [row["text"] for row in queried["records"]] == [
+        "context1",
+        "context2",
+        "context3",
+        "08:05:00 socketid=D visible partial metadata",
+        "context4",
+    ]
+    assert [(row["slot_id"], row["socket_id"]) for row in queried["records"]] == [
+        ("2", "B"),
+        ("3", "C"),
+        ("3", "C"),
+        ("3", "D"),
+        ("3", "D"),
+    ]
+    assert queried["records"][0]["slot_id_source"] == "inherited"
+    assert queried["records"][3]["socket_id_source"] == "parsed"
+    assert queried["records"][3]["matched_spans"]
+    filtered = query_log_records(
+        tmp_path, "strict-run", "strict.log", slot_id="3", socket_id="D"
+    )
+    assert [row["text"] for row in filtered["records"]] == [
+        "08:05:00 socketid=D visible partial metadata",
+        "context4",
+    ]
+
+
+def test_strict_match_block_keeps_file_head_until_first_end_and_resets_metadata(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "cpdt_first.log"
+    second = tmp_path / "cpdt_second.log"
+    first.write_text(
+        "08:00:00 slotid=9 socketid=Z header\n"
+        "header continuation\n"
+        "08:01:00 END EXTRACT LOG\n"
+        "outside\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "08:02:00 BEGIN EXTRACT LOG\n"
+        "unknown metadata context\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "strict-head-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(
+        run_id="strict-head-run", run_dir=run_dir, recorder=Recorder()
+    )
+    assert collection.download(
+        FakeBatchHost([(first, 1.0), (second, 2.0)]),
+        remote_dir="/logs",
+        glob="cpdt_*",
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(
+        glob="cpdt*.log",
+        timestamp=TIMESTAMP,
+        metadata_patterns=[
+            MetadataPattern(
+                r"slotid=(?P<slot_id>\d+)\s+socketid=(?P<socket_id>[A-Z])"
+            )
+        ],
+    )
+    assert group.match_block(
+        r"BEGIN EXTRACT LOG",
+        r"END EXTRACT LOG",
+        "head.log",
+        boundary_mode="strict",
+    ).success
+    assert collection.finalize().success
+
+    rows = query_log_records(tmp_path, "strict-head-run", "head.log", limit=20)[
+        "records"
+    ]
+    assert [row["text"] for row in rows] == [
+        "08:00:00 slotid=9 socketid=Z header",
+        "header continuation",
+        "unknown metadata context",
+    ]
+    assert rows[-1]["slot_id"] is None
+    assert rows[-1]["slot_id_source"] == "unknown"
+
+
 def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Path):
     first_fixture = tmp_path / "first-fixture"
     second_fixture = tmp_path / "second-fixture"
@@ -425,9 +559,9 @@ def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Pat
 
     assert collection.extract_all().success
     group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
-    assert [str(path.relative_to(collection.expanded_dir)) for path in group.files] == [
-        "source-002/cpdt_same.log",
-        "source-001/cpdt_same.log",
+    assert [path.relative_to(collection.expanded_dir) for path in group.files] == [
+        Path("source-002/cpdt_same.log"),
+        Path("source-001/cpdt_same.log"),
     ]
     assert group.match_line(r"\[AUTH\]", "auth.log").success
     assert collection.finalize().success
@@ -657,6 +791,140 @@ def test_log_batch_query_supports_clock_windows_unknown_rows_and_paging(tmp_path
     all_rows = query_log_records(root, "sample-run", "auth.log", limit=2)
     assert all_rows["total"] == 5 and all_rows["has_more"] is True
     assert any(item["timestamp"] == "-" for item in query_log_records(root, "sample-run", "auth.log")["records"])
+
+
+def test_log_query_reads_pre_metadata_batch_schema(tmp_path: Path) -> None:
+    batch = tmp_path / "logs" / "old-run" / "log_collection"
+    batch.mkdir(parents=True)
+    (batch / "manifest.json").write_text(
+        json.dumps({"status": "ready", "batch_id": "old-run", "targets": ["old.log"]}),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(batch / "index.sqlite3") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE records (
+                id INTEGER PRIMARY KEY, target TEXT NOT NULL, sequence INTEGER NOT NULL,
+                text TEXT NOT NULL, source_file TEXT NOT NULL, source_line INTEGER NOT NULL,
+                year INTEGER, month INTEGER, day INTEGER, hour INTEGER, minute INTEGER,
+                second INTEGER, clock_seconds INTEGER, date_key TEXT,
+                timestamp_source TEXT NOT NULL, incomplete_block INTEGER NOT NULL
+            );
+            INSERT INTO records VALUES (
+                1, 'old.log', 1, 'legacy row', 'old.log', 7,
+                NULL, NULL, NULL, 8, 0, 0, 28800, NULL, 'parsed', 0
+            );
+            """
+        )
+
+    row = query_log_records(tmp_path, "old-run", "old.log")["records"][0]
+    assert row["slot_id"] is None and row["slot_id_source"] == "unknown"
+    assert query_log_records(tmp_path, "old-run", "old.log", slot_id="1")["total"] == 0
+
+
+def test_server_correlation_uses_only_configurable_time_window(tmp_path: Path) -> None:
+    _sample_collection(tmp_path)
+    auth_rows = query_log_records(tmp_path, "sample-run", "auth.log", limit=20)["records"]
+    selected = next(row for row in auth_rows if "login failed" in row["text"])
+
+    correlated = correlate_log_records(
+        tmp_path,
+        "sample-run",
+        "auth.log",
+        int(selected["sequence"]),
+        window_seconds=15,
+    )
+
+    assert correlated["window_seconds"] == 15
+    assert any(
+        row["target"] == "database.log"
+        and row["timestamp"] == "2026-08-16 08:22:00"
+        for row in correlated["matches"]
+    )
+    assert all(row["distance_seconds"] <= 15 for row in correlated["matches"])
+    with pytest.raises(ValueError, match="86400"):
+        correlate_log_records(
+            tmp_path, "sample-run", "auth.log", int(selected["sequence"]), 86401
+        )
+
+
+def test_log_export_raw_and_metadata_are_independent_from_web_hiding(tmp_path: Path) -> None:
+    collection = _sample_collection(tmp_path)
+    raw_name, raw = export_log_records(tmp_path, "sample-run", "auth.log", mode="raw")
+    metadata_name, metadata = export_log_records(
+        tmp_path, "sample-run", "auth.log", mode="metadata"
+    )
+
+    assert raw_name == "auth-raw.log"
+    assert metadata_name == "auth-metadata.log"
+    assert raw.splitlines()[0] == "2026-08-16 08:20:35 [AUTH] login success user=alice"
+    assert metadata.splitlines()[0].startswith(
+        "[2026-08-16 08:20:35] [slot_id=? socket_id=?] "
+    )
+    assert raw != (collection.targets_dir / "auth.log").read_text(encoding="utf-8")
+
+
+def test_manifest_versions_rules_and_all_matchers_reuse_one_file_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = tmp_path / "cpdt_rules.log"
+    fixture.write_text(
+        "08:00:00 [AUTH] first\n"
+        "08:01:00 [ERROR] detail\n"
+        "continuation\n"
+        "08:02:00 [DB] BEGIN\n"
+        "payload\n"
+        "08:03:00 [DB] END\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "logs" / "rule-run"
+    run_dir.mkdir(parents=True)
+    collection = LogCollection(run_id="rule-run", run_dir=run_dir, recorder=Recorder())
+    assert collection.download(
+        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="*"
+    ).success
+    assert collection.extract_all().success
+    group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
+    original = group._read_lines
+    calls = 0
+
+    def counted(path: Path) -> list[str]:
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(group, "_read_lines", counted)
+    assert group.match_line(r"\[AUTH\]", "auth.log").success
+    assert group.match_line_block(r"\[ERROR\]", "errors.log").success
+    assert group.match_block(r"\[DB\] BEGIN", r"\[DB\] END", "db.log").success
+    assert calls == 1
+    assert collection.finalize().success
+    manifest = json.loads(collection.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["index_schema_version"] == 2
+    assert manifest["rule_schema_version"] == 1
+    assert len(manifest["rules"]) == 3
+    assert len(manifest["rules_hash"]) == 64
+
+
+def test_configured_rule_preview_reports_counts_and_inherited_metadata() -> None:
+    from autoenv.log_collection_rules import preview_log_sample
+
+    preview = preview_log_sample(
+        b"08:00:00 slotid=4 socketid=2 [DB] BEGIN\n"
+        b"payload\n"
+        b"08:01:00 [DB] END\n"
+        b"08:02:00 slotid=5 socketid=3 [AUTH] login\n",
+        "local.log",
+    )
+
+    assert preview["input_lines"] == 4
+    assert preview["retained_lines"] == 2
+    targets = preview["targets"]
+    assert targets["database.log"]["examples"][0]["slot_id"] == "4"
+    assert targets["database.log"]["examples"][0]["slot_id_source"] == "inherited"
+    assert targets["auth.log"]["count"] == 1
+    with pytest.raises(ValueError, match="8 MiB"):
+        preview_log_sample(b"x" * (8 * 1024 * 1024 + 1))
 
 
 def test_log_batch_find_filters_whole_target_case_insensitively_and_combines_with_time(

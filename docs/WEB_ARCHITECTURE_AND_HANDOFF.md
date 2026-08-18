@@ -57,11 +57,12 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 - `extract_all()` 递归处理 ZIP、GZ、TAR.GZ 和 TGZ；拒绝路径穿越、绝对路径、链接、特殊文件、同名/父子路径冲突，并限制总文件数与展开大小。失败的展开目录会清理。
 - `group()` 递归匹配 basename glob，按继承的远端 mtime、相对路径稳定排序。每个文件独立尝试 UTF-8、UTF-8-SIG、GB18030、Latin-1，并在 manifest 记录实际编码。
 - `source_groups()` 按 `LogSource.name` 返回独立 Group。直接下载的普通文件和该来源压缩包递归展开后的非压缩文件全部入组；压缩包容器保留审计但不作为文本解码，不再执行第二次文件名 glob。
-- `TimestampPattern` 使用 `year/month/day/hour/minute/second` 命名组；`hour` 和 `minute` 必须存在，日期与秒可缺失。
+- `TimestampPattern` 使用时间命名组；`MetadataPattern` 使用 `slot_id`/`socket_id` 命名组。元数据逐字段向后继承、跨 block 保留但在文件边界清空，并保存 parsed/inherited/unknown 来源和匹配 span。
 - `match_line()` 扫描全部原始行更新时间，匹配行继承本文件上一时间；文件之间不继承。
 - `match_line_block()` 保留 start regex 命中的起始行，并继续保留其后连续的无时间戳行；下一条可解析时间戳是硬边界，该行只有同时匹配 start 才会开启新块。起始行和续行共享起始关联时间，文件边界重置活动块与继承时间。
-- `match_block()` 排除 begin/end 行，支持文件头和 end 后的隐式块、重复 begin、连续 end 与显式块 EOF 输出；同一块统一时间。可选 `exclude_regex` 在块和时间确定后删除命中的正文行。未取得时间时输出 `[-]`；正则命中但 year/month/day 不能组成合法日历日期时保留记录位置、输出 `[?]`，并从时间窗查询中排除。
-- `finalize()` 生成 `targets/*.log`、逐行 SQLite 索引和不含密码的 `manifest.json`。只有 manifest 状态为 `ready` 的批次可查询。
+- `match_block()` 默认保留 legacy 行为；`boundary_mode="strict"` 只保留确认块：文件头首边界为 END 时保留、为 BEGIN 时丢弃，活动块内重复 BEGIN 仅更新属性，首个 END 或 EOF 正常闭合，END 后等待新 BEGIN。`consume_regex` 行先更新属性再从输出移除。
+- `finalize()` 的 SQLite 索引保存 slot/socket、字段来源和匹配 span；查询兼容缺少新列的旧批次。只有 manifest 状态为 `ready` 的批次可查询。
+- 同一 `LogGroup` 的 line、line-block、legacy/strict block matcher 共享每个文件的一份解码和 timestamp/metadata 解析缓存。manifest 同时保存索引 schema、规则 schema、规范化规则数组和稳定 SHA-256 `rules_hash`，便于比较不同采集批次。
 
 旧的 `scripts/download_and_parse_logs.py` 已删除；日志采集是 Tool workflow，不是环境启动脚本。
 
@@ -73,7 +74,8 @@ Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程�
 
 - `kind="local"` 保持原契约：接收 values 字典，在 HTTP 进程运行并返回 JSON。
 - `kind="workflow"` 接收 `RunContext`，静态发现资源声明，通过环境标签绑定后在独立子进程运行，支持启动、事件轮询、停止和统一 `ScriptResult`。
-- `renderer="log_collection"` 使用日志批次、目标列表和分页查询 API。页面支持多日志窗口、每窗独立的全文关键词 Find、`0..50` 行上下文、中心时间窗、跨午夜查询和五分钟关联高亮。Find 先对实际命中分页，再展开本页每个命中的上下文并按 target sequence 去重；命中行使用暖色，纯上下文行使用蓝色，时间窗只约束命中而不裁掉其解释上下文。
+- `renderer="log_collection"` 使用日志批次、目标列表和分块查询 API。页面以虚拟列表连续滚动，不暴露页码；支持多窗口、slot/socket、Find、上下文、时间窗和模板片段隐藏。关联由服务端跨 target 纯按 Web 指定的秒级窗口计算，slot/socket 只用于筛选。pane 可双向拉伸，Tools 左栏可折叠，日志字号持久化到浏览器本地设置。
+- 本地样本预览只接受最大 8 MiB 的上传正文，临时运行 `autoenv/log_collection_rules.py` 中与正式采集共享的规则并返回计数、示例和属性来源，不接受服务器路径且不持久化。原文/带元数据导出都从 SQLite 完整生成，Web 隐藏状态不参与导出。
 
 错误码工具尚未实现业务规则。现有 `tool-contract-preview` 只证明动态子页签和结构化输出可用。
 
