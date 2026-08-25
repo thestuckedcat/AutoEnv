@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from autoenv import LogSource, SSHDefaults, TimestampPattern
+from autoenv import LogSource, SSHDefaults
+from autoenv.log_collection_rules import (
+    apply_configured_rules,
+    metadata_patterns,
+    timestamp_pattern,
+)
 from autoenv.web_tools import register_web_tool
 
 
@@ -11,8 +16,6 @@ LOG_SOURCES = (
         glob="cpdt_*",
     ),
 )
-
-
 @register_web_tool(
     name="log-collection",
     title="日志收集与关联分析",
@@ -61,30 +64,20 @@ def collect_logs(ctx):
     # Phase 3: define the timestamp contract used by both rule types and by Web
     # time-window correlation.  Date is optional for logs that only print a
     # clock; hours/minutes/seconds are required by this concrete expression.
-    timestamp = TimestampPattern(
-        r"(?:(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+)?"
-        r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
-    )
+    timestamp = timestamp_pattern()
     # Each configured source becomes one group containing its direct plain files
     # plus all non-archive descendants produced by recursive extraction.  There
     # is no second filename glob after download, so the source table is the full
     # collection boundary.
-    groups = collection.source_groups(timestamp=timestamp)
+    groups = collection.source_groups(
+        timestamp=timestamp,
+        metadata_patterns=metadata_patterns(),
+    )
     group = groups["cpdt"]
 
     # AUTH is a line rule: emit only matching lines.  A line without its own
     # timestamp inherits the last timestamp from the same source file.
-    result = group.match_line(r"\[AUTH\]", target_file="auth.log")
-    if not result.success:
-        return result
-    # DB is a block rule: boundary markers are omitted and the enclosed payload
-    # shares the begin time.  The framework also preserves implicit/truncated
-    # blocks and records incomplete EOF blocks in SQLite.
-    result = group.match_block(
-        r"\[DB\] BEGIN\b",
-        r"\[DB\] END\b",
-        target_file="database.log",
-    )
+    result = apply_configured_rules(group)
     if not result.success:
         return result
     # Phase 4: write target .log files, the per-line SQLite index, and finally a

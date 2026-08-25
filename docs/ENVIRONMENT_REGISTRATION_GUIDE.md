@@ -1034,7 +1034,7 @@ result = host.scp_upload(downloaded, "/tmp/collect")
 日志收集 workflow 可以复用同一个 `RunContext` 和已注册 SSH Host：
 
 ```python
-from autoenv import LogSource, TimestampPattern
+from autoenv import LogSource, MetadataPattern, TimestampPattern
 
 # 路径和下载 glob 是产品规则，固化在注册脚本中并接受代码审查；
 # Web 请求只负责绑定 SSH 环境，不能临时扩大远端读取范围。
@@ -1059,7 +1059,13 @@ timestamp = TimestampPattern(
     r"(?:(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+)?"
     r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
 )
-groups = collection.source_groups(timestamp=timestamp)
+groups = collection.source_groups(
+    timestamp=timestamp,
+    metadata_patterns=(
+        MetadataPattern(r"slotid=(?P<slot_id>[^\s]+)"),
+        MetadataPattern(r"socketid=(?P<socket_id>[^\s]+)"),
+    ),
+)
 result = groups["product"].match_line(r"\[AUTH\]", "auth.log")
 if not result.success:
     return result
@@ -1073,7 +1079,8 @@ result = groups["product"].match_block(
     r"\[DB\] BEGIN\b",
     r"\[DB\] END\b",
     "database.log",
-    exclude_regex=r"^debug=",  # 可选：从已选中的 block 正文删除匹配行
+    boundary_mode="strict",
+    consume_regex=r"LOG_TYPE\[\d+\]\s+seg\[\d+\]",
 )
 if not result.success:
     return result
@@ -1082,7 +1089,7 @@ return collection.finalize()
 
 `LogSource` 把一个稳定的 group 名、一个远端目录和该目录专属的 basename glob 绑定为脚本配置。`download_sources()` 按声明顺序把每个来源隔离到 `raw/source-NNN/`，所以不同来源中的相同 basename 不会互相覆盖；任一来源零匹配或下载失败时，整个批次失败并清理已下载文件。兼容 API `download()`/`download_many()` 仍然保留。远端设备只需 BusyBox ash 及常见的 `test`、`stat`、`printf` applet，不依赖 GNU `find -printf`。日志批量下载只读取 mtime 以稳定排序，不执行逐文件 `wc` 或本地/远端大小比对；同一 SSH transport 最多打开四个独立 SCP channel 并行传输，每个文件正常返回后仍通过自己的 `.part` 原子改名，结果按原枚举排序而不是按完成先后排序。任一 worker 失败时等待活动传输关闭并清理整批文件。批量下载期间 Web 用线程安全的 `completed/total` 原地更新进度条；终端不打印文件清单，逐文件 start/complete/failed、内部枚举、编码判断和完整异常堆栈保存在本次 `run.log`。最终结果与 manifest 同时记录 matched/completed 计数，即使失败清理了本地文件也能区分“只匹配到 40 个”和“匹配 300 个但只完成 40 个”。`extract_all()` 递归支持 ZIP、GZ、TAR.GZ、TGZ，并拒绝路径穿越、链接、特殊文件、冲突及超过 10,000 文件/5 GiB 的展开。
 
-`source_groups()` 不再执行第二次文件名 glob：每个来源直接下载的普通文件，以及压缩包递归展开后的所有非压缩叶子文件，都进入以 `LogSource.name` 命名的独立 group；压缩包容器本身保留用于审计，但不会作为文本解析。group 文件按远端 mtime 和相对路径稳定排序。时间正则必须提供 `hour`、`minute` 命名组，可选 `year`、`month`、`day`、`second`。`match_line()` 的时间只在单个源文件内继承。`match_line_block(start_regex, target_file)` 相当于带续行的 line 规则：start 行本身写入 target，随后所有没有时间戳的行使用 start 的关联时间继续写入；遇到下一条带时间戳的行立即结束，若该行也匹配 start 则直接开始下一块。空行同样属于无时间戳续行；文件切换会清除活动块与继承时间。`match_block()` 排除边界行，显式块统一使用 begin 时间，隐式块使用块内首个时间或块前时间。可选 `exclude_regex` 在 block 边界和关联时间已经确定后删除匹配的正文行，因此删掉携带时间的正文也不会改变其余行的关联时间。完全没有时间时输出 `[-]`；正则已经命中、但 year/month/day 是 `0000-00-00`、2 月 30 日等非法日历日期时不再使批次失败，而是保留该记录在原文件/行顺序中的位置并输出 `[?]`。非法日期不覆盖 `match_line()` 后续无时间行继承的上一个合法时间，也不参与 Web 时间窗查询。同一目标的多条规则在 finalize 时按源文件、源行、规则声明顺序合并；目标名必须是无目录的 `.log` 文件名。
+`MetadataPattern` 仅接受 `slot_id`/`socket_id` 命名组；多个模板按声明顺序补齐字段，字段向后继承并在文件边界清空。`match_block()` 默认是原 legacy 语义；strict 模式在首个显式 BEGIN 前暂存文件头：先遇 END 就保留，先遇 BEGIN 就丢弃。活动块内重复 BEGIN 不改变边界但可以刷新属性，首个 END 或 EOF 正常闭合，END 后等待新 BEGIN。`consume_regex` 命中行先刷新 timestamp/metadata 再从 target 移除。索引保存字段来源与匹配 span，Web 可筛选属性并隐藏模板片段；完全没有时间仍显示 `[-]`，非法日期显示 `[?]`。
 
 默认编码按 UTF-8、UTF-8-SIG、GB18030、Latin-1 尝试并记录实际值。成功 `finalize()` 后批次包含人工可读的 `targets/*.log`、SQLite 逐行索引和不含连接密码的 `manifest.json`；失败或未 finalize 的批次不会进入 Web 查询列表。
 

@@ -128,7 +128,7 @@ func 返回失败结果或抛异常时会记录到 `run.log` 和 `result.json.fu
 
 SCP/SFTP 下载使用已声明的 SSH Host，可指定精确远端文件，或在一个远端目录中用正则进行唯一匹配。下载成功的 `RemoteDownloadResult` 会注册到本次 `packages/`，可直接传给 SCP、SFTP 或 FTP 上传；远端模糊匹配没有 HDFS `newest` 语义，零匹配和多匹配都会失败。完整示例见[环境注册指南](docs/ENVIRONMENT_REGISTRATION_GUIDE.md#22-scp-sftp-下载与结果复用)。
 
-日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载远端目录中的全部匹配文件；内置页面只选择 SSH 环境，远端路径和每条路径对应的下载 glob 固化在 `webPage/tools/log_collection.py` 的 `LOG_SOURCES`。每个来源隔离到 `source-NNN`，递归安全解压后直接形成独立 `LogGroup`，不再由页面提交路径或用第二个文件名 glob 重新混组。远端枚举只使用 BusyBox 可提供的 ash glob、`test`、`stat` 和 `printf`，不依赖 GNU `find -printf`，也不执行逐文件 `wc` 或下载大小比对；同一 SSH 连接最多复用四个独立 SCP channel 并行下载，单文件完成后仍将 `.part` 原子改名，最终结果继续按远端 mtime/文件名稳定排序。批量 SCP 在 Web 中显示已完成数/总数进度条；文件名、远端枚举、编码判断和异常堆栈等详细证据只写入本次 `run.log`。日志窗口的 Find 可指定上下 `0..50` 行：命中行分页后再展开上下文，命中和上下文分别着色。Group 可用 `match_line()`、`match_line_block()` 和 `match_block()` 生成 target：`match_line_block()` 保留匹配的起始行及其后连续无时间戳行，遇到下一条带时间戳的行停止；`match_block()` 还可用 `exclude_regex` 删除命中的正文行。正则命中但日历日期非法的记录保留原始顺序并显示 `[?]`，完全没有时间的记录仍显示 `[-]`。日志 Tool 只出现在 Tools 页签，不进入环境启动脚本列表。
+日志 workflow 使用 `SSHHost.scp_download_many()` 按 glob 下载并保持来源隔离、安全解压与 BusyBox/四路 SCP 约束。`MetadataPattern` 通过 `slot_id`/`socket_id` 命名组提取并逐字段继承属性；`match_block(boundary_mode="strict")` 支持文件头截断块、忽略重复 BEGIN 的边界作用、EOF 正常闭合和 `consume_regex` 属性载体行，旧调用仍保留 legacy 语义。Web 使用后台分块和前端虚拟连续滚动，不显示页码；支持 slot/socket/Find/时间筛选、模板片段隐藏、字号、可拉伸 pane 和可折叠 Tools 左栏。source 文件/行号留在悬停详情和 SQLite，不占普通日志行。
 
 新增 local Web Tool 时，复制 [`webPage/tools/_template.py`](webPage/tools/_template.py) 为非下划线 `.py` 文件并替换全部占位符；workflow Tool 使用 `.agents/skills/autoenv-web-tool/scripts/scaffold_tool.py --kind workflow` 生成。下划线模板不会被自动发现，正式文件则会自动注册到 Tools 页，无需修改 Web 核心页面。完整流程见 [Web 快速入门](webPage/QUICK_START.md#添加-tool)。
 

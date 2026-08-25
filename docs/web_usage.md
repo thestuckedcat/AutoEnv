@@ -503,10 +503,22 @@ python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py `
 ```text
 GET /api/log-batches
 GET /api/log-batches/targets?batch=<run_id>
-GET /api/log-batches/query?batch=<run_id>&target=auth.log&page=1&limit=200&time=08:21:00&window=60&keyword=login
+GET /api/log-batches/query?batch=<run_id>&target=auth.log&offset=0&limit=240&time=08:21:00&window=60&keyword=login&slot_id=3&socket_id=1
+GET /api/log-batches/correlate?batch=<run_id>&target=auth.log&sequence=42&window_seconds=300
+GET /api/log-batches/export?batch=<run_id>&target=auth.log&mode=raw&slot_id=3&socket_id=1
+GET /api/log-batches/export?batch=<run_id>&target=auth.log&mode=metadata
+POST /api/log-rules/preview
 ```
 
-`window=60` 表示中心前后各 30 分钟；省略日期时按一天内时钟距离跨所有日期匹配，指定日期时完整时间支持跨午夜，缺日期的记录仍按时钟距离匹配。`keyword` 是最长 200 字符、不区分大小写的正文包含筛选，并与时间条件取交集；`context=0..50` 指定 Find 命中的前后行数。服务端先分页命中，再展开上下文、去重并恢复 target sequence，因此响应的 `total`/`has_more` 描述命中数，`returned_count` 描述本页实际返回行数；每行 `find_role` 为 `match` 或 `context`。上下文不受时间窗二次过滤。完全没有时间的 `[-]` 与日期正则命中但日历值非法的 `[?]` 记录只在普通分页、仅关键词筛选或命中上下文中按原始顺序显示。
+`offset/limit` 是虚拟连续滚动的内部窗口，页面不显示页码。`slot_id/socket_id` 为精确筛选；`window=60` 表示中心前后各 30 分钟，`keyword` 与时间/属性条件取交集，`context=0..50` 展开 Find 上下文。新批次每行还返回属性来源和 `matched_spans`；旧批次缺少这些列时按 unknown 读取。
+
+`correlate` 接收目标行的 `target/sequence` 和 `window_seconds=1..86400`，跨当前批次全部 target 返回时间距离不超过窗口的 `target/sequence/timestamp/distance_seconds`。关联只按时间计算，不携带 slot/socket；两个属性始终只是窗格查询与导出的精确筛选。两行都有日期时使用绝对日期时间距离，否则按 24 小时时钟循环距离计算；目标行没有有效时间时返回空匹配。
+
+`export` 从 SQLite 按 target 完整 sequence 导出，`mode=raw` 只输出未做 Web 隐藏处理的原始正文，`mode=metadata` 输出 `[timestamp] [slot_id=x socket_id=y] 原始正文`；可选 slot/socket 参数与查询相同。旧索引没有属性列时元数据使用 `?`，带属性筛选则返回空文件。
+
+规则预览只接受 JSON `{"name":"sample.log","data":"data:text/plain;base64,..."}`，解码后最大 8 MiB。样本写入临时目录并使用 `autoenv/log_collection_rules.py` 中与正式采集相同的规则；返回 `input_lines`、`retained_lines`、每个 target 的 `count/examples` 和 `rules_hash`，请求结束后不保留样本。每个示例包含正文、源行号以及 timestamp/slot/socket 的值和 parsed/inherited/unknown 来源。
+
+新批次 manifest 记录 `index_schema_version`、`rule_schema_version`、规范化规则数组和稳定的 `rules_hash`。相同规则可据 hash 比较批次；旧 manifest 缺少字段时列表仍可读取并显示 unknown。所有 matcher 共享每个文件的一次解码、timestamp 和 metadata 解析缓存。
 
 workflow 请求示例见 `docs/examples/tool-request.json`。该示例会尝试真实 SCP，未得到目标实验环境授权时只检查发现、绑定和离线测试，不实际运行。
 
