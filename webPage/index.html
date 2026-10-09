@@ -2,56 +2,56 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>AutoEnv Developer Deck</title>
-  <link rel="stylesheet" href="./styles.css">
-  <link rel="stylesheet" href="./overrides.css">
-  <link rel="stylesheet" href="./logs.css?v=20260818-log-usability">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AutoEnv · 脚本工作台</title>
+  <link rel="stylesheet" href="./styles.css?v=20261010">
 </head>
 <body>
-  <div class="glow glow-a"></div><div class="glow glow-b"></div>
   <header class="topbar">
-    <div class="brand"><span class="brand-mark">A</span><div><strong>AutoEnv</strong><small>DEVELOPER VALIDATION DECK</small></div></div>
-    <nav id="tabs" aria-label="主导航">
-      <button class="active" data-page="environments">环境库</button>
-      <button data-page="launch">环境启动</button>
-      <button data-page="tools">Tools</button>
-      <button data-page="agent">Agent CLI</button>
-    </nav>
-    <span class="status"><i></i><span id="health">CONNECTING</span></span>
+    <a class="brand" href="#"><span class="brand-mark">A</span><strong>AutoEnv</strong><small>脚本工作台</small></a>
+    <nav aria-label="主导航"><button class="active" data-page="run">运行脚本</button><button data-page="environments">环境注册</button></nav>
+    <span id="health" class="muted">正在连接…</span>
   </header>
   <main>
-    <section class="page active" id="page-environments">
-      <div class="page-head"><div><span class="kicker">01 / TARGET INVENTORY</span><h1>把实验环境变成可复用的档案</h1><p>网口对应 SSH 主机，串口沿用现有 Telnet 实现。信息保存在本机 JSON，可直接传给启动任务。</p></div><button class="primary" id="newEnvironment">＋ 新建环境</button></div>
-      <div class="split"><div class="card-list" id="environmentList"></div><form class="panel form-panel" id="environmentForm">
-        <div class="panel-title"><div><span class="kicker">ENVIRONMENT PROFILE</span><h2>环境配置</h2></div><span class="tag">LOCAL JSON</span></div>
-        <div class="grid two"><label>环境标识<input name="name" required placeholder="lab-a"></label><label>显示名称<input name="title" placeholder="Torino 验证环境"></label></div>
-        <div class="section-title"><span>网口 / SSH</span><button type="button" class="ghost small" id="addSsh">＋ 添加</button></div><div id="sshRows" class="repeat"></div>
-        <div class="section-title"><span>串口 / Telnet</span><button type="button" class="ghost small" id="addTelnet">＋ 添加</button></div><div id="telnetRows" class="repeat"></div>
-        <div class="section-title"><span>FTP（独立协议，可选）</span><button type="button" class="ghost small" id="addFtp">＋ 添加</button></div><div id="ftpRows" class="repeat"></div>
-        <div class="actions"><span id="envSaveState" class="muted">密码将按你的确认明文保存</span><button class="primary" type="submit">保存环境</button></div>
-      </form></div>
+    <section class="page active" id="page-run">
+      <div class="page-head"><div><h1>选择脚本，绑定目标，开始运行</h1><p>每次选择一个组网。连接候选由脚本中的类型与白名单决定。</p></div><button class="secondary" id="refreshScripts">刷新脚本</button></div>
+      <div class="run-grid">
+        <form class="panel" id="runForm">
+          <h2>本次运行</h2>
+          <label>Python 脚本<select id="script" required></select></label>
+          <p id="scriptDescription" class="hint"></p>
+          <p id="formError" class="error" role="alert"></p>
+          <label id="topologyField">一级组网<select id="topology" required></select></label>
+          <div id="bindingFields"></div><div id="packageFields"></div><div id="argumentFields"></div>
+          <div class="actions"><button class="danger" id="stopRun" type="button">停止</button><button class="primary" id="startRun" type="submit">运行脚本</button></div>
+        </form>
+        <div class="run-results">
+          <div class="panel command-panel"><div class="section-head"><h2>实际 CLI 命令</h2><button class="secondary small" id="copyCommand">复制</button></div><pre id="command">填写参数后显示命令</pre></div>
+          <div class="panel output-panel"><div class="section-head"><h2>操作结果</h2><span id="runStatus" class="badge">等待运行</span></div><pre id="output" aria-live="polite">每条操作的来源、目标和结果会在这里同步显示。</pre></div>
+          <div class="panel log-panel"><div><strong>完整日志</strong><p class="hint">记录脚本步骤、执行结果与远端原始输出。</p><code id="logPath">运行后显示 run.log 路径</code></div><div class="actions"><button class="secondary" id="openLog" disabled>打开日志</button><button class="secondary" id="openRun" disabled>打开运行目录</button></div></div>
+        </div>
+      </div>
     </section>
-
-    <section class="page" id="page-launch">
-      <div class="page-head"><div><span class="kicker">02 / ORCHESTRATE</span><h1>由脚本声明启动所需资源</h1><p>选择脚本后，按资源别名和说明绑定已注册环境中的网口/串口，并填写脚本需要的 HDFS 包链接。</p></div><div class="actions"><button class="ghost" id="openLog">打开 run.log</button><button class="ghost" id="openRun">打开 runtime</button></div></div>
-      <div class="launch-grid"><form class="panel launch-form" id="launchForm"><label>脚本<select id="launchScript" required></select></label><label>模式<select id="launchMode"><option value="run">RUN</option><option value="rerun">RERUN</option></select></label><div id="resourceFields"></div><div id="packageFields"></div><div id="argumentFields"></div><div class="actions"><button type="button" class="danger" id="stopRun">终止</button><button class="primary" type="submit">▶ 拉起环境</button></div></form>
-      <div class="panel console-panel"><div class="console-head"><span><i></i> LIVE TASK OUTPUT</span><input id="consoleFilter" placeholder="筛选输出"><button class="ghost small" id="clearConsole">清空</button></div><div class="console" id="console"></div></div></div>
-    </section>
-
-    <section class="page" id="page-tools">
-      <div class="page-head"><div><span class="kicker">03 / EXTENSIBLE UTILITIES</span><h1>Tools 工作台</h1><p>每个子页签来自一个独立 Python 工具；字段、排版和结果都通过注册契约生成。</p></div></div>
-      <div class="tools-layout"><aside class="tool-nav" id="toolNav"></aside><div class="panel tool-stage" id="toolStage"><div class="empty">正在发现工具…</div></div></div>
-    </section>
-
-    <section class="page" id="page-agent">
-      <div class="page-head"><div><span class="kicker">04 / AGENT TERMINAL</span><h1>网页里的本地 Agent 终端</h1><p>点击终端后直接键入命令；粘贴或拖入图片、Python 脚本和 ZIP 时，文件会保存到本机并在当前光标处插入绝对路径。</p></div><button class="ghost" id="agentSettings">设置</button></div>
-      <div class="agent-grid"><div class="panel agent-side"><label>启动后自动输入的命令<input id="agentCommand" placeholder="例如 codeagent；留空只打开 cmd"></label><div class="actions"><button class="danger" id="agentStop">停止</button><button class="primary" id="agentStart">启动终端</button></div><button class="ghost file-picker-button" id="chooseAgentFiles" type="button">选择文件并插入路径</button><input class="file-picker" type="file" id="agentFiles" multiple accept="image/*,.py,.zip"><p class="terminal-help">终端会先启动本地 cmd，再自动键入上面的命令。也可将文件直接拖到右侧终端，或先复制图片再在终端内粘贴。单文件不超过 48 MiB。</p><div class="settings" id="settingsPanel"><label>启动目录<input id="agentCwd" placeholder="例如 F:\\workspace\\project"></label><label>文件保存目录<input id="uploadDir"></label><button class="ghost" id="saveSettings">保存设置</button></div></div>
-      <div class="panel console-panel agent-console"><div class="console-head"><span><i></i> AGENT CLI · CONPTY</span><small>CLICK TO TYPE · PASTE / DROP FILE</small></div><pre class="console terminal-screen" id="agentConsole" tabindex="0" role="textbox" aria-multiline="true" aria-label="Agent 本地终端，点击后直接输入" data-empty="点击这里，然后直接输入命令"></pre></div></div>
+    <section class="page" id="page-environments">
+      <div class="page-head"><div><h1>以组网管理连接</h1><p>一个连接名称代表一个 SSH、Telnet 或 FTP 对象。配置只保存在本机。</p></div><button class="secondary" id="newConnection">新增连接</button></div>
+      <div class="environment-grid"><aside class="panel" id="environmentList"></aside>
+        <form class="panel" id="environmentForm">
+          <h2>连接配置</h2>
+          <div class="fields two"><label>一级组网<input name="topology" required placeholder="单机验证"></label><label>二级连接名称<input name="name" required placeholder="主机-ssh"></label></div>
+          <div class="fields two"><label>连接类型<select name="type"><option value="ssh">SSH / 网口</option><option value="telnet">Telnet / 串口网关</option><option value="ftp">FTP</option></select></label><label>启用<span class="check-field"><input name="enabled" type="checkbox" checked>允许脚本选择</span></label></div>
+          <div class="fields two"><label>地址<input name="host" required placeholder="127.0.0.1"></label><label>端口<input name="port" type="number" min="1" max="65535" required value="22"></label></div>
+          <div class="fields two"><label>账号<input name="username" value="root" autocomplete="off"></label><label>密码<input name="password" type="password" autocomplete="new-password"></label></div>
+          <div id="sshOptions" class="fields two"><label>文件传输方式<select name="upload_type"><option value="scp">SCP</option><option value="sftp">SFTP</option></select></label><label>连接超时（秒）<input name="connect_timeout" type="number" min="0.1" step="0.1" value="10"></label></div>
+          <div id="telnetOptions" hidden><div class="fields two"><label>Shell 类型<select name="shell_mode"><option value="posix">POSIX shell（可读退出码）</option><option value="prompt_only">设备控制台（关键词判断）</option><option value="auto">自动探测 POSIX shell</option></select></label><label>超时（秒）<input name="telnet_timeout" type="number" min="0.1" step="0.1" value="10"></label></div><div class="fields two"><label>自检命令<input name="probe_command" placeholder="设备支持的安全查询命令"></label><label>自检响应关键词<input name="probe_keyword" placeholder="设备返回的已知关键词"></label></div><details><summary>Telnet 登录提示符</summary><div class="fields two"><label>账号提示符<input name="login_prompt" value="login:"></label><label>密码提示符<input name="password_prompt" value="Password:"></label></div></details><p class="hint">填写账号密码时先等待登录提示符再认证；无认证的串口网关可留空。Telnet 不支持文件传输。这里的串口连接为 TCP 串口网关；设备控制台的自检命令需要明确配置。</p></div>
+          <div id="ftpOptions" class="fields two" hidden><label>数据连接模式<select name="passive"><option value="true">被动模式</option><option value="false">主动模式</option></select></label><label>超时（秒）<input name="ftp_timeout" type="number" min="0.1" step="0.1" value="10"></label></div>
+          <p id="saveState" class="hint" role="status">保存后，脚本创建对象时才会连接并自检。</p>
+          <div class="actions"><button class="primary" type="submit">保存连接</button></div>
+        </form>
+      </div>
     </section>
   </main>
-  <div class="toast" id="toast"></div>
-  <script src="./app.js?v=20260818-log-usability"></script>
+  <div id="toast" role="status"></div>
+  <script src="./app.js?v=20261010"></script>
 </body>
 </html>

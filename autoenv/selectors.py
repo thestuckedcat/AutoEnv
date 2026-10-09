@@ -7,6 +7,7 @@ from pathlib import Path, PurePath
 from typing import Callable, TypeAlias
 
 from .results import RemoteDownloadResult
+from .file_handles import FileHandle
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class MatchSelector:
 
 
 LocalFileSelector: TypeAlias = (
-    PackageSelector | ExtraFileSelector | MatchSelector | RemoteDownloadResult
+    PackageSelector | ExtraFileSelector | MatchSelector | RemoteDownloadResult | FileHandle
 )
 
 
@@ -79,6 +80,8 @@ def match(pattern: str) -> MatchSelector:
 
 
 def describe_selector(selector: LocalFileSelector) -> tuple[str, str]:
+    if isinstance(selector, FileHandle):
+        return "file", str(selector.path)
     if isinstance(selector, PackageSelector):
         return "package", selector.config_name
     if isinstance(selector, ExtraFileSelector):
@@ -96,6 +99,9 @@ def resolve_local_file(
     package_dir: Path,
     image_pattern_for: Callable[[str], str],
 ) -> ResolvedLocalFile:
+    if isinstance(selector, FileHandle):
+        selector.verify()
+        return ResolvedLocalFile(selector.path, "file", str(selector.path))
     package_root = package_dir.resolve()
     if not package_root.is_dir():
         raise SelectorResolutionError(

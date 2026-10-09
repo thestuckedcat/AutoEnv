@@ -233,6 +233,14 @@ class TelnetClient:
         self._telnet_filter = _TelnetByteFilter()
         self._lock = RLock()
         self._closed = False
+        # Passive serial-gateway operations share the command lock and socket.
+        # Their decoder survives individual reads, including a split UTF-8 codepoint.
+        self._passive_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._passive_buffer = ""
+        self._passive_cursor = 0
+        self._passive_limit = 1024 * 1024
+        self._passive_prompt_floor = 0
+        self._last_passive_raw = ""
 
     @property
     def connected(self) -> bool:
@@ -257,6 +265,212 @@ class TelnetClient:
         with self._lock:
             self._closed = True
             self._drop_connection()
+
+    def connect_passive(self) -> None:
+        """Open TCP without sending CRLF, a shell probe or a business command."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError(f"Telnet client {self.name!r} is closed")
+            if self._sock is not None:
+                return
+            self._sock = self._socket_factory((self.info.host, self.info.port), timeout=self.info.timeout)
+            self._telnet_filter = _TelnetByteFilter()
+            self._prompt = None
+            self._active_shell_mode = None
+            self._passive_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            self._passive_buffer = ""
+            self._passive_cursor = 0
+            self._passive_prompt_floor = 0
+            self._last_passive_raw = ""
+
+    def _passive_receive(self, timeout: float) -> bool:
+        assert self._sock is not None
+        self._set_socket_timeout(max(timeout, 0.0001))
+        try:
+            packet = self._sock.recv(4096)
+        except socket.timeout:
+            return False
+        except (OSError, EOFError) as exc:
+            raise _ConnectionClosed(self._passive_buffer[self._passive_cursor:], exc) from exc
+        if not packet:
+            raise _ConnectionClosed(self._passive_buffer[self._passive_cursor:])
+        self.recorder.log(f"TELNET[{self.name}] RAW RECEIVE hex={packet.hex()}", console=False)
+        application, replies = self._telnet_filter.feed(packet)
+        if replies:
+            self._sock.sendall(replies)
+        text = self._passive_decoder.decode(application, final=False)
+        if text:
+            self._passive_buffer += text
+            self.recorder.stream(f"TELNET[{self.name}]", self._clean_terminal_text(text))
+            overflow = len(self._passive_buffer) - self._passive_limit
+            if overflow > 0:
+                raise BufferError("unconsumed Telnet output exceeded the 1 MiB buffer")
+            candidate = self._find_prompt(self._passive_buffer[self._passive_prompt_floor:])
+            if candidate is not None:
+                self._prompt = candidate
+                if self.info.shell_mode != "auto":
+                    self._active_shell_mode = self.info.shell_mode
+        return True
+
+    def _compact_passive(self) -> None:
+        if self._passive_cursor:
+            self._passive_prompt_floor = max(0, self._passive_prompt_floor - self._passive_cursor)
+            self._passive_buffer = self._passive_buffer[self._passive_cursor:]
+            self._passive_cursor = 0
+
+    @staticmethod
+    def _clean_terminal_indexed(text: str) -> tuple[str, list[int]]:
+        """Return cleaned text with each character's consumed raw-text offset."""
+        ignored = set()
+        for match in _ANSI_RE.finditer(text):
+            ignored.update(range(match.start(), match.end()))
+        characters: list[tuple[str, int]] = []
+        for index, char in enumerate(text):
+            if index in ignored or char == "\x00":
+                continue
+            if char == "\b":
+                if characters and characters[-1][0] not in "\r\n":
+                    characters.pop()
+                continue
+            characters.append((char, index + 1))
+        return "".join(char for char, _ in characters), [offset for _, offset in characters]
+
+    def invalidate_passive_prompt(self) -> None:
+        with self._lock:
+            self._prompt = None
+            self._active_shell_mode = None
+            self._passive_prompt_floor = self._passive_cursor
+
+    def login_passive(
+        self, username: str, password: str, *, login_prompt: str = "login:",
+        password_prompt: str = "Password:",
+    ) -> None:
+        """Optional login adapter on the existing gateway TCP/IAC stream."""
+        for label, value in (("username", username), ("password", password), ("login_prompt", login_prompt), ("password_prompt", password_prompt)):
+            if not isinstance(value, str) or (label != "password" and not value):
+                raise ValueError(f"Telnet {label} must be a {'nonempty ' if label != 'password' else ''}string")
+            if "\r" in value or "\n" in value:
+                raise ValueError(f"Telnet {label} must not contain line breaks")
+        with self._lock:
+            self.connect_passive()
+            self.wait_passive(login_prompt, send_data=(username + "\r\n").encode("utf-8"))
+            self.wait_passive(password_prompt, send_data=(password + "\r\n").encode("utf-8"))
+            deadline = self._clock() + self.info.timeout
+            while self._prompt is None:
+                text = self._passive_buffer[self._passive_cursor:]
+                if "login incorrect" in text.lower() or "authentication failed" in text.lower():
+                    raise PermissionError("Telnet authentication failed")
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise PermissionError("Telnet login did not return an authenticated prompt")
+                self._passive_receive(min(remaining, 0.2))
+            if self.info.shell_mode == "auto":
+                # The following explicit execution may run the same POSIX probe
+                # as the pre-existing command session, after authentication.
+                self.prepare_passive_command()
+
+    def read_passive(self, timeout: float = 0.05) -> str:
+        """Return available unread console text; absence of bytes is not failure."""
+        with self._lock:
+            self.connect_passive()
+            self._compact_passive()
+            deadline = self._clock() + _validated_timeout(timeout)
+            while self._clock() < deadline:
+                if not self._passive_receive(min(0.01, max(deadline - self._clock(), 0.0001))):
+                    break
+            text = self._passive_buffer[self._passive_cursor:]
+            self._last_passive_raw = text
+            self._passive_cursor = len(self._passive_buffer)
+            return self._clean_terminal_text(text)
+
+    def mark_passive_output(self) -> None:
+        """Discard already queued text from the next wait's matching baseline."""
+        with self._lock:
+            self.connect_passive()
+            self._compact_passive()
+            while self._passive_receive(0.0001):
+                pass
+            self._passive_cursor = len(self._passive_buffer)
+            self._last_passive_raw = ""
+
+    def wait_passive(
+        self, keyword: str, *, timeout: float | None = None,
+        send_data: bytes | None = None, probe_data: bytes | None = None,
+    ) -> str:
+        """Wait on console bytes, optionally send one response, keep TCP open.
+
+        A configured self-check probe gets its own observation baseline and does
+        not consume the user's read cursor. No receive thread competes with execute.
+        """
+        if not isinstance(keyword, str) or not keyword:
+            raise ValueError("keyword must be a nonempty string")
+        for value in (send_data, probe_data):
+            if value is not None and (not isinstance(value, bytes) or not value):
+                raise ValueError("Telnet send data must be nonempty bytes")
+        wait_timeout = self.info.timeout if timeout is None else _validated_timeout(timeout)
+        with self._lock:
+            self.connect_passive()
+            self._compact_passive()
+            self._last_passive_raw = ""
+            baseline = self._passive_cursor
+            if probe_data is not None:
+                while self._passive_receive(0.0001):
+                    pass
+                baseline = len(self._passive_buffer)
+                assert self._sock is not None
+                self._sock.sendall(probe_data)
+            deadline = self._clock() + wait_timeout
+            while True:
+                text = self._passive_buffer[baseline:]
+                self._last_passive_raw = text
+                clean, positions = self._clean_terminal_indexed(text)
+                if probe_data is not None:
+                    clean = self._clean_command_output(clean, probe_data.decode("utf-8").rstrip("\r\n"), "")
+                # A command probe on a framed appliance must consume its final
+                # prompt too; otherwise the next execute could read that stale
+                # prompt and finish before its own response arrives.
+                probe_complete = probe_data is None or self._prompt is None or self._prompt_at_end(text) is not None
+                if keyword in clean and probe_complete:
+                    if send_data is not None:
+                        assert self._sock is not None
+                        self._sock.sendall(send_data)
+                        # A control response can enter another shell; do not retain
+                        # the old prompt or manufacture a shell exit status.
+                        self._prompt = None
+                        self._active_shell_mode = None
+                        self._passive_prompt_floor = len(self._passive_buffer)
+                    if probe_data is None:
+                        end = clean.index(keyword) + len(keyword)
+                        self._passive_cursor = baseline + positions[end - 1]
+                        self._last_passive_raw = text[:positions[end - 1]]
+                        return clean[:end]
+                    return clean
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise _ReadTimedOut(clean)
+                self._passive_receive(min(remaining, 0.2))
+
+    def prepare_passive_command(self) -> None:
+        """Establish framing on an existing passive socket before explicit execute."""
+        with self._lock:
+            if self._sock is None:
+                return
+            if self._prompt is not None and self._active_shell_mode is not None:
+                return
+            if self._prompt is None:
+                self._prompt = self._find_prompt(self._passive_buffer[self._passive_prompt_floor:])
+            deadline = self._clock() + self.info.timeout
+            while self._prompt is None:
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise _PromptNotFound(self._passive_buffer[self._passive_cursor:])
+                self._passive_receive(min(remaining, 0.2))
+            self._active_shell_mode = self.info.shell_mode
+            if self.info.shell_mode == "auto":
+                marker = f"__AUTOENV_PROBE_{uuid.uuid4().hex}__"
+                self._send_text(f"printf '\\n{marker}:%d\\n' $?\r\n")
+                output = self._read_to_prompt(self.info.timeout, marker=None, stream=False)
+                self._active_shell_mode = "posix" if self._extract_exit_code(output, marker) is not None else "prompt_only"
 
     def execute(
         self,
@@ -737,6 +951,7 @@ class TelnetClient:
                 partial = "".join(chunks) + decoder.decode(b"", final=True)
                 raise _ConnectionClosed(partial)
 
+            self.recorder.log(f"TELNET[{self.name}] RAW RECEIVE hex={packet.hex()}", console=False)
             application_data, replies = self._telnet_filter.feed(packet)
             if replies:
                 try:
@@ -770,6 +985,11 @@ class TelnetClient:
         self._prompt = None
         self._active_shell_mode = None
         self._telnet_filter = _TelnetByteFilter()
+        self._passive_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._passive_buffer = ""
+        self._passive_cursor = 0
+        self._passive_prompt_floor = 0
+        self._last_passive_raw = ""
         if sock is not None:
             try:
                 sock.close()
@@ -780,7 +1000,7 @@ class TelnetClient:
     def _clean_terminal_text(cls, text: str) -> str:
         cleaned = _ANSI_RE.sub("", text).replace("\x00", "")
         while "\b" in cleaned:
-            cleaned = re.sub(r"[^\r\n]\b", "", cleaned)
+            cleaned = re.sub(r"[^\r\n]\x08", "", cleaned)
             cleaned = cleaned.replace("\b", "")
         return cleaned
 

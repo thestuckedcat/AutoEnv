@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from local_remote.webhdfs import LocalWebHDFS
 from autoenv.extractor import Extractor
 from autoenv.package_manager import HDFSFileEntry, PackageManager
 from autoenv.selectors import ExtraFileSelector, MatchSelector, PackageSelector
@@ -27,35 +28,6 @@ class FakeRecorder:
 
     def record_result(self, operation: str, result: object) -> None:
         self.records.append((operation, result))
-
-
-class FakeHDFS:
-    def __init__(
-        self,
-        directories: dict[str, object] | None = None,
-        downloads: dict[str, object] | None = None,
-    ) -> None:
-        self.directories = directories or {}
-        self.downloads = downloads or {}
-        self.list_calls: list[str] = []
-        self.download_calls: list[tuple[str, str]] = []
-
-    def list_directory(self, path: str) -> list[object]:
-        self.list_calls.append(path)
-        value = self.directories[path]
-        if isinstance(value, BaseException):
-            raise value
-        return list(value)  # type: ignore[arg-type]
-
-    def download_file(self, remote_path: str, local_path: str) -> None:
-        self.download_calls.append((remote_path, local_path))
-        value = self.downloads[remote_path]
-        if isinstance(value, BaseException):
-            raise value
-        if callable(value):
-            value(remote_path, local_path)
-            return
-        Path(local_path).write_bytes(value)  # type: ignore[arg-type]
 
 
 NOW = datetime(2025, 1, 1, 12, 0, 0)
@@ -96,7 +68,7 @@ def config_entry(**overrides: object) -> dict[str, object]:
 
 def make_manager(
     tmp_path: Path,
-    hdfs: FakeHDFS,
+    hdfs: LocalWebHDFS,
     entries: object | None = None,
 ) -> tuple[PackageManager, FakeRecorder, Path]:
     recorder = FakeRecorder()
@@ -106,7 +78,7 @@ def make_manager(
         package_dir,
         "run-1",
         recorder,  # type: ignore[arg-type]
-        hdfs,
+        hdfs.client,
     )
     return manager, recorder, package_dir
 
@@ -242,10 +214,11 @@ def test_config_validation_errors(
 
 
 def test_empty_config_paths_are_allowed_when_download_uses_manual_override(
+    webhdfs_factory,
     tmp_path: Path,
 ) -> None:
     payload = b"manual"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         directories={"/manual": [entry("sdk-1.tgz", size=len(payload))]},
         downloads={"/manual/sdk-1.tgz": payload},
     )
@@ -274,9 +247,9 @@ def test_malformed_json_config_is_reported(tmp_path: Path) -> None:
         PackageManager(path, tmp_path / "packages", "run", FakeRecorder())  # type: ignore[arg-type]
 
 
-def test_link_resolution_override_and_latest_matching_file(tmp_path: Path) -> None:
+def test_link_resolution_override_and_latest_matching_file(webhdfs_factory, tmp_path: Path) -> None:
     payload = b"newest"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {
             "/override": [
                 entry("sdk-old.tgz", size=3, age_minutes=1),
@@ -302,14 +275,15 @@ def test_link_resolution_override_and_latest_matching_file(tmp_path: Path) -> No
     assert result.md5_changed is True
     assert (package_dir / "sdk-new.tgz").read_bytes() == payload
     assert hdfs.list_calls == ["/override"]
-    assert hdfs.download_calls[0][1].endswith("sdk-new.tgz.part")
+    assert hdfs.open_calls == ["/override/sdk-new.tgz"]
+    assert hdfs.transfers == [("/override/sdk-new.tgz", len(payload))]
     assert not (package_dir / "sdk-new.tgz.part").exists()
     assert_recorded(recorder, "DOWNLOAD", result)
 
 
-def test_direct_link_is_used_without_override(tmp_path: Path) -> None:
+def test_direct_link_is_used_without_override(webhdfs_factory, tmp_path: Path) -> None:
     payload = b"direct"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {"/releases/direct": [entry("sdk-1.tgz", size=len(payload))]},
         {"/releases/direct/sdk-1.tgz": payload},
     )
@@ -320,10 +294,11 @@ def test_direct_link_is_used_without_override(tmp_path: Path) -> None:
 
 
 def test_base_link_uses_latest_child_and_tries_newest_candidates_in_order(
+    webhdfs_factory,
     tmp_path: Path,
 ) -> None:
     payload = b"candidate"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {
             "/base": [
                 entry("build-old", directory=True, age_minutes=1),
@@ -363,9 +338,9 @@ def test_base_link_uses_latest_child_and_tries_newest_candidates_in_order(
     ]
 
 
-def test_base_link_skips_a_newest_candidate_that_disappears(tmp_path: Path) -> None:
+def test_base_link_skips_a_newest_candidate_that_disappears(webhdfs_factory, tmp_path: Path) -> None:
     payload = b"survivor"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         directories={
             "/base": [entry("build", directory=True, age_minutes=2)],
             "/base/build": [
@@ -418,6 +393,7 @@ def test_base_link_skips_a_newest_candidate_that_disappears(tmp_path: Path) -> N
     ],
 )
 def test_remote_lookup_failure_statuses(
+    webhdfs_factory,
     tmp_path: Path,
     directories: dict[str, object],
     expected_status: str,
@@ -427,7 +403,7 @@ def test_remote_lookup_failure_statuses(
         spec = config_entry(link="/missing", base_link="")
     else:
         spec = config_entry(link="", base_link="/base")
-    manager, recorder, _ = make_manager(tmp_path, FakeHDFS(directories), [spec])
+    manager, recorder, _ = make_manager(tmp_path, webhdfs_factory(directories), [spec])
 
     result = manager.download(PackageSelector("sdk"))
 
@@ -437,10 +413,10 @@ def test_remote_lookup_failure_statuses(
     assert_recorded(recorder, "DOWNLOAD", result)
 
 
-def test_generic_listing_error_is_connection_failed(tmp_path: Path) -> None:
+def test_generic_listing_error_is_connection_failed(webhdfs_factory, tmp_path: Path) -> None:
     manager, _, _ = make_manager(
         tmp_path,
-        FakeHDFS({"/releases/direct": OSError("offline")}),
+        webhdfs_factory({"/releases/direct": OSError("offline")}),
     )
     result = manager.download(PackageSelector("sdk"))
     assert (result.success, result.status, result.error_type) == (
@@ -458,10 +434,11 @@ def test_generic_listing_error_is_connection_failed(tmp_path: Path) -> None:
     ],
 )
 def test_download_failure_status_and_part_cleanup(
+    webhdfs_factory,
     tmp_path: Path, failure: Exception, status: str
 ) -> None:
     remote = "/releases/direct/sdk-1.tgz"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {"/releases/direct": [entry("sdk-1.tgz", size=4)]},
         {remote: failure},
     )
@@ -480,9 +457,9 @@ def test_download_failure_status_and_part_cleanup(
     assert_recorded(recorder, "DOWNLOAD", result)
 
 
-def test_size_failure_keeps_existing_file_and_removes_part(tmp_path: Path) -> None:
+def test_size_failure_keeps_existing_file_and_removes_part(webhdfs_factory, tmp_path: Path) -> None:
     remote = "/releases/direct/sdk-1.tgz"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {"/releases/direct": [entry("sdk-1.tgz", size=100)]},
         {remote: b"short"},
     )
@@ -506,10 +483,11 @@ def test_size_failure_keeps_existing_file_and_removes_part(tmp_path: Path) -> No
     [(b"old", b"new", True), (b"same", b"same", False)],
 )
 def test_successful_download_reports_md5_and_atomically_overwrites(
+    webhdfs_factory,
     tmp_path: Path, before: bytes, after: bytes, changed: bool
 ) -> None:
     remote = "/releases/direct/sdk-1.tgz"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {"/releases/direct": [entry("sdk-1.tgz", size=len(after))]},
         {remote: after},
     )
@@ -529,10 +507,11 @@ def test_successful_download_reports_md5_and_atomically_overwrites(
 
 
 def test_replace_failure_preserves_existing_file(
+    webhdfs_factory,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     remote = "/releases/direct/sdk-1.tgz"
-    hdfs = FakeHDFS(
+    hdfs = webhdfs_factory(
         {"/releases/direct": [entry("sdk-1.tgz", size=3)]},
         {remote: b"new"},
     )
@@ -553,19 +532,19 @@ def test_replace_failure_preserves_existing_file(
     assert not final.with_name(final.name + ".part").exists()
 
 
-def test_invalid_remote_filename_is_rejected_before_download(tmp_path: Path) -> None:
-    hdfs = FakeHDFS(
+def test_invalid_remote_filename_is_rejected_before_download(webhdfs_factory, tmp_path: Path) -> None:
+    hdfs = webhdfs_factory(
         {"/releases/direct": [entry("sdk-/evil.tgz", size=1)]},
     )
     manager, _, _ = make_manager(tmp_path, hdfs)
     result = manager.download(PackageSelector("sdk"))
     assert result.status == "download_failed"
     assert result.error_type == "INVALID_REMOTE_FILENAME"
-    assert hdfs.download_calls == []
+    assert hdfs.open_calls == []
 
 
-def test_download_call_shape_validation(tmp_path: Path) -> None:
-    manager, recorder, _ = make_manager(tmp_path, FakeHDFS())
+def test_download_call_shape_validation(webhdfs_factory, tmp_path: Path) -> None:
+    manager, recorder, _ = make_manager(tmp_path, webhdfs_factory())
     with pytest.raises(TypeError, match="PackageSelector only"):
         manager.download(MatchSelector("sdk"))  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="path_override"):

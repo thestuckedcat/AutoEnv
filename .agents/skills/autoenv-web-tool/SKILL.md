@@ -5,6 +5,8 @@ description: Create, modify, and validate local or RunContext workflow utilities
 
 # Add an AutoEnv Web Tool
 
+For a new remote test or environment workflow, first consider an ordinary `scripts/*.py` file with `main()`, `init_script()`, and explicit `get_remote_info()` objects. The current common Web page discovers that file's static inputs and invokes the real AutoEnv CLI; use `.agents/skills/autoenv-script-generator/SKILL.md`. This skill remains for dedicated existing Tool components and local JSON utilities; do not add a Tool registry entry merely to make a new Python workflow selectable.
+
 1. Read `autoenv/web_tools.py`, `webPage/tools/system_info.py`, `webPage/QUICK_START.md`, and relevant tests.
 2. Clarify the tool's inputs, outputs, validation, failure shape, and whether it is a local JSON utility or a resource-bound workflow. Never invent company business rules.
 3. Choose one starting point. For a local Tool, copy `webPage/tools/_template.py` to a descriptive non-underscore `.py` filename. For generated local or workflow Tools, run `scripts/scaffold_tool.py NAME --title TITLE --description DESCRIPTION` from the repository root; workflows add `--kind workflow` and a supported `--renderer`. Never edit `_template.py` into a live Tool and never overwrite an existing file.

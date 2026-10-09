@@ -1,59 +1,29 @@
-# 文档一致性审计
+# 文档一致性检查
 
-> 审计基线：`UNIFY_ENV_WITH_BLOCK` 工作树，2026-08-13
-> 结论：公共实现、入口、测试和项目 skill 已建立对应文档；真实外部系统仍未验收。
+## 最简实现：当前入口
 
-## 1. 文档职责
+2026-10-10 基线为普通文件脚本第一版。首次使用读 [QUICK_START.md](QUICK_START.md)，复制 scripts/example.py 或 scripts/template.py；新脚本使用 main()/init_script()/get_remote_info()/FileHandle，不使用注册装饰器。
 
-| 文档 | 唯一职责 | 主要读者 |
-|---|---|---|
-| `README.md` | 当前能力、安装、主入口和文档导航 | 首次访问者 |
-| `docs/QUICK_START.md` | CLI/脚本最短操作和本地验证路径 | 环境脚本开发者 |
-| `docs/ENVIRONMENT_REGISTRATION_GUIDE.md` | 环境脚本公共 API、参数、结果和检查清单 | 脚本作者 |
-| `docs/AutoEnv-Refactor-Detailed-Design.md` | 顺序执行核心设计与 BLOCK 扩展边界 | 框架维护者 |
-| `webPage/QUICK_START.md` | Web 四页签、非交互入口、Tool/Agent 导入操作 | Web 用户 |
-| `docs/WEB_ARCHITECTURE_AND_HANDOFF.md` | Web/结构化入口的数据流、安全边界和待开发项 | 接手开发者/Agent |
-| `tests/README.md` | fake/mock 范围、UT 到实现映射和排错 | 测试维护者 |
-| `.agents/skills/*/SKILL.md` | AutoEnv 脚本、Web Tool 和导入流程约束 | Agent |
-| `sdd/README.md` 与 `sdd/*/SKILL.md` | 通用底软 SDD 流程、模板和门禁 | 跨项目开发者/Agent |
+CLI 执行完成只输出实际 run.log 路径；Web 表单调用真实 CLI 并显示独立 output.log 简洁结果。Web 唯一启动命令 `python -X utf8 startWeb.py` 和固定端点 `http://127.0.0.1:8765/` 保持。
 
-Web 只保留 `startWeb.py` → `webPage/server.py` 一条启动链；旧 Web 原型已删除，不提供兼容入口或端口回退。
+## 补充：文档职责与实现对应
 
-## 2. 实现到文档/测试映射
+| 文档 | 对应内容 |
+| --- | --- |
+| README / QUICK_START | 安装、最小脚本与CLI/网页入口 |
+| ENVIRONMENT_REGISTRATION_GUIDE | 两级集中连接数组、SSH upload_type、自检/恢复、白名单与历史 |
+| REFACTOR_PLAN_FOUR_API_CATEGORIES | 全部讨论决定、四类接口入参出参和图、实施/验收约定 |
+| SCRIPT_API_ANALYSIS / script-api-catalog.json | 当前新业务接口表与机器目录 |
+| AutoEnv-Refactor-Detailed-Design | 静态发现、session、原协议客户端适配、日志/输出分离 |
+| LOCAL_SIMULATION | 除HDFS外真实本地协议搭建、CLI命令和实测字节/结果 |
+| WEB_ARCHITECTURE_AND_HANDOFF / web_usage | 真实CLI启动链、常用页面、简洁输出实时同步 |
+| tests/README | 真本地协议UT、旧SDK兼容组件、失败排查与边界 |
+| script-generator skill / validator | 快速从脚本/流程生成普通Python，静态契约与执行边界 |
 
-| 当前实现 | 公共入口 | 说明文档 | 离线证据 |
-|---|---|---|---|
-| WebHDFS 包下载/newest | `RunContext.download_package()` | 注册指南、详细设计 | `test_package_extractor.py`、运行时 UT |
-| SCP/SFTP 上传与下载 | `SSHHost.scp_*` / `sftp_*` | 注册指南 §9/§10/§22、Web 接手说明 §3 | `test_ssh_host.py` |
-| 独立 FTP 上传 | `RunContext.register_ftp_host()` / `FTPHost.upload()` | 注册指南 §23、Web 接手说明 §3 | `test_interfaces_web_ftp.py` |
-| RUN/TAR/ZIP 安全提取 | `RunContext.extract_file_from()` | 详细设计、Web 接手说明 §4 | `test_package_extractor.py` |
-| JSON/直接参数非交互启动 | `adapt_interface.py` / `LaunchRequest` | Web 快速入门、Web 接手说明 §2 | `test_interfaces_web_ftp.py` |
-| 环境档案和脚本拉起 | `startWeb.py` / `/api/environments` / `/api/runs` | Web 快速入门、Web 接手说明 §1/§2 | API 冒烟 + 接口 UT |
-| 动态 local/workflow Tools | `register_web_tool()` / `adapt_tool_interface.py` | Web 快速入门、Web 接手说明 §5 | `test_interfaces_web_ftp.py`、`test_log_collection.py` + tool validator |
-| Tool 注册模板 | `webPage/tools/_template.py` / `scaffold_tool.py` | Web 快速入门“添加 Tool”、Web 使用说明 §9.1 | 模板验证器 + 自动发现隔离 UT |
-| Agent CLI 路径转换 | `/api/agent/*` | Web 快速入门、Web 接手说明 §6/§7 | 上传边界 UT + 本机冒烟 |
-| 日志下载/解压/解析与关联查询 | `RunContext.create_log_collection()` / `log-collection` | Web 快速入门、Web 接手说明 §4-5 | `test_log_collection.py`、`test_ssh_host.py` |
+保留旧 RunContext/低层SDK供高级组件使用，旧feature记录具有其历史时间语境；它们不重新成为新用户默认入口。新增FTP下载使用真实RETR数据通道，SCP/SFTP/HDFS验证路径不改为假传输。
 
-## 3. 本轮修正
+## 补充：检查与边界
 
-1. 将原始 `UNIFY_ENV` 设计与当前 `UNIFY_ENV_WITH_BLOCK` 扩展分层说明，修复“FTP 不支持”与当前实现的表面矛盾。
-2. 把追加的一级标题整理为原文档的正式章节，补齐相对链接。
-3. README 能力清单补入 SCP/SFTP 下载、ZIP、FTP、结构化入口和 Web/SDD 导航。
-4. 测试总览补入 fake 下载/FTP、接口/Web/导入 UT，明确离线证据边界。
-5. 删除旧 Web 原型，固定唯一启动命令与 `127.0.0.1:8765` 端点，并在接手文档集中列出 Agent CLI、日志解析和错误码 Tool 的已知限制。
-6. 示例 LaunchRequest 标明是结构占位，运行前必须替换真实环境或参数。
+公共名称和语义变化后，搜索实现/导出/例子/文档/skill/测试，核对本轮参数类型str/int/float/bool/list/dict、prompt_only模式、upload_type配置和FileHandle返回。Markdown本地链接、代码块与JSON应可解析；CLI list/describe只做静态发现。
 
-## 4. 一致性检查规则
-
-- 公共名称或语义变化后，用全仓搜索检查实现、导出、示例、README、指南、详细设计、测试说明和项目 skill。
-- Markdown 相对链接必须存在；新增顶层能力必须进入 README 文档导航。
-- 离线 fake/mock 结果只写“契约通过”，不得写“真实设备验证通过”。
-- 待业务输入的功能保留明确 TODO、输入契约和接手位置，不猜测规则。
-- 历史设计必须标注时间/分支语境；当前文档不能同时宣称同一能力“支持”和“不支持”。
-
-## 5. 尚未由本审计证明
-
-- 未连接真实 HDFS、SSH、SFTP、SCP、FTP 或 Telnet 环境。
-- 未用真实 `codeagent`/`nga` 验证全部 TUI 控制序列；当前已使用 Windows ConPTY，并在离线 UT 中验证分块输出、回车覆盖与 ANSI 控制序列透传。
-- 未实现业务日志块 pattern 和错误码解释规则，因为缺少用户样例/规则。
-- 明文密码是已确认项目取舍，不代表适合公网或多用户部署。
+本轮文档中实际结果对应 LOCAL_SIMULATION 的报告：2048字节真实SCP/SFTP/FTP主动被动双向与空文件；SSH/Telnet状态、CtrlB、retry与CLI0/1/2；全部print/stderr/fd/继承子进程输出及源码溯源。真实设备、HDFS集群与业务shell效果不由本地模拟证明。

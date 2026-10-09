@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from http import HTTPStatus
@@ -19,7 +20,6 @@ from urllib.parse import parse_qs, quote, urlparse
 
 WEB_DIR = Path(__file__).resolve().parent
 ROOT_DIR = WEB_DIR.parent
-ENV_DIR = ROOT_DIR / "environments"
 UPLOAD_DIR = WEB_DIR / "uploads"
 SETTINGS_PATH = WEB_DIR / "settings.json"
 WEB_HOST = "127.0.0.1"
@@ -95,6 +95,105 @@ class ProcessSession:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+
+class ScriptProcessSession(ProcessSession):
+    """Run the public CLI and stream only its concise operation output."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_log_path: str | None = None
+        self.last_output_path: str | None = None
+
+    def start_script(self, command: list[str], *, cwd: Path, event_file: Path) -> None:
+        self.stop()
+        with self.lock:
+            self.events = []
+            self.generation += 1
+            generation = self.generation
+            self.last_run_dir = self.last_log_path = self.last_output_path = None
+        env = os.environ.copy()
+        env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"})
+        process = subprocess.Popen(
+            command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self.process = process
+        threading.Thread(
+            target=self._monitor_script, args=(process, generation, event_file), daemon=True,
+        ).start()
+
+    def _monitor_script(
+        self, process: subprocess.Popen[str], generation: int, event_file: Path,
+    ) -> None:
+        terminal: dict[str, str] = {}
+
+        def collect() -> None:
+            stdout, stderr = process.communicate()
+            terminal.update(stdout=stdout, stderr=stderr)
+
+        reader = threading.Thread(target=collect, daemon=True)
+        reader.start()
+        offset = 0
+        pending = b""
+        output: Path | None = None
+        while True:
+            if output is None and event_file.is_file():
+                try:
+                    location = _json_file(event_file, {})
+                    if not isinstance(location, dict):
+                        raise ValueError("invalid CLI event location")
+                    log = Path(str(location["log_path"])).resolve()
+                    output = Path(str(location["output_path"])).resolve()
+                    with self.lock:
+                        if generation == self.generation:
+                            self.last_log_path = str(log)
+                            self.last_output_path = str(output)
+                            self.last_run_dir = str(log.parent)
+                    self.append({"type": "location", "log_path": str(log), "output_path": str(output)}, generation)
+                except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                    output = None
+            if output is not None and output.is_file():
+                with output.open("rb") as handle:
+                    handle.seek(offset)
+                    chunk = handle.read()
+                    offset = handle.tell()
+                lines = (pending + chunk).split(b"\n")
+                pending = lines.pop()
+                for line in lines:
+                    self.append({"type": "output", "text": line.rstrip(b"\r").decode("utf-8", "replace")}, generation)
+            if not reader.is_alive():
+                break
+            time.sleep(0.05)
+        reader.join()
+        # The child can finish between the previous read and its thread check.
+        if output is not None and output.is_file():
+            with output.open("rb") as handle:
+                handle.seek(offset)
+                chunk = handle.read()
+            lines = (pending + chunk).split(b"\n")
+            pending = lines.pop()
+            for line in lines:
+                self.append({"type": "output", "text": line.rstrip(b"\r").decode("utf-8", "replace")}, generation)
+        if pending:
+            self.append({"type": "output", "text": pending.decode("utf-8", "replace")}, generation)
+        # A logger bootstrap failure is the only normal CLI stderr case.
+        if terminal.get("stderr", "").strip():
+            self.append({"type": "output", "text": terminal["stderr"].strip()}, generation)
+        if generation == self.generation and self.last_log_path is None:
+            candidate = terminal.get("stdout", "").strip()
+            if candidate and Path(candidate).is_absolute() and Path(candidate).is_file():
+                self.last_log_path = candidate
+                self.last_run_dir = str(Path(candidate).parent)
+        code = process.returncode
+        self.append({
+            "type": "complete", "success": code == 0, "exit_code": code,
+            "status": f"exit_{code}", "log_path": self.last_log_path,
+            "output_path": self.last_output_path,
+        }, generation)
+        event_file.unlink(missing_ok=True)
 
 
 def _parse_scp_progress(text: str) -> dict[str, object] | None:
@@ -204,7 +303,7 @@ def _start_agent_shell(
     return generation
 
 
-AUTOENV_SESSION = ProcessSession()
+AUTOENV_SESSION = ScriptProcessSession()
 TOOL_SESSION = ProcessSession()
 AGENT_SESSION = TerminalSession()
 
@@ -251,58 +350,64 @@ def _resolve_agent_cwd(value: object) -> Path:
     return path
 
 
-def _safe_name(value: object, label: str) -> str:
-    name = str(value).strip()
-    if not name or Path(name).name != name or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in name):
-        raise ValueError(f"{label} may contain letters, digits, '_' and '-' only")
-    return name
-
-
-def _validate_environment(value: dict[str, object]) -> dict[str, object]:
-    from autoenv.resources import validate_resource_label
-
-    normalized = dict(value)
-    normalized["name"] = _safe_name(value.get("name"), "environment name")
-    seen_labels: set[str] = set()
-    for section_name, protocol in (
-        ("ssh_hosts", "ssh"),
-        ("telnet_connections", "telnet"),
-        ("ftp_hosts", "ftp"),
-    ):
-        section = value.get(section_name, {})
-        if not isinstance(section, dict):
-            raise ValueError(f"environment {section_name} must be an object")
-        clean_section: dict[str, object] = {}
-        for logical_name, raw in section.items():
-            name = _safe_name(logical_name, f"{section_name} logical name")
-            if not isinstance(raw, dict):
-                raise ValueError(f"environment resource {name!r} must be an object")
-            host = str(raw.get("host", "")).strip()
-            if not host:
-                raise ValueError(f"environment resource {name!r} requires host")
-            label = validate_resource_label(raw.get("resource_label"), protocol=protocol)
-            if label in seen_labels:
-                raise ValueError(f"environment resource_label must be unique: {label}")
-            seen_labels.add(label)
-            clean_section[name] = {**raw, "host": host, "resource_label": label}
-        normalized[section_name] = clean_section
-    return normalized
-
-
 def _describe_scripts() -> list[dict[str, object]]:
-    from autoenv.registry import list_scripts
+    from autoenv.script_files import describe_script, list_script_files
 
-    return [
-        {
-            "name": item.name,
-            "description": item.description,
-            "packages": list(item.packages),
-            "package_inputs": list(item.package_inputs),
-            "parameters": list(item.parameters),
-            "resources": list(item.resources),
-        }
-        for item in list_scripts(root_dir=ROOT_DIR)
-    ]
+    scripts = []
+    for item in list_script_files(ROOT_DIR):
+        if "error" not in item:
+            try:
+                item = describe_script(ROOT_DIR, str(item["script"]))
+            except (ValueError, TypeError, FileNotFoundError) as exc:
+                item = {**item, "topologies": [], "error": str(exc)}
+        scripts.append(item)
+    return scripts
+
+
+def _script_command(data: dict[str, object], event_file: Path) -> list[str]:
+    """Translate a Web form into CLI arguments, never into a shell command."""
+
+    script = data.get("script")
+    if not isinstance(script, str) or not script.strip():
+        raise ValueError("script is required")
+    from autoenv.script_files import describe_script
+
+    describe_script(ROOT_DIR, script)
+    command = [sys.executable, "-X", "utf8", "-m", "autoenv.cli", "run", script, "--non-interactive"]
+    topology = data.get("selected_topology", "")
+    if not isinstance(topology, str):
+        raise ValueError("selected_topology must be a string")
+    if topology:
+        command.extend(["--topology", topology])
+    for section, flag in (("bindings", "--bind"), ("packages", "--package"), ("arguments", "--arg")):
+        values = data.get(section, {})
+        if not isinstance(values, dict):
+            raise ValueError(f"{section} must be an object")
+        for key, value in values.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(f"{section} names must be nonempty strings")
+            if isinstance(value, (list, dict)):
+                # Complex arguments use the same canonical request accepted by agents.
+                request = {"schema_version": 2, "mode": "run", "non_interactive": True, "history_policy": "ignore", **data}
+                if not topology:
+                    request["selected_topology"] = None
+                request_path = event_file.with_name(event_file.stem + "-request.json")
+                _write_json(request_path, request)
+                return command[:6] + [script, "--non-interactive", "--request", str(request_path), "--event-file", str(event_file)]
+            if value is None:
+                raise ValueError(f"{section}.{key} cannot be null")
+            text = str(value).lower() if isinstance(value, bool) else str(value)
+            command.extend([flag, f"{key}={text}"])
+    command.extend(["--event-file", str(event_file)])
+    return command
+
+
+def _display_command(command: list[str]) -> str:
+    if os.name == "nt":
+        return "& " + " ".join("'" + part.replace("'", "''") + "'" for part in command)
+    import shlex
+
+    return shlex.join(command)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -353,8 +458,8 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/health":
                 self.json({"ok": True, "root": str(ROOT_DIR)})
             elif parsed.path == "/api/environments":
-                ENV_DIR.mkdir(parents=True, exist_ok=True)
-                self.json({"environments": [_json_file(path, {}) for path in sorted(ENV_DIR.glob("*.json"))]})
+                from autoenv.remote_catalog import read_catalog
+                self.json({"topologies": read_catalog(ROOT_DIR)})
             elif parsed.path == "/api/resource-labels":
                 from autoenv.resources import describe_resource_labels
                 self.json({"resource_labels": describe_resource_labels()})
@@ -441,15 +546,22 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             data = self.body()
             if self.path == "/api/environments":
-                environment = _validate_environment(data)
-                name = str(environment["name"])
-                _write_json(ENV_DIR / f"{name}.json", environment)
+                from autoenv.remote_catalog import save_connection
+                topology = data.get("topology")
+                connection = data.get("connection")
+                if not isinstance(topology, str) or not isinstance(connection, dict):
+                    raise ValueError("topology and connection are required")
+                save_connection(ROOT_DIR, topology, connection)
                 self.json({"ok": True})
             elif self.path == "/api/run/start":
-                request_path = WEB_DIR / ".runtime" / f"request-{uuid.uuid4().hex}.json"
-                _write_json(request_path, data)
-                AUTOENV_SESSION.start([sys.executable, "-X", "utf8", str(ROOT_DIR / "adapt_interface.py"), "--request", str(request_path)], cwd=ROOT_DIR)
-                self.json({"ok": True})
+                event_file = WEB_DIR / ".runtime" / f"session-{uuid.uuid4().hex}.json"
+                event_file.parent.mkdir(parents=True, exist_ok=True)
+                command = _script_command(data, event_file)
+                AUTOENV_SESSION.start_script(command, cwd=ROOT_DIR, event_file=event_file)
+                self.json({"ok": True, "generation": AUTOENV_SESSION.generation, "command": _display_command(command)})
+            elif self.path == "/api/run/command":
+                event_file = WEB_DIR / ".runtime" / "session-preview.json"
+                self.json({"command": _display_command(_script_command(data, event_file))})
             elif self.path == "/api/run/stop":
                 AUTOENV_SESSION.stop(); self.json({"ok": True})
             elif self.path == "/api/open":
@@ -457,7 +569,9 @@ class Handler(SimpleHTTPRequestHandler):
                 if target == "run":
                     path = Path(AUTOENV_SESSION.last_run_dir or ROOT_DIR / "logs")
                 elif target == "log":
-                    path = Path(AUTOENV_SESSION.last_run_dir or ROOT_DIR / "logs") / "run.log"
+                    if AUTOENV_SESSION.last_log_path is None:
+                        raise ValueError("no script log is available yet")
+                    path = Path(AUTOENV_SESSION.last_log_path)
                 else:
                     raise ValueError("target must be run or log")
                 if not path.exists():

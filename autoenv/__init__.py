@@ -18,8 +18,23 @@ from .selectors import extra_file, match, package
 from .ssh_host import SSHDefaults
 from .ftp_host import FTPDefaults
 from .telnet_client import TelnetDefaults
+from .errors import AutoEnvOperationError
+from .file_handles import FileHandle, create_file, get_file, hdfs_download
+from .script_session import ScriptPaths, get_remote_info, init_script
+from .remote_environment import FTPRemote, SSHRemote, TelnetRemote
 
 __all__ = [
+    "AutoEnvOperationError",
+    "FileHandle",
+    "ScriptPaths",
+    "SSHRemote",
+    "TelnetRemote",
+    "FTPRemote",
+    "init_script",
+    "get_remote_info",
+    "get_file",
+    "create_file",
+    "hdfs_download",
     "CommandPhase",
     "CommandProtocol",
     "CommandResult",

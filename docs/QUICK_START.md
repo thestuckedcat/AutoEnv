@@ -1,236 +1,56 @@
-# AutoEnv 快速入门
+# AutoEnv 快速开始
 
-这份文档用于在几分钟内完成三件事：运行 AutoEnv、编写一个最小环境脚本、在不连接真实设备的情况下快速验证修改。完整接口和设计语义请使用文末导航。
+## 最简实现
 
-## 1. 安装
-
-要求 Python 3.11 或更高版本。在仓库根目录执行：
+要求 Python 3.11+，在仓库根目录安装：
 
 ```powershell
 python -m pip install -e ".[test]"
+python -X utf8 -m autoenv.cli list --json
 ```
 
-安全地检查脚本是否能被发现，不执行 HDFS、SSH 或 Telnet 操作：
+打开常用网页：`python -X utf8 startWeb.py`，固定访问 `http://127.0.0.1:8765/`。先登记一级组网和各 SSH/Telnet/FTP 连接，再选择脚本及绑定，页面会按最新静态声明提供输入，并调用真实 CLI。
 
-```powershell
-python -X utf8 -c "from autoenv.registry import list_scripts; print([item.name for item in list_scripts()])"
-```
-
-## 2. 快速运行已有环境
-
-> 本节命令会在选定环境后执行真实流程。先确认目标地址、账号和包来源；如果只想检查脚本能否加载，请使用上一节的安全发现命令。
-
-显示环境列表：
-
-```powershell
-python main.py
-```
-
-运行指定环境：
-
-```powershell
-python main.py run example_host_environment
-```
-
-复用上次确认的参数：
-
-```powershell
-python main.py rerun example_host_environment
-```
-
-`run` 会逐项确认参数；`rerun` 不重新确认参数。如果环境注册了启动后 func，两种模式都会在主流程成功后显示 func 菜单。以上命令可能下载包、连接设备、上传文件并执行远端命令，只能在确认目标地址和包来源后运行。
-
-确认 package 远端目录时，回车沿用默认值；若 `config.json` 中该项定义了 `base_link`，提示会一直显示 `!newest`。输入 `!newest` 可忽略上次手工路径，直接按 `base_link` 重新选择 automatic newest 包。
-
-## 3. 快速创建一个环境脚本
-
-在 `scripts/` 下创建 `start_demo.py`。下面示例展示推荐顺序：集中声明、下载、上传、执行、注册启动后检查。
+在 `scripts/demo.py` 创建普通文件：
 
 ```python
-from autoenv import SSHDefaults, package, register_func, register_script
+from autoenv import create_file, get_remote_info, init_script
 
-
-@register_script(
-    name="start_demo",
-    description="启动演示环境",
-)
-def start_demo(ctx):
-    # 1. 文件选择器和连接对象集中声明。
-    demo_package = package(
-        "A1",
-        alias="A1 主安装包",
-        description="从 HDFS 下载并上传到演示服务器的安装包。",
-    )
-    host = ctx.register_ssh_host(
-        "demo_host",
-        resource_label="1260网口",
-        alias="演示服务器管理网口",
-        description="用于上传安装包并执行启动命令。",
-        defaults=SSHDefaults(
-            host="192.168.1.100",
-            port=22,
-            username="root",
-            password="",
-            connect_timeout=30,
-        ),
-    )
-
-    # 2. 下载、上传和执行严格按代码顺序发生。
-    result = ctx.download_package(demo_package)
-    if not result.success:
-        return result
-
-    result = host.sftp_upload(
-        local_file=demo_package,
-        remote_dir="/root/autoEnv",
-    )
-    if not result.success:
-        return result
-
-    # S{A1} 会替换为本次成功上传的实际包名。
-    result = host.execute(
-        "chmod +x /root/autoEnv/S{A1} && /root/autoEnv/S{A1}",
-        timeout=600,
-    )
-    if not result.success:
-        return result
-
-    # 3. 可选：主流程成功后提供循环选择的固定检查。
-    @register_func(name="check_status", description="检查环境 READY 状态")
-    def check_status(_func_ctx):
-        status = host.execute("cat /tmp/env_status", timeout=30)
-        if status.success and "READY" not in status.output:
-            return status.with_failure("environment status is not READY")
-        return status
-
-    return result
+def main():
+    paths = init_script()
+    dut = get_remote_info("ssh", [("单机直连", "设备-ssh")])
+    file = create_file(paths.runtime_path, "hello.sh", "#!/bin/sh\necho READY\n")
+    dut.upload(file, "/tmp/demo")
+    print(dut.run("echo READY"))
 ```
 
-使用 `package("A1")` 前，确认 [`config.json`](../config.json) 中存在同名配置，且 `image_name` 能唯一匹配目标包。上传和提取不会自动下载；每一步都必须显式调用并立即检查结果。
-
-也可以直接让仓库 skill 引导生成：向 agent 提出“使用 `autoenv-script-generator` 生成环境脚本”，或粘贴一整段已有 shell 脚本。agent 会先确认包来源、连接、操作顺序和成功条件，再写入 `scripts/`。
-
-## 4. 快速复制已有 shell 脚本
-
-如果要用已有 shell 脚本替换上一节的直接执行步骤，应把它作为一整段文本传入，不拆成 Python 命令列表。下面片段假定 `demo_package`、`install_script` 和 `host` 已在函数开头声明：
-
-```python
-# demo_package = package("A1")
-# install_script = extra_file("install.sh")
-# host = ctx.register_ssh_host("demo_host", resource_label="1260网口", ...)
-
-result = host.sftp_upload(demo_package, "/root/autoEnv")
-if not result.success:
-    return result
-
-# A1 已成功上传；生成时只替换实际文件名。
-ctx.generate_sh_file(
-    "install.sh",
-    """#!/bin/sh
-set -eu
-cd /root/autoEnv
-tar -xf "S{A1}"
-./install
-""",
-)
-
-result = host.sftp_upload(install_script, "/root/autoEnv")
-if not result.success:
-    return result
-
-return host.execute("bash /root/autoEnv/S{install.sh}", timeout=600)
-```
-
-需要卡启动时点输入控制字符时，把触发命令、关键词和响应放在同一次阻塞操作中：
-
-```python
-return console.execute_on_output(
-    "reboot",
-    keyword="Press Ctrl+B",
-    send_data=b"\x02",
-    timeout=90,
-)
-```
-
-`b"\x02"` 才是 Ctrl+B。接口不会给 `send_data` 自动加回车；普通命令应显式使用例如 `b"boot\r\n"`。常用控制字符完整对照见环境注册指南。
-
-关键规则：
-
-- `S{file_name}` 使用 `package()`、`extra_file()` 或 `match()` 中的字符串，不是 Python 变量名。
-- 对应文件必须在本次运行中成功上传；SSH 命令只能使用上传到当前 Host 的文件。
-- 一个生成脚本中的所有占位符必须已经上传到同一个 Host。
-- `generate_sh_file()` 只替换包名，保留原脚本的 shebang、换行、引号和布局。
-
-## 5. 快速测试
-
-日常修改按从快到慢的顺序执行：
+不用注册装饰器。先静态检查，再完整指定执行参数：
 
 ```powershell
-# 1. 检查所有环境脚本的集中声明、操作顺序、S{} 和 register_func 契约
+python -X utf8 -m autoenv.cli describe demo --json
+python -X utf8 -m autoenv.cli run demo --non-interactive --topology "单机直连" --bind "dut=设备-ssh"
+```
+
+执行会访问绑定的设备。完成 stdout 只有 run.log 绝对路径，退出码 0/1/2 分别为成功/执行失败/准备失败。`run.log` 包含脚本源码位置、动作、结果、远端输出和 print；同目录 `output.log` 只记录每条动作的简洁结果，网页实时显示它。
+
+## 补充功能
+
+- 本地文件：`get_file(directory, filename)`；生成：`create_file(directory, filename, str或bytes)`；HDFS：`hdfs_download(local_directory, "A1")`。三者返回统一 FileHandle。
+- SSH/FTP 上传：`remote.upload(handle, remote_directory)`，成功返回 None；下载：`remote.download(remote_directory, filename)` 返回本地 handler。SSH `upload_type` 在环境配置中选 scp/sftp。
+- SSH/Telnet `run(command)` 成功返回 str，失败/未知抛异常；需要分支使用 `execute()` 的 status/exit_code/output。Telnet prompt 模式无标准退出码，应根据明确业务关键词判断。
+- 串口关键词：`console.telnet_wait_exec("Press Ctrl+B", b"\x02")`；`wait_reboot(keyword)` 被动等待；`read()` 读未消费输出。外部重启前 `mark_output()`，网口 `retry(interval, max_try_times)` 只重连自检。
+- 参数：顶层 `SCRIPT_ARGUMENTS` 声明，`paths.arguments[name]` 读取；CLI `--arg name=value`。多个远端对象各有白名单，本次一级组网只选一次；交互回车仅继承有效历史。
+
+最小例子：[example.py](../scripts/example.py)；可复制模板：[template.py](../scripts/template.py)；全部接口：[all_interfaces.py](../scripts/all_interfaces.py)。
+
+发布示例的 `if __name__ == "__main__"` 转发同一个 CLI，因此 `python scripts/example.py --non-interactive ...` 也有完整日志捕获/释放。CLI执行脚本时跳过这个guard再调用main，不递归。
+
+## 组件与测试
+
+```powershell
 python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py
-
-# 2. Python 语法和导入编译
-python -X utf8 -m compileall -q autoenv scripts
-
-# 3. 统一环境脚本契约 UT
-python -X utf8 -m pytest tests/test_generated_script_contract.py -q
-
-# 4. 修改 register_func/运行时后执行聚焦 UT
-python -X utf8 -m pytest tests/test_runtime_registry.py -q
-
-# 5. 全量离线 UT
-python -X utf8 -m pytest -q
+python -X utf8 -m compileall autoenv scripts webPage
+python -X utf8 -m pytest
 ```
 
-这些测试使用 fake HDFS、SSH、SFTP/SCP 和 Telnet Socket，不会连接真实服务器。全量 UT 通过只说明本地框架契约成立，不代表真实环境已经拉起。
-
-测试失败时复制 pytest 输出的完整 node id 单独重跑：
-
-```powershell
-python -X utf8 -m pytest tests/test_runtime_registry.py::test_registered_funcs_reuse_context_and_loop_until_exit -vv
-```
-
-每条重点 UT 的实现、存在目的和排查入口见 [UT 目标与排查指南](../tests/README.md)。
-
-## 6. 运行结果在哪里
-
-每次运行都会创建独立目录：
-
-```text
-logs/<run_id>/
-├── run.log       # 完整流程、内部枚举、逐文件传输、异常堆栈和 func 记录
-├── params.json   # 本次确认的连接和包参数
-├── result.json   # 主流程结果和 func_runs
-└── packages/     # 下载、提取和生成的本地文件
-```
-
-排查顺序通常是：终端最后一条错误 → `result.json` 的 `status/error_type/error_message` → `run.log` 中对应操作 → `params.json` 中实际使用的地址和路径。批量 SCP 的页面只显示进度条和最终 matched/completed/retained 计数；下载会有最多四个并行 worker，因此 `run.log` 中可能同时存在多条未完成的 start。可搜索 `SCP BATCH FILE`，按同一 `operation_id` 和 `index` 配对 start/complete/failed 事件。
-
-## 7. 常见问题快速定位
-
-| 现象 | 先检查 |
-|---|---|
-| `unknown AutoEnv script` | 文件是否位于 `scripts/`、是否使用 `@register_script`、导入是否报错 |
-| 包不存在或多匹配 | `config.json.image_name`、本次 `packages` 内容、选择器字符串 |
-| `S{...}` 无法替换 | 是否成功上传、上传 Host 是否与执行 Host 一致、Telnet 是否配置 `uploaded_files_from` |
-| `register_func` 注册失败 | 是否位于主流程内部末尾、名称是否重复、是否只有一个 ctx 参数 |
-| func 不显示 | 主流程是否成功、是否在注册定义前提前 `return` |
-| `TIMEOUT`/`DISCONNECTED` | 先看 `phase` 和部分输出；命令可能已执行，不要盲目重发 |
-
-## 8. 详细文档导航
-
-- [环境注册指南](ENVIRONMENT_REGISTRATION_GUIDE.md)：全部公共接口、参数、状态、完整示例和提交检查清单。
-- [重构详细设计](AutoEnv-Refactor-Detailed-Design.md)：运行模型、生命周期、结果语义、安全边界和验收标准。
-- [UT 目标与排查指南](../tests/README.md)：测试 fake 实现、每条重点 UT 的目标和失败排查。
-- [完整可复制示例](../scripts/example.py)：SSH、Telnet、上传、shell 生成、`register_func` 和组合环境。
-- [`autoenv-script-generator` skill](../.agents/skills/autoenv-script-generator/SKILL.md)：让 agent 交互澄清并生成环境脚本的流程。
-- [Agent 仓库规则](../AGENTS.md)：修改后的关联文件审视和验证要求。
-- [项目 README](../README.md)：安装、入口、安全说明和功能概览。
-- [Web 快速入门](../webPage/QUICK_START.md)：环境档案、结构化启动、Tools 和 Agent CLI。
-- [Web 与 adapt interface 使用说明](web_usage.md)：Web 框架、按钮触发 Python 和环境参数绑定完整调用链。
-- [Web 架构与接手说明](WEB_ARCHITECTURE_AND_HANDOFF.md)：接口边界、安全约束和扩展入口。
-- [通用底层软件 SDD 技能包](../sdd/README.md)：证据驱动的设计、规格、门禁和复盘流程。
-
-## 9. Web 控制台入口
-
-运行 `python -X utf8 startWeb.py` 可使用环境注册、非交互脚本启动、动态 Tools 和 Agent CLI。使用步骤见 [`../webPage/QUICK_START.md`](../webPage/QUICK_START.md)；实现与接手说明见 [`WEB_ARCHITECTURE_AND_HANDOFF.md`](WEB_ARCHITECTURE_AND_HANDOFF.md)。
+无需设备的实际协议演示与命令结果见 [LOCAL_SIMULATION.md](LOCAL_SIMULATION.md)。环境配置见 [ENVIRONMENT_REGISTRATION_GUIDE.md](ENVIRONMENT_REGISTRATION_GUIDE.md)；接口/入参出参见 [SCRIPT_API_ANALYSIS.md](SCRIPT_API_ANALYSIS.md)；整体决定见 [重构计划](REFACTOR_PLAN_FOUR_API_CATEGORIES.md)；Agent 生成规则见 [脚本 skill](../.agents/skills/autoenv-script-generator/SKILL.md)。

@@ -1,118 +1,76 @@
-# AutoEnv Web 架构与接手说明
+# Web 最简实现与接手说明
 
-本文面向下一位本地 Agent 或开发者。实现以当前代码和 UT 为准。
+## 快速开始
 
-需要逐步了解页面按钮、`adapt_interface.py` 和环境参数绑定时，见 [`web_usage.md`](web_usage.md)。
+唯一启动方式为 `python -X utf8 startWeb.py`，唯一地址为 <http://127.0.0.1:8765/>。不新增启动器、host/port 参数或备用服务；端口冲突直接失败。按钮使用方法见 [Web 快速开始](web_usage.md)。
 
-> Web 只有 `startWeb.py` 一个启动入口和 `webPage/` 一套实现。旧原型和兼容启动器不保留；需要回退时使用 Git commit。Web 只在 Windows 本机开发场景验证，真实 SSH/SFTP/SCP/FTP/HDFS、设备串口和 Agent CLI 仍需在目标网络按明确授权验收。
+主页面只包含两个入口：“运行脚本”和“环境注册”。用户输入转换成 `python -X utf8 -m autoenv.cli run ... --non-interactive` 参数，启动独立 CLI 子进程。Web 不直接调用设备 SDK，也不调用 `adapt_interface.py` 执行新脚本。
 
-## 1. 入口与数据流
-
-- `startWeb.py` → `webPage/server.py`：唯一 Web 启动链，固定监听 `127.0.0.1:8765`。不接受 host/port 参数，不自动选择其他端口，绑定冲突直接失败；`webPage/server.py` 不能作为模块直接启动。
-- `adapt_interface.py` → `autoenv/interface.py` → `registry.run_script()`：结构化非交互启动。
-- `adapt_tool_interface.py` → `autoenv/web_tools.py`：workflow Tool 的结构化子进程入口。
-- `environments/<name>.json`：环境档案；默认被 `.gitignore` 忽略，允许明文密码。
-- `webPage/index.html/app.js/styles.css`：无构建链的本地前端。
-- `autoenv/web_tools.py`：Tools 注册和发现契约。
-- `webPage/tools/*.py`：独立工具模块。
-
-Web 启动环境时先写临时 request JSON，再启动独立 Python 子进程调用 `adapt_interface.py`。workflow Tool 使用独立的 `adapt_tool_interface.py` 进程和事件流，因此与环境启动可以分别停止。设备操作不会阻塞 HTTP 线程，普通输出和结构化进度事件都通过本地事件轮询送到页面。
-
-## 2. 结构化参数
-
-`LaunchRequest` 包含 `script`、`mode`、`environments`、`parameters`；兼容入口仍接受单个 `environment`。`environments` 以脚本资源逻辑名为键，每项选择一个环境档案。启动时只取该档案中标签和协议均匹配的唯一连接，映射到脚本注册名。参数分区：
-
-- `ssh_hosts`：映射 `register_ssh_host()` 的逻辑名；
-- `telnet_connections`：映射现有串口/Telnet；
-- `ftp_hosts`：映射独立普通 FTP；
-- `packages`：空对象沿用 config link/base_link；`path_override` 指定 HDFS 路径；
-- `arguments`：脚本通过 `ctx.argument()` 读取。
-
-非交互模式缺少必填参数时立即失败，不回退到 `input()`。
-
-`register_func` 仍是运行成功后的 CLI 循环菜单，Web 启动页没有对应的选择/输入控件。不要把依赖该菜单完成的流程当作 Web 可交互流程；`scripts/template.py` 将它拆成独立的 CLI 示例。
-
-资源标签的唯一数据源是 `autoenv/resource_labels.json`，`autoenv/resources.py` 负责加载并校验目录，`/api/resource-labels` 把同一份数据返回 Web。环境保存接口拒绝未知标签、串/网协议错配和同环境重复标签。Web 初始化时先加载标签目录再创建环境资源行；目录加载完成后也会刷新已有下拉框，避免异步初始化留下空选项。保存环境后，前端重新读取环境档案，并同步刷新环境启动字段与当前 workflow Tool 的资源下拉框；Tool 工作台只更新下拉选项，不重建整个表单，因此无需重启 Web，也不会清空已填写参数或日志窗口。注册器在导入脚本时静态解析 `register_ssh_host()`、`register_telnet()`、`register_ftp_host()` 和 `package()` 调用，不执行环境函数；连接协议由调用函数确定，标签取 `resource_label`，包名取 `package(name)`。两类调用都可携带页面 `alias` 和提示 `description`，省略时分别默认使用 `name` 和空字符串。`/api/scripts` 返回自动形成的 `resources` 和 `package_inputs`，Web 选择脚本后立即渲染这些输入：每个连接点独立选择包含匹配标签的环境/IP，每个 HDFS 包独立填写链接。包输入在启动请求中写入 `parameters.packages`；留空继续使用 `config.json` 的 `link/base_link`，填写时作为 `path_override`。
-
-环境页保存的 `baud_rate` 是网络串口的档案元数据；当前 Telnet 客户端连接 TCP 端口，不能直接修改串口服务器的物理波特率。若设备要求下发频率，应在对应环境脚本中用已确认的设备命令完成。
-
-## 3. 文件传输
-
-- `SSHHost.scp_download()`：SCP 传输，目录枚举和大小检查使用 SSH 命令。
-- `SSHHost.sftp_download()`：SFTP 枚举、传输和大小检查。
-- `SSHHost.scp_download_many()`：在指定远端目录中按 basename glob 枚举全部普通文件，读取远端 mtime，并在同一 Paramiko transport 上最多打开四个独立 SCP channel 并行下载；返回的 `files` 仍按 mtime/文件名稳定排序。任一传输失败会等待活动 worker 关闭 channel，再清除本批已完成文件和 `.part`。远端枚举兼容 BusyBox ash，不使用 GNU `find -printf`，而用目录 glob、`test`、`stat -c %Y` 和 NUL 分隔的 `printf`。日志批量下载不读取远端大小、不比较本地大小；每个 SCP 正常返回后将自己的 `.part` 原子替换为最终文件。内部枚举结果与逐文件 start/complete/failed 证据只写入 `run.log`；Web 把线程安全的 `completed/total` 事件更新成一个原生进度条，结束摘要及 manifest 保留 matched/completed/retained 计数。
-- 两者的 `remote_file` 和 `pattern` 必须二选一。pattern 只搜索指定目录、不递归；零匹配和多匹配都失败，没有 newest 语义。
-- 单文件 SCP/SFTP 下载写入本次 `packages/`，先使用 `.part`，大小校验成功后原子替换；上述日志批量下载是明确的无大小校验例外。
-- 成功的 `RemoteDownloadResult` 可直接传给 SCP/SFTP/FTP 上传。
-- `FTPHost.upload()` 是独立普通 FTP，默认被动模式，以文件大小校验；FTP 不提供 SSH/SFTP 的通道安全性或标准 MD5 能力。
-
-## 4. 解压与日志 SDK
-
-公共 `Extractor` 支持 `.run`、`.tar.gz`、`.tgz`、`.zip`，并拒绝路径穿越和 ZIP 符号链接。
-
-`RunContext.create_log_collection()` 创建当前运行唯一的日志批次目录。兼容处理链仍支持 `download()`/`download_many()` → `extract_all()` → `group()` → 匹配规则 → `finalize()`；内置 Tool 使用脚本化来源链 `download_sources()` → `extract_all()` → `source_groups()` → 匹配规则 → `finalize()`：
-
-- `download_many()` 将每个远端目录下载到 `raw/source-NNN/`，允许不同目录存在同名文件；任一路径失败会清理此前已下载文件并使整个批次失败。目录列表和逐目录状态写入 manifest。
-- `LogSource(name, remote_dir, glob)` 把一个脚本内固定路径绑定到一个下载通配符。`download_sources()` 按声明顺序下载，每个来源独立使用自己的 glob；Web 请求不能覆盖路径或 glob。
-- `extract_all()` 递归处理 ZIP、GZ、TAR.GZ 和 TGZ；拒绝路径穿越、绝对路径、链接、特殊文件、同名/父子路径冲突，并限制总文件数与展开大小。失败的展开目录会清理。
-- `group()` 递归匹配 basename glob，按继承的远端 mtime、相对路径稳定排序。每个文件独立尝试 UTF-8、UTF-8-SIG、GB18030、Latin-1，并在 manifest 记录实际编码。
-- `source_groups()` 按 `LogSource.name` 返回独立 Group。直接下载的普通文件和该来源压缩包递归展开后的非压缩文件全部入组；压缩包容器保留审计但不作为文本解码，不再执行第二次文件名 glob。
-- `TimestampPattern` 使用时间命名组；`MetadataPattern` 使用 `slot_id`/`socket_id` 命名组。元数据逐字段向后继承、跨 block 保留但在文件边界清空，并保存 parsed/inherited/unknown 来源和匹配 span。
-- `match_line()` 扫描全部原始行更新时间，匹配行继承本文件上一时间；文件之间不继承。
-- `match_line_block()` 保留 start regex 命中的起始行，并继续保留其后连续的无时间戳行；下一条可解析时间戳是硬边界，该行只有同时匹配 start 才会开启新块。起始行和续行共享起始关联时间，文件边界重置活动块与继承时间。
-- `match_block()` 默认保留 legacy 行为；`boundary_mode="strict"` 只保留确认块：文件头首边界为 END 时保留、为 BEGIN 时丢弃，活动块内重复 BEGIN 仅更新属性，首个 END 或 EOF 正常闭合，END 后等待新 BEGIN。`consume_regex` 行先更新属性再从输出移除。
-- `finalize()` 的 SQLite 索引保存 slot/socket、字段来源和匹配 span；查询兼容缺少新列的旧批次。只有 manifest 状态为 `ready` 的批次可查询。
-- 同一 `LogGroup` 的 line、line-block、legacy/strict block matcher 共享每个文件的一份解码和 timestamp/metadata 解析缓存。manifest 同时保存索引 schema、规则 schema、规范化规则数组和稳定 SHA-256 `rules_hash`，便于比较不同采集批次。
-
-旧的 `scripts/download_and_parse_logs.py` 已删除；日志采集是 Tool workflow，不是环境启动脚本。
-
-## 5. Web Tools 扩展
-
-使用 `.agents/skills/autoenv-web-tool/SKILL.md`。Tools 与 scripts 使用独立注册表；`list_scripts()` 永远不会发现 Tool。工具模块导入时不得执行工作。
-
-`webPage/tools/_template.py` 是 local Tool 的可复制模板；下划线文件被发现器跳过。复制成非下划线文件并替换全部占位符后，该文件成为自动发现的正式 Tool。workflow Tool 使用 Skill 内的 `scaffold_tool.py --kind workflow` 生成。
-
-- `kind="local"` 保持原契约：接收 values 字典，在 HTTP 进程运行并返回 JSON。
-- `kind="workflow"` 接收 `RunContext`，静态发现资源声明，通过环境标签绑定后在独立子进程运行，支持启动、事件轮询、停止和统一 `ScriptResult`。
-- `renderer="log_collection"` 使用日志批次、目标列表和分块查询 API。页面以虚拟列表连续滚动，不暴露页码；支持多窗口、slot/socket、Find、上下文、时间窗和模板片段隐藏。关联由服务端跨 target 纯按 Web 指定的秒级窗口计算，slot/socket 只用于筛选。pane 可双向拉伸，Tools 左栏可折叠，日志字号持久化到浏览器本地设置。
-- 本地样本预览只接受最大 8 MiB 的上传正文，临时运行 `autoenv/log_collection_rules.py` 中与正式采集共享的规则并返回计数、示例和属性来源，不接受服务器路径且不持久化。原文/带元数据导出都从 SQLite 完整生成，Web 隐藏状态不参与导出。
-
-错误码工具尚未实现业务规则。现有 `tool-contract-preview` 只证明动态子页签和结构化输出可用。
-
-## 6. Agent CLI 与文件导入
-
-Agent 页签通过 `pywinpty` 在 Windows ConPTY 中始终先启动本地 `cmd.exe /d`，并把设置的“启动目录”作为 ConPTY `cwd`。设置里的 Agent 命令不是待直接创建的可执行文件，而是在 cmd 启动后自动写入的字符和回车；因此内置命令、带参数命令和不存在的命令都由 cmd 在同一终端中回显，留空则只打开 cmd。终端按原始块持续读取，保留回车覆盖、清屏、窗口标题序列过滤和常用 ANSI 光标移动语义；启动尺寸按终端画布计算，页面尺寸变化时同步调整 ConPTY。终端画布自身持有输入焦点，不存在独立消息框；键盘输入按顺序写回 ConPTY，支持方向键、翻页键、Home/End、Insert/Delete、F1-F12、Tab、Escape、Backspace 和 Ctrl 字母组合。
-
-在终端上粘贴或拖入图片、`.py`、`.zip` 时，文件以随机前缀保存到设置目录，带引号的绝对路径直接写到当前 CLI 光标处，但不自动发送回车。普通剪贴板文本也直接写入 ConPTY。文件不会自动导入或执行；Python/ZIP 应由 `.agents/skills/import-python-web-tool/SKILL.md` 静态审查并适配。
-
-页面仍使用仓库内轻量屏幕渲染器而非 xterm.js，因此数据通路和键盘交互等价于真实伪终端，但复杂颜色、鼠标模式、IME 和少见控制序列尚不能视为完整 Windows Terminal 复刻。
-
-## 7. 安全边界
-
-- Web 固定只允许本机访问且没有登录鉴权；不要增加 `0.0.0.0`、动态 host/port 或备用启动入口。
-- 环境密码和 last-run 参数允许明文，相关目录不得提交。
-- local Tools 禁止任意 shell、网络和设备修改。workflow Tools 只能通过 `RunContext`/AutoEnv SDK 使用页面绑定的声明资源；禁止直接 Paramiko/socket、任意 shell、动态代码和在结果/manifest 中保存密码。
-- Agent 上传限制单请求 64 MiB、单文件解码后 48 MiB；ZIP skill 限制展开 128 MiB/2,000 文件。
-- “打开文件夹”是明确按钮触发，不接受任意路径。
-
-## 8. 验证命令
-
-```powershell
-python -X utf8 -m compileall autoenv scripts webPage
-python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py webPage/tools/system_info.py
-python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py webPage/tools/log_collection.py
-python -X utf8 .agents/skills/autoenv-web-tool/scripts/validate_tool.py webPage/tools/_template.py
-python -X utf8 C:/Users/admin/.codex/skills/.system/skill-creator/scripts/quick_validate.py .agents/skills/autoenv-web-tool
-python -X utf8 C:/Users/admin/.codex/skills/.system/skill-creator/scripts/quick_validate.py .agents/skills/import-python-web-tool
-python -X utf8 -m pytest
+```mermaid
+flowchart LR
+    E[环境注册] --> C[remote_catalog.save_connection]
+    C --> J[组网/连接 JSON]
+    S[普通 Python 脚本] --> D[script_files 静态发现]
+    J --> D
+    D --> F[组网/连接/包/参数表单]
+    F --> A[CLI argv 或 request JSON]
+    A --> P[真实 CLI 子进程]
+    P --> O[output.log 简洁操作结果]
+    P --> L[run.log 完整运行证据]
+    O --> W[Web 事件轮询]
+    P --> R[退出码与最终日志地址]
 ```
 
-不要在离线 UT 中实际运行注册脚本，因为它们可能连接 SSH、Telnet、FTP 或 HDFS。
+## 组件和接口
 
-## 9. 已知限制与后续优先级
+| 组件 | 职责 |
+| --- | --- |
+| `startWeb.py` | 固定入口和地址，拒绝启动参数 |
+| `webPage/server.py` | HTTP、目录与脚本描述、CLI 参数转换、子进程生命周期、简洁输出事件 |
+| `webPage/index.html/app.js/styles.css` | 无构建链表单、真实命令预览、操作结果、日志定位 |
+| `autoenv/remote_catalog.py` | 连接类型校验、两级目录读取和原子保存 |
+| `autoenv/script_files.py` | AST 读取普通脚本的环境申请、包和参数，不执行脚本 |
+| `autoenv/cli.py/script_session.py` | 唯一执行语义、运行目录、完整日志、简洁逐操作事件 |
 
-1. Agent CLI 已使用 ConPTY 并同步页面尺寸；页面尚未提供完整 xterm.js 颜色、鼠标和 IME 能力。
-2. 日志 Tool 当前在 `LOG_SOURCES` 固定使用 `/var/log/product` 与 `cpdt_*`，并保留 AUTH line 和 DB block 规则；新增来源或组件规则时直接修改 Tool Python 并增加样例精确断言。
-3. 错误码工具仅有动态 Tool 契约示例，尚无业务规则。
-4. 环境密码按已确认需求允许明文保存；若未来允许远程访问 Web，必须先增加鉴权、CSRF/来源限制、传输保护和密钥存储方案。
-5. 离线 UT 和本机 HTTP 冒烟只能证明控制面契约；不能替代真实设备、文件服务器或 Agent CLI 验收。日志 SCP 仍需在一个明确授权且含 `1260网口` 的实验环境单独冒烟。
+| HTTP 接口 | 输入 | 输出 |
+| --- | --- | --- |
+| `GET /api/environments` | 无 | `topologies: {组网: {连接名: 配置}}` |
+| `POST /api/environments` | `{topology, connection}` | `{ok: true}`；配置无效时 HTTP 400 |
+| `GET /api/scripts` | 无 | `{scripts: [{script,path,slots,topologies,packages,arguments,...}]}` |
+| `POST /api/run/command` | `{script,selected_topology,bindings,packages,arguments}` | `{command}`；仅构造命令，不执行 |
+| `POST /api/run/start` | 同上 | `{ok,generation,command}`，启动真实 CLI |
+| `GET /api/run/events?cursor=N` | 已读取事件数量 | `{events,next,generation}` |
+| `POST /api/run/stop` | `{}` | `{ok}`，终止本地 CLI |
+| `POST /api/open` | `{target: "log"或"run"}` | `{ok}`，仅打开当前运行文件/目录 |
+
+环境文件为 `environments/topologies/<组网>/connections.json`，顶层数组中的每项包含 `name/type/host/port` 与协议字段。SSH `upload_type=scp/sftp`；Telnet `shell_mode=auto/posix/prompt_only`、可选自检 `probe_command/probe_keyword` 和登录 `username/password/login_prompt/password_prompt`；FTP `passive`。Web 与 CLI 复用核心校验，不能另建协议或资源标签绑定规则。
+
+脚本为 `scripts/*.py` 普通 Python 文件，包含 `main()` 或顶层流程，显式调用 `init_script()` 与直接赋值的 `get_remote_info()`。取消装饰器发现。环境候选从所有对象白名单的组网交集产生；二级候选只包含选定组网中该对象允许的类型。单个脚本无法描述时返回其 `error`，不会阻断其他脚本。
+
+## CLI 桥接和证据
+
+基础字段逐个转换为 CLI argv，`subprocess.Popen` 不启用 shell。复杂列表/字典生成 schema 2 请求 JSON，使用 `--request`，不同时混用绑定或参数 flags。前端展示的复制命令与实际执行 argv 相同；Windows 使用可复制的 PowerShell 单引号转义。
+
+CLI 启动时接收内部 `--event-file <临时JSON>`，在 bootstrap 创建会话后写入 `log_path/output_path/run_dir`。Web 后台线程持续 tail `output.log`，按完整 UTF-8 行发布 `output` 事件；同时排空子进程 stdout/stderr，避免管道阻塞。结束前补读最后一批输出，再发布包含 `exit_code/success/log_path/output_path` 的 `complete` 事件。每次运行增加 generation，旧事件不进入新任务。
+
+`output.log` 是简洁操作事件；`run.log` 保存脚本位置、命令、结果、远端输出与 Python/继承子进程输出。普通 CLI stdout 最后仅一行绝对日志地址。Web 不把 `run.log` 当作实时操作输出，不解析远端输出中的伪事件。`--event-file` 文件结束后删除；复杂参数 request 文件保留在被忽略的 `webPage/.runtime/`，使复制命令仍可运行。
+
+退出码 `0/1/2` 分别表示流程成功、运行失败、准备失败。停止进程保留已写日志，但不把停止视为成功。连接细节依旧由原 SSH、Telnet、FTP 实现承担；Web 只负责填入参数与调用方式。
+
+## 高级组件和边界
+
+既有 Tools、日志 SDK 和 ConPTY 后端契约仍保留，主页面不展示这些模块。它们使用独立 `ProcessSession/TerminalSession`，不参与新脚本启动。增加独立 Tool 时仍需相应 project skill，不应重新加回复杂主页面。
+
+服务固定监听本机，没有登录鉴权。环境密码按项目需求允许明文，运行目录、连接配置、临时请求不提交。“打开日志/目录”只接受当前任务已知路径，不接受客户端任意路径。环境名由 `remote_catalog.safe_name()` 校验；脚本路径由 `script_files.resolve_script()` 校验。
+
+## 本地测试与接手检查
+
+```powershell
+python -X utf8 -m pytest -q tests/test_web_cli_bridge.py tests/test_interfaces_web_ftp.py
+python -X utf8 -m compileall -q autoenv scripts webPage
+node --check webPage/app.js
+```
+
+`test_web_cli_bridge.py` 启动真实 loopback HTTP 服务和 CLI 子进程，验证两级注册、SSH 传输字段、静态发现不执行脚本、中文与复杂参数、操作输出和日志分离、退出码与准备失败日志。原混合测试继续验证高级后端和 FTP 真实数据传输。
+
+修改后应检查命令复制、候选过滤、CLI 非交互行为、日志来源行号和停止后的完整末尾事件。浏览器 UI 需另做桌面视觉/操作检查；离线测试不能替代真实设备、TCP 串口网关和真实 HDFS 的验收。
