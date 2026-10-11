@@ -76,6 +76,8 @@ run.log 验证 SCRIPT_STDOUT_MARKER、SCRIPT_STDERR_MARKER、FD_STDOUT_MARKER、
 
 ## 组件、UT 与未验收部分
 
+UDK V100 两个仓库脚本的完整本地模拟位于 `tests/test_udk_v100_workflows.py`，使用隔离的 `SingleUnions_S3` 登记和本地 WebHDFS 端点，实际执行生产 CLI、解压、文件上传、命令与 10 秒等待。业务 shell 由模拟设备响应，不在本机执行；运行方法和判据见 [UDK V100 工作流](UDK_V100_WORKFLOWS.md)。
+
 ```powershell
 python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py
 python -X utf8 -m pytest tests/test_generated_script_contract.py -q

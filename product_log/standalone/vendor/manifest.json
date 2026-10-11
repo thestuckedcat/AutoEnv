@@ -1,0 +1,35 @@
+{
+  "packages": [
+    {
+      "name": "fflate",
+      "version": "0.8.3",
+      "source": "https://registry.npmjs.org/fflate/-/fflate-0.8.3.tgz",
+      "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==",
+      "license": "MIT"
+    },
+    {
+      "name": "seek-bzip",
+      "version": "2.0.0",
+      "source": "https://registry.npmjs.org/seek-bzip/-/seek-bzip-2.0.0.tgz",
+      "integrity": "sha512-SMguiTnYrhpLdk3PwfzHeotrcwi8bNV4iemL9tx9poR/yeaMYwB9VzR1w7b57DuWpuqR8n6oZboi0hj3AxZxQg==",
+      "license": "MIT"
+    },
+    {
+      "name": "xz-decompress",
+      "version": "0.2.3",
+      "source": "https://registry.npmjs.org/xz-decompress/-/xz-decompress-0.2.3.tgz",
+      "integrity": "sha512-O8v6HG8T0PrKBcpyWA13GkSYWFvncwzuzcLx5A7++l3HsE3atmoetXjIxrZ/JV/nbvSZ7WS4+3XvREZuVn+rEA==",
+      "license": "MIT"
+    }
+  ],
+  "assets": {
+    "fflate-0.8.3.js": "462ef8041fc970e3615a20a9dd2b2e3047a073b2da729ef4f02b634bba8b7b83",
+    "fflate-LICENSE.txt": "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551",
+    "seek-bzip-bitreader.js": "c2012c468b89ecf73e83a4454af52758594f59a4a256b21ae7ccba09347350db",
+    "seek-bzip-crc32.js": "c007037841eed8d292137dc69c740be6d8560234f118a4863bbaba359f104b1b",
+    "seek-bzip-index.js": "71e9584b89c6468f5b65b78498e3d37793eff429051820a724bf3a09f87c605e",
+    "seek-bzip-LICENSE.txt": "d14894ed4184c6a1ce6d0ad5a091c24e0552b08dda48562f3fae97812321f650",
+    "seek-bzip-stream.js": "4ec2d27a74d7c16e797a1f70ea11bc73584b407baf8428d54fe6bba19040332d",
+    "xz-decompress-0.2.3.js": "3e1c069c559e5c08e2c6a237ecb93687151725e517d36847c3d10b2b8975a93c"
+  }
+}

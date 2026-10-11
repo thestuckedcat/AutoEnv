@@ -13,6 +13,8 @@ description: Generate, adapt, or review an AutoEnv Python workflow from a suppli
 
 在 `scripts/<name>.py` 写普通零参数 `main()`，不使用 `@register_script`、`ctx`、资源标签或 `S{...}` 占位。CLI 通过文件名发现脚本，不导入或执行它以发现声明。
 
+具体业务例子为 `scripts/UDK_V100.py` 和 `scripts/UDK_V100_Firmware.py`，共用 `SingleUnions_S3`；配置/执行/串口判据见 `docs/UDK_V100_WORKFLOWS.md`。启动 shell 当前按用户要求占位，不能声称它已完成真实安装。
+
 ```python
 from autoenv import create_file, get_remote_info, init_script
 
@@ -33,6 +35,8 @@ def main():
 ## 文件与命令规则
 
 - `get_file(path, filename)` 精确获取本地文件，不用 glob/正则。`create_file(path, filename, str|bytes)` 原样创建，保留完整 shell 文本与换行，不擅自加 `set -e`。
+- 本地搜索使用 `fuzz_search(path, pattern, recursive=False)`（关键词子串/glob）、`accurate_search(...)`（精确名/首个 glob）、`get_handler(path, recursive=False)`；结果按文件名字典序，handler 惰性缓存。`find_subdir(path, "diag/slot62")` 必须唯一。`handler.unzip(dest)` 安全自动识别 ZIP/TAR/GZ；每包独立空目录。`move_to(dest)` 是复制并返回新 handler，`rename(basename)` 真实重命名并返回新 handler；冲突报错。
+- 特殊本地产品日志功能独立在 `product_log/`，通过 `python -m product_log` 或同一 Web 服务 `/product-logs/` 使用；规则见 `product_log/README.md`，不需要新增设备声明或复制解析器。
 - `hdfs_download(local_path, "配置名")` 独立读取项目 `config.json`，配置名必须字面量；不依赖 ctx，不把 HDFS 路径传成 local_path。远端 HDFS 选择由 CLI `--package 配置名=路径` 指定。增加包配置仅在任务需要时做。
 - 三种文件来源返回同一种本地 `FileHandle`，可直接 `ssh.upload(file, remote_dir)` 或 `ftp.upload(file, remote_dir)`。上传返回 None，失败抛分类异常。`ssh.download(remote_dir, filename)`、`ftp.download(...)` 返回本地 handler；不创建远端 handler。
 - SSH 上传方式只在该环境的 `upload_type: scp|sftp` 配置一次。不得为了方便改动已经验证的 Paramiko、SCP、SFTP、FTP 传输流程。

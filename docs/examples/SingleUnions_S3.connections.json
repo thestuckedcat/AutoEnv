@@ -1,0 +1,33 @@
+[
+  {
+    "name": "1260网口",
+    "type": "ssh",
+    "host": "127.0.0.1",
+    "port": 22,
+    "username": "root",
+    "password": "",
+    "upload_type": "scp",
+    "connect_timeout": 30,
+    "enabled": false
+  },
+  {
+    "name": "BMC网口",
+    "type": "ssh",
+    "host": "127.0.0.1",
+    "port": 22,
+    "username": "root",
+    "password": "",
+    "upload_type": "scp",
+    "connect_timeout": 30,
+    "enabled": false
+  },
+  {
+    "name": "BMC串口",
+    "type": "telnet",
+    "host": "127.0.0.1",
+    "port": 23,
+    "timeout": 30,
+    "shell_mode": "posix",
+    "enabled": false
+  }
+]

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated": "2026-10-10",
+  "updated": "2026-10-11",
   "script_entry": "ordinary scripts/<name>.py main() or module scope; no register_script",
   "categories": [
     "environment",
@@ -32,6 +32,54 @@
         "filename: str"
       ],
       "returns": "FileHandle"
+    },
+    {
+      "name": "fuzz_search",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "pattern: str = ''", "recursive: bool = false"],
+      "returns": "FileHandleGroup (filename, relative_path ascending; lazy cached handles)"
+    },
+    {
+      "name": "accurate_search",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "pattern: str = ''", "recursive: bool = false"],
+      "returns": "FileHandle | None (first exact basename or glob match)"
+    },
+    {
+      "name": "get_handler",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "recursive: bool = false"],
+      "returns": "FileHandleGroup"
+    },
+    {
+      "name": "find_subdir",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "partial_path: str", "recursive: bool = true"],
+      "returns": "Path (unique contiguous partial directory path match)"
+    },
+    {
+      "name": "FileHandle.unzip",
+      "category": "local_file",
+      "parameters": ["unzip_path: PathLike", "max_files: int = 10000 (keyword)", "max_bytes: int = 5368709120 (keyword)"],
+      "returns": "Path (safe content-detected ZIP/TAR/GZ extraction)"
+    },
+    {
+      "name": "detect_archive",
+      "category": "local_file",
+      "parameters": ["path: PathLike"],
+      "returns": "Literal[zip,tar,gz] | None (TAR includes compressed variants)"
+    },
+    {
+      "name": "FileHandle.move_to",
+      "category": "local_file",
+      "parameters": ["destination_dir: PathLike"],
+      "returns": "FileHandle (copy, source preserved; no overwrite)"
+    },
+    {
+      "name": "FileHandle.rename",
+      "category": "local_file",
+      "parameters": ["new_name: str (basename)"],
+      "returns": "FileHandle (real rename, immutable replacement)"
     },
     {
       "name": "hdfs_download",

@@ -204,6 +204,7 @@ cython_debug/
 # AutoEnv runtime state
 logs/
 state/
+runtime_path/
 
 # Marimo
 marimo/_static/

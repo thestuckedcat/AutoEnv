@@ -6,6 +6,8 @@
 
 ```powershell
 python -m pip install -e ".[test]"
+# 可选：复现当前已测直接依赖组合（非完整锁文件）
+python -m pip install -c constraints-local-tested.txt -e ".[test]"
 python -X utf8 -m pytest -q
 
 # 新公开接口通过真正 CLI 验证，除 HDFS 外全部真实本地协议
@@ -41,6 +43,26 @@ python -X utf8 -m pytest tests/test_generated_script_contract.py -q
 
 ## 补充：组件测试范围
 
+`test_udk_v100_workflows.py` 将仓库中的两个 UDK V100 脚本交给真实 CLI 宿主，在隔离项目登记 `SingleUnions_S3`，使用真实 loopback SSH/SCP/SFTP/Telnet 和本地 WebHDFS 字节流。只替换环境信息与 HDFS 端点，10 秒等待、handler、解压、上传和命令客户端均执行实际实现；服务端在隔离目录模拟重启、启动和进程列表，绝不运行主机破坏性 shell。运行 `python -X utf8 -m pytest -q tests/test_udk_v100_workflows.py`；业务规则与现场尚未验证部分见 [UDK V100 工作流](../docs/UDK_V100_WORKFLOWS.md)。
+
+2026-10-11 UDK V100 扩展最终全量离线回归：**781 passed、2 skipped、1 warning，160.44s**。新增 22 项工作流测试（单独运行 39.10s）和 5 项 Telnet 返回码/中间提示符回归，完整 Telnet 测试为 68 passed。跳过仍为 Windows 符号链接权限，warning 仍为既有重复 ZIP fixture。三个环境拉起测试均真实等待重启后的 10 秒，成功分支还验证首次 SSH 恢复时 boot_id 未变化不能继续。
+
+独立单文件网页新增 `test_product_log_standalone_build.py`、`test_product_log_standalone_archives.py`、`test_product_log_standalone_parser.py`。运行 `python -X utf8 -m pytest -q tests/test_product_log_standalone_build.py tests/test_product_log_standalone_archives.py tests/test_product_log_standalone_parser.py`，需要 Node 执行实际浏览器 JavaScript；最终 HTML 使用者只需浏览器，打包只需 Python 标准库。测试覆盖生成产物的资源全部内嵌、许可、确定性、vendor SHA256、`-I -S` 构建、已有代码不变、真实 codec、多层压缩、编码、分段/查询/模块/日期及 Python 对照。实际生成 HTML 的 Worker 在禁用网络 API 下处理 6,011 条样本，全量统一导出与 Python 一致。内置浏览器拒绝 `file://`，未做直接打开/交互验收；边界和构建命令见 [独立版说明](../product_log/standalone/README.md)。
+
+2026-10-11 单文件网页扩展最终全量离线回归：**754 passed、2 skipped、1 warning，121.22s**。新增 120 项 standalone 测试（构建/完整 Worker/高亮 9、归档 49、解析/查询 62）；两项跳过仍为 Windows 符号链接权限，warning 仍为既有重复 ZIP fixture。GZIP 填充、可选头与各成员完整性、Unicode casefold 高亮均有真实回归。
+
+2026-10-11 diag/var 扩展最终全量离线回归：**634 passed、2 skipped、1 warning，71.55s**。两项跳过均为本机 Windows 不允许创建符号链接；warning 是既有重复 ZIP 成员 fixture。新增 22 项产品收集和 30 项解析/映射测试，另以真实 CLI/HTTP 验证完整多层合成包；浏览器结果见 [功能记录](../newFeature/2026-10-11-local-product-log-parser.md)。
+
+新增本地产品日志测试直接构造真实 ZIP/TAR/GZ 与多文件用户态/内核态/固件日志，不访问设备。运行 `python -X utf8 -m pytest -q tests/test_local_file_operations.py tests/test_product_logs.py tests/test_product_log_collection.py tests/test_product_log_domains.py tests/test_product_log_web.py tests/test_product_log_integration.py tests/test_product_log_retention.py`，验证搜索/解压/复制、跨文件 seg、重复段、编码、时间顺序、分组与查询、独立 CLI、真实 loopback HTTP 分块上传及任务回收。
+
+`test_product_log_collection.py` 验证 auto/product/generic 分流、默认精确 diag/var 目录及多候选消歧、仅一类存在、diag 历史字典序/current 最后、dmesg 数字轮转/current 最后、多层 var 及不受 diag 模式限制的内核选择。`test_product_log_domains.py` 使用真实文件与索引验证用户态 UDK 后缀归一和 udk2 排除、12 个英文月份、无日期绝不继承、来源保留、动态模块映射/不存在/重叠匹配、固件类型名称、统一时间与未知上下文、索引版本 2 及旧批次重导。
+
+3 GiB 自动清理以 `test_product_log_retention.py` 的小阈值真实目录测试覆盖，不创建数 GiB 的测试文件；验证精确触发边界、旧数据优先、活动/浏览/最新结果保护、上传及受管路径输入引用、重启恢复、外部原件不变、部分删除后的真实统计及 Windows junction 跳过。`test_product_log_web.py` 另验证真实 HTTP 占用接口、解除浏览保护后的回收、历史列表同步和仅保护数据超阈值时仍可查询。
+
+可运行 `python -X utf8 tests/product_log_sample.py logs/product-log-demo/product.tar.gz --source-dir logs/product-log-demo/source` 重建网页混排样本：Type 0–4 × Dev 0–5 共 30 组固件、每组 120 条；`udk log/UBE/MEME/HBOOT` 四种驱动、各 500 条。`test_product_log_integration.py` 通过真实 CLI 核对所有分组的精确数量、跨 7 文件的 14 段组装和时间排序；名称含空格的 ModuleName 另有解析回归。
+
+diag/var 演示样本使用 `python -X utf8 tests/product_log_domain_sample.py logs/product-log-domain-demo/product.tar.gz --source-dir logs/product-log-domain-demo/source` 生成。网页填 diag=`diag/slot62`、var=`var`，日志模式留空，或运行 `python -X utf8 -m product_log logs/product-log-domain-demo/product.tar.gz --collection-mode product --diag-directory diag/slot62 --var-directory var`。预期 11 文件、2,003 用户态、408 内核态（8 条时间未知）、3,600 固件、统一时间 6,011 条；udk 用户态 500 条、内核匹配 104 条，UBE 的 mami 内核匹配 100 条。样本覆盖六种压缩格式和两条多层 var 链，包含 `.1/.2/.10/current`、UDK 两种后缀、udk2 与多 Slot/Cpu；原始文件及概要在 `logs/product-log-domain-demo/source/`。
+
 | 文件 | 覆盖目标 | 失败优先检查 |
 | --- | --- | --- |
 | `test_ssh_host.py` | 真实命令、关键词响应、鉴权/断连/复用、双向 SCP/SFTP、二进制/空文件/Unicode、MD5、覆盖、唯一匹配、四路 SCP、截断/失败清理和占位符 | ssh_host、commands/transfers、run.log |
@@ -50,9 +72,13 @@ python -X utf8 -m pytest tests/test_generated_script_contract.py -q
 | `test_runtime_registry.py` | 元数据、参数保存、HTTP 下载、newest/rerun、独立目录、组合脚本和 func 生命周期 | runtime/registry、params/result/last-run |
 | `test_local_protocol_workflow.py` | WebHDFS → ZIP → SCP/SFTP → shell → SSH/Telnet → SCP/SFTP → FTP → 日志 → func → rerun | 每步结果、双方字节、最终记录及命令 |
 | `test_log_collection.py` | 所有日志经真实 SCP 获取；归档、来源隔离、strict/legacy/metadata、SQLite/查询/export/Find、workflow | 真实 SSHHost、SDK 请求、logs/log_query |
+| `test_product_logs.py` / `test_product_log_collection.py` | 独立本地整理、模式分流、diag/var 来源与嵌套压缩、跨文件固件组装、稳定业务排序 | product_log/workflow、manifest、来源路径 |
+| `test_product_log_domains.py` | 两态驱动、UDK 归一、dmesg 日期与未知、模块表动态查询、统一时间和固件类型 | parser/index/module_map、原始来源和记录字段 |
+| `test_product_log_web.py` / `test_product_log_integration.py` / `test_product_log_retention.py` | 真实 HTTP/CLI、样本精确计数、模块表恢复、任务隔离与受管目录回收 | product_log/web、batch manifest、storage 状态 |
 | `test_command_files.py` | 上传映射、Host 隔离、占位符及原样 shell 文本 | command_files |
 | `test_results_selectors.py` | 结果、选择器安全、序列化、脱敏及 recorder 摘要 | results/selectors/recorder |
 | `test_generated_script_contract.py` | 全部 scripts 的共享 AST 契约及非法调用反例 | 验证器报错行 |
+| `test_udk_v100_workflows.py` | 两个发布脚本的真实 CLI、本地 WebHDFS 下载、重启/真实等待、SCP/SFTP 字节、固件解压、串口结束和业务检查 | 脚本/本轮 runtime、peer 命令/传输、boot_id、final_operation |
 | `test_cli.py` | 真 CLI 子进程、非交互参数、静态发现、准备/执行状态、单log路径、全部输出捕获 | cli/script_files/session、params/result/run.log/output.log |
 | `test_remote_environment.py` | 新对象自检、真实 SCP/SFTP/FTP 双向、Telnet被动流/关键词/登录、retry与失败分类 | remote_environment/原client、peer原始字节与传输记录 |
 | `test_script_files_session.py` | AST普通main/顶层/with初始化、零参数、角色/白名单/组网交集、历史与只读参数、生命周期/源码快照 | script_files/session/catalog、workflow-source/params/result |

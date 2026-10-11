@@ -24,6 +24,8 @@ python -X utf8 -m autoenv.cli run demo --non-interactive --topology "双机主�
 
 ## 补充：配置与选择
 
+本地产品日志不需要登记环境，通过 `/product-logs/` 或 `python -m product_log INPUT` 独立使用。通用文件搜索/解压 API 可以被普通环境脚本调用；详细接口与复制语义见 [产品日志说明](../product_log/README.md)。
+
 配置保存在 `environments/topologies/<组网>/connections.json`，顶层数组：
 
 ```json
@@ -60,3 +62,5 @@ python -X utf8 -m autoenv.cli describe demo --json
 ```
 
 真实协议的纯本地验证见 [LOCAL_SIMULATION.md](LOCAL_SIMULATION.md)。环境密码/历史参数文件保持本地，不提交到版本库。
+
+UDK V100 的两个现成脚本共用 `SingleUnions_S3`，连接名为 `1260网口`、`BMC网口` 和 `BMC串口`。可复制的 [连接模板](examples/SingleUnions_S3.connections.json) 使用禁用的 loopback 占位地址；填写实际地址、凭据和端口后再启用。完整包配置、运行参数、重启和串口判断见 [UDK V100 使用说明](UDK_V100_WORKFLOWS.md)。

@@ -455,6 +455,9 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         try:
+            from product_log.web import handle_get
+            if handle_get(self, parsed, ROOT_DIR):
+                return
             if parsed.path == "/api/health":
                 self.json({"ok": True, "root": str(ROOT_DIR)})
             elif parsed.path == "/api/environments":
@@ -544,6 +547,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            from product_log.web import handle_post
+            if handle_post(self, ROOT_DIR):
+                return
             data = self.body()
             if self.path == "/api/environments":
                 from autoenv.remote_catalog import save_connection

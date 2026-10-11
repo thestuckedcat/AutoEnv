@@ -4,6 +4,8 @@
 
 ## 最简实现：普通 Python 文件就是脚本
 
+后续本地文件扩展与独立产品日志已归档到 [产品日志说明](../product_log/README.md) 和 [2026-10-11 功能记录](../newFeature/2026-10-11-local-product-log-parser.md)。原环境脚本宿主与协议规则继续适用；产品日志拥有独立模块 CLI 和同服务网页。
+
 `scripts/example.py` 是最小完整示例；不需要 `@register_script`、ctx、文件选择器、资源标签或上传占位符。
 
 ```python

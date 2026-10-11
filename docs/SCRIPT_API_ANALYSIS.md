@@ -31,11 +31,21 @@ def main():
 | mark_output | 无 | None | Telnet，更新匹配起点 |
 | retry | interval；max_try_times | None | 网络重连、自检；不重放 |
 | get_file | 本地目录；精确 filename | FileHandle | 无 glob |
+| fuzz_search | path；pattern=""；recursive=False | FileHandleGroup | 无通配符时匹配文件名子串 |
+| accurate_search | path；pattern=""；recursive=False | FileHandle 或 None | 精确文件名或首个 glob 命中 |
+| get_handler | path；recursive=False | FileHandleGroup | 全部普通文件，按文件名字典序 |
+| find_subdir | path；partial_path；recursive=True | Path | 唯一目录；可用 diag/slot62 消歧 |
+| detect_archive | path | zip/tar/gz 或 None | TAR压缩变体归为tar；内容识别 |
+| FileHandle.unzip | 输出目录；可选 max_files/max_bytes | Path | 内容识别 ZIP/TAR/GZ；安全展开 |
+| FileHandle.move_to | 目的目录 | FileHandle | 复制，保留源文件；同名报错 |
+| FileHandle.rename | 新 basename | FileHandle | 真实重命名；使用返回的新 handler |
 | hdfs_download | 本地目录；config.json 名称 | FileHandle | 独立，无 ctx |
 | create_file | 本地目录；filename；str 或 bytes | FileHandle | 任意扩展名 |
 | close | 无 | None | paths/remote，幂等 |
 
 FileHandle 提供本地 path、filename 与完整性信息。ScriptPaths 提供 run_id/run_dir/runtime_path/log_path/output_path/params_path/result_path，以及只读 arguments。CommandResult 提供 status、exit_code、stdout、stderr、output、raw_output、phase、时间和错误；`with_failure(message)` 表达业务失败。
+
+FileHandleGroup 固定路径排序，首次取用成员时建立并缓存 handler；搜索支持 `* ? [abc] [!abc]`，区分大小写，不跟随链接目录。独立产品日志模块、CLI 与网页共用 `product_log.workflow`，具体示例见 [产品日志](../product_log/README.md)。
 
 SSH upload_type 在环境配置中为 scp/sftp。Telnet 没有文件方法，FTP 没有命令方法。上传失败异常携带操作结果，execute 普通非零/超时/未知返回结果供脚本处理；入参或能力错误仍抛异常。
 
@@ -56,6 +66,8 @@ def check(dut):
 ```
 
 串口重启：先 mark_output，再从 SSH reboot，然后 telnet_wait_exec("Press Ctrl+B", b"\x02") 和 wait_reboot("BOOT READY")。bytes 精确发送不补换行，str 按命令发送；发送后保留连接。retry 仅重连自检。
+
+需要等待串口 shell 脚本结束时使用 `execute(command, timeout=...)`。POSIX 模式在命令之后追加本次独立的返回码标记，收到标记和最终提示符后解析退出码；仅有普通业务输出或提示符不代表已取得退出码。`UDK_V100_Firmware` 再检查返回输出中的独立单词 success，不会因运行途中出现 success 提前返回；具体判断见 [UDK V100 工作流](UDK_V100_WORKFLOWS.md)。
 
 ## 补充组件与测试
 

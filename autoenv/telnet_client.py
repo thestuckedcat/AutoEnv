@@ -906,16 +906,24 @@ class TelnetClient:
     def _read_to_prompt(
         self, timeout: float, *, marker: str | None, stream: bool
     ) -> str:
-        # Framing ends at the prompt. Marker validation is deliberately a
-        # separate parse phase so a shell that returns a prompt but omits or
-        # mangles the marker is reported as PROTOCOL_ERROR/PARSE_RESULT rather
-        # than as a command timeout.
-        del marker
-
         def complete(text: str) -> bool:
-            return self._prompt_at_end(text) is not None
+            # An interactive shell can print a prompt between the business
+            # command and our separately submitted printf. A prompt by itself
+            # does not frame a POSIX result; wait for this command's unique
+            # return-code marker and the following prompt.
+            return self._prompt_at_end(text) is not None and (
+                marker is None or self._extract_exit_code(text, marker) is not None
+            )
 
-        return self._receive_until(timeout, complete, stream=stream)
+        try:
+            return self._receive_until(timeout, complete, stream=stream)
+        except _ReadTimedOut as exc:
+            # A final prompt without a marker is still a protocol error in the
+            # caller's parse phase. Only the observation deadline distinguishes
+            # it from an intermediate prompt whose marker has not arrived yet.
+            if marker is not None and self._prompt_at_end(exc.partial) is not None:
+                return exc.partial
+            raise
 
     def _receive_until(
         self,

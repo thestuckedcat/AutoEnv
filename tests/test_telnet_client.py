@@ -248,6 +248,66 @@ def test_posix_marker_exit_status_crosses_real_tcp(client_factory, exit_code, st
         assert remote.probes == []
 
 
+@pytest.mark.parametrize("exit_code,status", [
+    (0, CommandStatus.SUCCESS), (7, CommandStatus.COMMAND_FAILED),
+])
+def test_posix_waits_for_marker_after_an_intermediate_shell_prompt(client_factory, exit_code, status):
+    class IntermediatePromptServer(LocalTelnetServer):
+        def _send(self, connection, data):
+            if isinstance(data, bytes) and data.startswith(b"\r\n__AUTOENV_RC_"):
+                # Emit the prompt produced after the business shell line,
+                # before the separately submitted return-code printf runs.
+                super()._send(connection, ("\r\n" + self.prompt + " ").encode())
+                self._stop.wait(0.03)
+            super()._send(connection, data)
+
+    with IntermediatePromptServer(replies={
+        "upgrade": TelnetReply(output=b"upgrade success", exit_code=exit_code),
+        "next": TelnetReply(output=b"next result"),
+    }) as remote:
+        client = client_factory(remote, shell_mode="posix")
+        result = client.execute("upgrade")
+        assert result.status is status and result.exit_code == exit_code
+        assert result.phase is CommandPhase.COMPLETE and "upgrade success" in result.stdout
+        assert result.duration_ms >= 25
+        assert result.error_type == ("NON_ZERO_EXIT_CODE" if exit_code else None)
+        # The actual final prompt must also be consumed: the next command
+        # cannot finish against leftover framing from the upgrade.
+        following = client.execute("next")
+        assert following.success and "next result" in following.stdout
+        assert remote.commands == ["upgrade", "next"] and remote.sessions == 1
+        assert not remote.errors
+
+
+@pytest.mark.parametrize("exit_code,status", [
+    (0, CommandStatus.SUCCESS), (9, CommandStatus.COMMAND_FAILED),
+])
+def test_posix_prompt_like_output_and_stale_marker_do_not_end_command(client_factory, exit_code, status):
+    with LocalTelnetServer(replies={
+        "inspect": TelnetReply(output=(
+            b"__AUTOENV_RC_deadbeef__:0\r\nroot@loopback:~# ",
+            b"\r\nlater output\r\n",
+        ), exit_code=exit_code),
+    }) as remote:
+        result = client_factory(remote, shell_mode="posix").execute("inspect")
+        assert result.status is status and result.exit_code == exit_code
+        assert "later output" in result.stdout
+        assert "__AUTOENV_RC_deadbeef__:0" in result.stdout
+        assert remote.commands == ["inspect"] and not remote.errors
+
+
+def test_posix_stale_marker_and_command_echo_cannot_supply_missing_exit(client_factory):
+    with LocalTelnetServer(replies={
+        "inspect": TelnetReply(output=b"__AUTOENV_RC_deadbeef__:0\r\nsuccess", omit_marker=True),
+    }) as remote:
+        result = client_factory(remote, shell_mode="posix").execute("inspect", timeout=0.06)
+        assert result.status is CommandStatus.PROTOCOL_ERROR and result.exit_code is None
+        assert result.error_type == "EXIT_MARKER_NOT_FOUND" and result.phase is CommandPhase.PARSE_RESULT
+        assert "success" in result.stdout and "printf" not in result.stdout
+        assert result.duration_ms >= 50
+        assert remote.commands == ["inspect"]
+
+
 @pytest.mark.parametrize("raw", [b"\x02", b"\x03\x00\x1b[B", b"yes\r\n", b"\xff\x00\xfe"])
 def test_execute_on_output_delivers_unmodified_bytes_and_reconnects(client_factory, raw):
     with LocalTelnetServer(replies={
