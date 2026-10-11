@@ -1,0 +1,319 @@
+{
+  "schema_version": 2,
+  "updated": "2026-10-11",
+  "script_entry": "ordinary scripts/<name>.py main() or module scope; no register_script",
+  "categories": [
+    "environment",
+    "local_file",
+    "hdfs",
+    "generation"
+  ],
+  "operations": [
+    {
+      "name": "init_script",
+      "category": "initialization",
+      "parameters": [],
+      "returns": "ScriptPaths"
+    },
+    {
+      "name": "get_remote_info",
+      "category": "environment",
+      "parameters": [
+        "required_type: Literal[ssh,telnet,ftp]",
+        "allowed_envs: Sequence[tuple[str,str]]"
+      ],
+      "returns": "SSHRemote | TelnetRemote | FTPRemote"
+    },
+    {
+      "name": "get_file",
+      "category": "local_file",
+      "parameters": [
+        "path: PathLike",
+        "filename: str"
+      ],
+      "returns": "FileHandle"
+    },
+    {
+      "name": "fuzz_search",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "pattern: str = ''", "recursive: bool = false"],
+      "returns": "FileHandleGroup (filename, relative_path ascending; lazy cached handles)"
+    },
+    {
+      "name": "accurate_search",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "pattern: str = ''", "recursive: bool = false"],
+      "returns": "FileHandle | None (first exact basename or glob match)"
+    },
+    {
+      "name": "get_handler",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "recursive: bool = false"],
+      "returns": "FileHandleGroup"
+    },
+    {
+      "name": "find_subdir",
+      "category": "local_file",
+      "parameters": ["path: PathLike", "partial_path: str", "recursive: bool = true"],
+      "returns": "Path (unique contiguous partial directory path match)"
+    },
+    {
+      "name": "FileHandle.unzip",
+      "category": "local_file",
+      "parameters": ["unzip_path: PathLike", "max_files: int = 10000 (keyword)", "max_bytes: int = 5368709120 (keyword)"],
+      "returns": "Path (safe content-detected ZIP/TAR/GZ extraction)"
+    },
+    {
+      "name": "detect_archive",
+      "category": "local_file",
+      "parameters": ["path: PathLike"],
+      "returns": "Literal[zip,tar,gz] | None (TAR includes compressed variants)"
+    },
+    {
+      "name": "FileHandle.move_to",
+      "category": "local_file",
+      "parameters": ["destination_dir: PathLike"],
+      "returns": "FileHandle (copy, source preserved; no overwrite)"
+    },
+    {
+      "name": "FileHandle.rename",
+      "category": "local_file",
+      "parameters": ["new_name: str (basename)"],
+      "returns": "FileHandle (real rename, immutable replacement)"
+    },
+    {
+      "name": "hdfs_download",
+      "category": "hdfs",
+      "parameters": [
+        "path: PathLike",
+        "config_json_name: str"
+      ],
+      "returns": "FileHandle"
+    },
+    {
+      "name": "create_file",
+      "category": "generation",
+      "parameters": [
+        "path: PathLike",
+        "filename: str",
+        "content: str | bytes"
+      ],
+      "returns": "FileHandle"
+    },
+    {
+      "name": "SSHRemote.upload",
+      "category": "environment",
+      "parameters": [
+        "file: FileHandle",
+        "path: str"
+      ],
+      "returns": "None"
+    },
+    {
+      "name": "SSHRemote.download",
+      "category": "environment",
+      "parameters": [
+        "path: str",
+        "filename: str"
+      ],
+      "returns": "FileHandle"
+    },
+    {
+      "name": "FTPRemote.upload",
+      "category": "environment",
+      "parameters": [
+        "file: FileHandle",
+        "path: str"
+      ],
+      "returns": "None"
+    },
+    {
+      "name": "FTPRemote.download",
+      "category": "environment",
+      "parameters": [
+        "path: str",
+        "filename: str"
+      ],
+      "returns": "FileHandle"
+    },
+    {
+      "name": "SSHRemote.run",
+      "category": "environment",
+      "parameters": [
+        "command: str"
+      ],
+      "returns": "str"
+    },
+    {
+      "name": "TelnetRemote.run",
+      "category": "environment",
+      "parameters": [
+        "command: str"
+      ],
+      "returns": "str"
+    },
+    {
+      "name": "SSHRemote.execute",
+      "category": "environment",
+      "parameters": [
+        "command: str",
+        "timeout: float | None = None",
+        "expect_disconnect: bool = False"
+      ],
+      "returns": "CommandResult"
+    },
+    {
+      "name": "TelnetRemote.execute",
+      "category": "environment",
+      "parameters": [
+        "command: str",
+        "timeout: float | None = None",
+        "expect_disconnect: bool = False"
+      ],
+      "returns": "CommandResult"
+    },
+    {
+      "name": "TelnetRemote.read",
+      "category": "environment",
+      "parameters": [],
+      "returns": "str"
+    },
+    {
+      "name": "TelnetRemote.wait_reboot",
+      "category": "environment",
+      "parameters": [
+        "keyword: str"
+      ],
+      "returns": "str"
+    },
+    {
+      "name": "TelnetRemote.telnet_wait_exec",
+      "category": "environment",
+      "parameters": [
+        "keyword: str",
+        "exec_content: str | bytes"
+      ],
+      "returns": "str"
+    },
+    {
+      "name": "TelnetRemote.mark_output",
+      "category": "environment",
+      "parameters": [],
+      "returns": "None"
+    },
+    {
+      "name": "remote.retry",
+      "category": "environment",
+      "parameters": [
+        "interval: float",
+        "max_try_times: int"
+      ],
+      "returns": "None"
+    },
+    {
+      "name": "remote.close",
+      "category": "lifecycle",
+      "parameters": [],
+      "returns": "None"
+    },
+    {
+      "name": "ScriptPaths.close",
+      "category": "lifecycle",
+      "parameters": [],
+      "returns": "None"
+    }
+  ],
+  "models": {
+    "ScriptPaths": {
+      "run_id": "str",
+      "run_dir": "Path",
+      "runtime_path": "Path",
+      "log_path": "Path",
+      "output_path": "Path",
+      "params_path": "Path",
+      "result_path": "Path",
+      "arguments": "readonly Mapping[str, JSONValue]"
+    },
+    "FileHandle": {
+      "path": "Path",
+      "filename": "str",
+      "size": "int",
+      "sha256": "str"
+    },
+    "CommandResult": {
+      "status": "CommandStatus",
+      "exit_code": "int | None",
+      "stdout": "str",
+      "stderr": "str",
+      "output": "str",
+      "raw_output": "str",
+      "phase": "CommandPhase",
+      "success": "bool",
+      "with_failure": "(message, error_type=BUSINESS_RULE_FAILED) -> CommandResult"
+    }
+  },
+  "capabilities": {
+    "ssh": [
+      "self_check",
+      "upload",
+      "download",
+      "run",
+      "execute",
+      "retry",
+      "close"
+    ],
+    "telnet": [
+      "self_check",
+      "run",
+      "execute",
+      "read",
+      "wait_reboot",
+      "telnet_wait_exec",
+      "mark_output",
+      "retry",
+      "close"
+    ],
+    "ftp": [
+      "self_check",
+      "upload",
+      "download",
+      "retry",
+      "close"
+    ]
+  },
+  "configuration": {
+    "directory": "environments/topologies/<topology>/connections.json",
+    "format": "array of flat connection objects",
+    "ssh_upload_type": [
+      "scp",
+      "sftp"
+    ],
+    "argument_types": [
+      "str",
+      "int",
+      "float",
+      "bool",
+      "list",
+      "dict"
+    ]
+  },
+  "cli": {
+    "entry": "python -X utf8 -m autoenv.cli",
+    "metadata": [
+      "list --json",
+      "describe SCRIPT --json"
+    ],
+    "execute": "run SCRIPT --non-interactive --topology NAME --bind role=connection --arg name=value --package config=hdfs_path",
+    "stdout": "one existing absolute run.log path",
+    "exit_codes": {
+      "0": "success",
+      "1": "execution failure",
+      "2": "preparation failure"
+    }
+  },
+  "logging": {
+    "run_log": "full source trace, results, remote output, print/stderr",
+    "output_log": "concise per-operation results for live Web output"
+  },
+  "verification": "docs/LOCAL_SIMULATION.md"
+}

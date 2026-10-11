@@ -53,27 +53,17 @@ def _project_root(tmp_path: Path, *, with_package: bool = False) -> Path:
     return root
 
 
-class FakeHDFS:
-    payload = b"offline-package"
+PAYLOAD = b"offline-package"
 
-    def __init__(self) -> None:
-        self.listed: list[str] = []
-        self.downloaded: list[tuple[str, str]] = []
 
-    def list_directory(self, path: str):
-        self.listed.append(path)
-        return [
-            HDFSFileEntry(
-                name="firmware-1.bin",
-                is_directory=False,
-                length=len(self.payload),
-                modification_time=datetime(2026, 7, 15, tzinfo=timezone.utc),
-            )
-        ]
-
-    def download_file(self, remote_path: str, local_path: str) -> None:
-        self.downloaded.append((remote_path, local_path))
-        Path(local_path).write_bytes(self.payload)
+def _firmware_remote(factory, base="/remote/firmware", *, newest=False):
+    target = base + "/build/newest" if newest else base
+    now = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    directories = {target: [HDFSFileEntry("firmware-1.bin", False, len(PAYLOAD), now)]}
+    if newest:
+        directories[base] = [HDFSFileEntry("build", True, 0, now)]
+        directories[base + "/build"] = [HDFSFileEntry("newest", True, 0, now)]
+    return factory(directories, {target + "/firmware-1.bin": PAYLOAD})
 
 
 def _command_failure() -> CommandResult:
@@ -224,7 +214,7 @@ def test_unextractable_dynamic_calls_leave_script_visible(tmp_path):
     assert definition.package_inputs == ()
 
 
-def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp_path):
+def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp_path, webhdfs_factory):
     root = _project_root(tmp_path, with_package=True)
     contexts: list[RunContext] = []
 
@@ -253,20 +243,20 @@ def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp
 
     prompts: list[str] = []
     password_prompts: list[str] = []
-    first_hdfs = FakeHDFS()
+    first_hdfs = _firmware_remote(webhdfs_factory)
     first = run_script(
         "provision",
         root_dir=root,
         input_func=lambda prompt: prompts.append(prompt) or "",
         password_input=lambda prompt: password_prompts.append(prompt) or "",
         console=io.StringIO(),
-        hdfs_client=first_hdfs,
+        hdfs_client=first_hdfs.client,
     )
     assert first.success is True
     assert len(prompts) == 9
     assert len(password_prompts) == 1
-    assert first_hdfs.listed == ["/remote/firmware"]
-    assert (Path(first.package_dir) / "firmware-1.bin").read_bytes() == FakeHDFS.payload
+    assert first_hdfs.list_calls == ["/remote/firmware"]
+    assert (Path(first.package_dir) / "firmware-1.bin").read_bytes() == PAYLOAD
 
     first_params = json.loads((Path(first.run_dir) / "params.json").read_text("utf-8"))
     assert first_params["ssh_hosts"]["dut"] == {
@@ -301,7 +291,7 @@ def test_run_defaults_last_run_and_rerun_are_offline_and_use_new_directories(tmp
         input_func=unexpected_prompt,
         password_input=unexpected_prompt,
         console=io.StringIO(),
-        hdfs_client=FakeHDFS(),
+        hdfs_client=_firmware_remote(webhdfs_factory).client,
     )
     assert second.success is True
     assert second.run_dir != first.run_dir
@@ -331,7 +321,7 @@ def test_missing_last_run_does_not_execute_body(tmp_path):
     assert not (root / "state" / "last_runs" / "fresh.json").exists()
 
 
-def test_rerun_preserves_saved_package_path_mode(tmp_path):
+def test_rerun_preserves_saved_package_path_mode(tmp_path, webhdfs_factory):
     root = _project_root(tmp_path, with_package=True)
     config = json.loads((root / "config.json").read_text("utf-8"))
     config[0]["base_link"] = "/base"
@@ -354,33 +344,26 @@ def test_rerun_preserves_saved_package_path_mode(tmp_path):
         ),
         encoding="utf-8",
     )
-    captured: dict[str, object] = {}
-
-    class FakeManager:
-        def get_spec(self, _name: str):
-            return SimpleNamespace(link="/remote/firmware", base_link="/base")
-
-        def download(self, selector, **kwargs):
-            captured.update(selector=selector, **kwargs)
-            return "downloaded"
+    remote = _firmware_remote(webhdfs_factory, "/base", newest=True)
 
     context = RunContext(
         root_dir=root,
         script_name="rerun_mode",
         mode=RunMode.RERUN,
         console=io.StringIO(),
+        hdfs_client=remote.client,
     )
     try:
-        context._package_manager = FakeManager()
-        assert context.download_package(package("firmware")) == "downloaded"
-        assert captured["path_mode"] == "base_link_newest"
-        assert captured["path_override"] is None
+        result = context.download_package(package("firmware"))
+        assert result.success and result.remote_dir == "/base/build/newest"
+        assert remote.list_calls == ["/base", "/base/build", "/base/build/newest"]
+        assert Path(result.local_file).read_bytes() == PAYLOAD
     finally:
         context.close()
         context.finish_recording()
 
 
-def test_package_newest_shortcut_overrides_saved_manual_path(tmp_path):
+def test_package_newest_shortcut_overrides_saved_manual_path(tmp_path, webhdfs_factory):
     root = _project_root(tmp_path, with_package=True)
     config = json.loads((root / "config.json").read_text("utf-8"))
     config[0]["base_link"] = "/config/newest-root"
@@ -403,18 +386,7 @@ def test_package_newest_shortcut_overrides_saved_manual_path(tmp_path):
         ),
         encoding="utf-8",
     )
-    captured: dict[str, object] = {}
-
-    class FakeManager:
-        def get_spec(self, _name: str):
-            return SimpleNamespace(
-                link="/config/fixed-build",
-                base_link="/config/newest-root",
-            )
-
-        def download(self, selector, **kwargs):
-            captured.update(selector=selector, **kwargs)
-            return "downloaded"
+    remote = _firmware_remote(webhdfs_factory, "/config/newest-root", newest=True)
 
     prompts: list[str] = []
     context = RunContext(
@@ -423,12 +395,14 @@ def test_package_newest_shortcut_overrides_saved_manual_path(tmp_path):
         mode=RunMode.RUN,
         input_func=lambda prompt: prompts.append(prompt) or "!NEWEST",
         console=io.StringIO(),
+        hdfs_client=remote.client,
     )
     try:
-        context._package_manager = FakeManager()
-        assert context.download_package(package("firmware")) == "downloaded"
-        assert captured["path_mode"] == "base_link_newest"
-        assert captured["path_override"] is None
+        result = context.download_package(package("firmware"))
+        assert result.success
+        assert result.remote_dir == "/config/newest-root/build/newest"
+        assert "/saved/manual-build" not in remote.list_calls
+        assert Path(result.local_file).read_bytes() == PAYLOAD
         assert context.params["packages"]["firmware"] == {
             "path_mode": "base_link_newest",
             "path_override": None,

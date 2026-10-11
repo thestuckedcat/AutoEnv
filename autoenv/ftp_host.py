@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .recorder import RunRecorder
-from .results import UploadResult
+from .results import RemoteDownloadResult, UploadResult
 from .selectors import LocalFileSelector, SelectorResolutionError, describe_selector, resolve_local_file
 
 
@@ -160,6 +160,59 @@ class FTPHost:
         self._ftp = ftp
         return ftp
 
+    def download(self, remote_dir: str, filename: str) -> RemoteDownloadResult:
+        """Receive an exact file with the existing FTP control/data session."""
+        from .file_handles import filename_only
+
+        remote_dir = _normalize_remote_dir(remote_dir)
+        filename = filename_only(filename)
+        operation_id = self.recorder.next_operation_id()
+        started = datetime.now().astimezone()
+        remote_file = posixpath.join(remote_dir, filename)
+        local_file = self.package_dir / filename
+        pending = local_file.with_name(filename + ".part")
+        remote_size = local_size = local_md5 = None
+        success = False
+        status, error_type, error_message = "download_failed", None, None
+        local_existed = local_file.exists()
+        try:
+            ftp = self._connect()
+            ftp.voidcmd("TYPE I")
+            remote_size = ftp.size(remote_file)
+            if remote_size is None:
+                raise ValueError("FTP server did not provide the remote file size")
+            self.package_dir.mkdir(parents=True, exist_ok=True)
+            pending.unlink(missing_ok=True)
+            with pending.open("wb") as target:
+                ftp.retrbinary(f"RETR {remote_file}", target.write)
+            local_size = pending.stat().st_size
+            if local_size != remote_size:
+                status, error_type = "size_verification_failed", "SIZE_VERIFICATION_FAILED"
+                error_message = f"downloaded size mismatch: remote={remote_size}, local={local_size}"
+            else:
+                local_md5 = _md5(pending)
+                pending.replace(local_file)
+                success, status = True, "success"
+        except ftplib.error_perm as exc:
+            status, error_type, error_message = "ftp_rejected", "FTP_REJECTED", str(exc)
+        except Exception as exc:
+            status, error_type, error_message = "download_failed", type(exc).__name__, str(exc) or repr(exc)
+            self.drop_connection()
+        finally:
+            pending.unlink(missing_ok=True)
+        finished = datetime.now().astimezone()
+        result = RemoteDownloadResult(
+            run_id=self.run_id, operation_id=operation_id, protocol="ftp", target_name=self.name,
+            remote_dir=remote_dir, requested_file=filename, pattern=None,
+            success=success, status=status, overwrite=True, started_at=started, finished_at=finished,
+            duration_ms=max(0, int((finished-started).total_seconds()*1000)),
+            remote_file=remote_file, remote_size=remote_size, local_file=str(local_file),
+            local_size=local_size, local_existed=local_existed, local_md5=local_md5,
+            size_verified=success, error_type=error_type, error_message=error_message,
+        )
+        self.recorder.record_result("FTP DOWNLOAD", result)
+        return result
+
     @classmethod
     def _mkdir_recursive(cls, ftp: Any, remote_dir: str) -> None:
         if remote_dir in {"", ".", "/"}:
@@ -183,8 +236,12 @@ class FTPHost:
             raise
 
     def close(self) -> None:
-        ftp, self._ftp = self._ftp, None
         self._closed = True
+        self.drop_connection()
+
+    def drop_connection(self) -> None:
+        """Drop transport without permanently closing the reusable target."""
+        ftp, self._ftp = self._ftp, None
         if ftp is not None:
             try:
                 ftp.quit()

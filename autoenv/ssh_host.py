@@ -336,6 +336,15 @@ class SSHHost:
                         continue
                     phase = CommandPhase.PARSE_RESULT
                     exit_code = channel.recv_exit_status()
+                    # Paramiko returns -1 when a channel/transport closes
+                    # without an SSH exit-status message. Its readiness flag
+                    # also becomes true on close, so this is a disconnect,
+                    # never a remote command's non-zero exit code.
+                    if exit_code == -1:
+                        exit_code = None
+                        disconnected = True
+                        phase = CommandPhase.WAIT_OUTPUT
+                        raise EOFError("SSH channel closed without an exit status")
                     if keyword is not None:
                         status = CommandStatus.COMMAND_FAILED
                         error_type = "KEYWORD_NOT_FOUND"

@@ -1,0 +1,9 @@
+# Local test environment recorded on 2026-10-11: Windows, Python 3.11.4.
+# Optional direct-dependency constraints; not a complete transitive lock file.
+# Usage from the repository: python -m pip install -c constraints-local-tested.txt ".[test]"
+paramiko==3.5.1
+scp==0.16.2
+requests==2.31.0
+urllib3==1.26.16
+pywinpty==2.0.10; platform_system == "Windows"
+pytest==7.4.0

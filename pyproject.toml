@@ -22,10 +22,11 @@ test = ["pytest>=7.4"]
 autoenv = "autoenv.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["autoenv*", "scripts*"]
+include = ["autoenv*", "scripts*", "product_log*"]
 
 [tool.setuptools.package-data]
 autoenv = ["resource_labels.json"]
+product_log = ["static/*.html", "static/*.js", "static/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

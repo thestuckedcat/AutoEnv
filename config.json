@@ -17,5 +17,30 @@
     "link": "",
     "base_link": "/compilepackage/CI_Version/ubengine/br_hisi_trunk_ai",
     "image_name": "^UBEngine-testcase-[\\w.-]+-rtos[\\w.-]+\\.aarch64\\.tar\\.gz$"
+  },
+  {
+    "name": "ube_driver",
+    "link": "",
+    "base_link": "/compilepackage/CI_Version/ubengine/br_hisi_trunk_ai",
+    "image_name": "^UBEngine-mgmt-driver-[\\w.-]+-rtos[\\w.-]+\\.aarch64\\.run$"
+  },
+  {
+    "name": "ube_testcase",
+    "link": "",
+    "base_link": "/compilepackage/CI_Version/ubengine/br_hisi_trunk_ai",
+    "image_name": "^UBEngine-testcase-[\\w.-]+-rtos[\\w.-]+\\.aarch64\\.tar\\.gz$"
+  },
+  {
+    "name": "udk_drv_v100",
+    "link": "",
+    "base_link": "",
+    "image_name": "^udk_drv_v100(?:[-_.][\\w.-]+)?\\.(?:run|zip|tar\\.gz|tgz|tar\\.bz2|tar\\.xz|tar)$"
+  },
+  {
+    "name": "firmware",
+    "link": "",
+    "base_link": "",
+    "image_name": "^firmware(?:[-_.][\\w.-]+)?\\.(?:zip|tar\\.gz|tgz|tar\\.bz2|tar\\.xz|tar)$",
+    "target_file": ["OnChipAsic.bin"]
   }
 ]

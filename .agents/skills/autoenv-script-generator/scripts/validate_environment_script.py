@@ -55,6 +55,8 @@ def _placeholder_keys(text: str, known_keys: set[str]) -> list[str]:
 
 
 def _assigned_call(statement: ast.stmt) -> tuple[str, ast.Call] | None:
+    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name) and isinstance(statement.value, ast.Call):
+        return statement.target.id, statement.value
     if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
         return None
     target = statement.targets[0]
@@ -437,9 +439,123 @@ def _function_violations(
     return violations
 
 
+def _plain_script_violations(path: Path, tree: ast.Module) -> list[Violation]:
+    """Validate the public file-script contract without importing user code."""
+    violations: list[Violation] = []
+    aliases = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom) and statement.module == "autoenv":
+            aliases.update({item.asname or item.name: item.name for item in statement.names})
+
+    def name_of(call: ast.Call) -> str | None:
+        name = _call_name(call.func)
+        return aliases.get(name, name)
+
+    def bind(call: ast.Call, names: tuple[str, ...]) -> dict[str, ast.AST] | None:
+        if len(call.args) > len(names) or any(isinstance(item, ast.Starred) for item in call.args):
+            return None
+        values = dict(zip(names, call.args))
+        for item in call.keywords:
+            if item.arg not in names or item.arg in values:
+                return None
+            values[item.arg] = item.value
+        return values if set(values) == set(names) else None
+    main_functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"]
+    if len(main_functions) > 1:
+        return [Violation(path, 1, "script must have one main() entry point")]
+    if main_functions:
+        main = main_functions[0]
+        if main.args.posonlyargs or main.args.args or main.args.kwonlyargs or main.args.vararg or main.args.kwarg:
+            violations.append(Violation(path, main.lineno, "main() must accept zero arguments"))
+        body = main.body
+    else:
+        body = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef))]
+        body = [node for node in body if not (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id.startswith("SCRIPT_") for target in node.targets))]
+    body = [node for node in body if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str))]
+    flattened = []
+    for statement in body:
+        if isinstance(statement, ast.With) and len(statement.items) == 1:
+            item = statement.items[0]
+            if isinstance(item.context_expr, ast.Call) and name_of(item.context_expr) == "init_script":
+                target = item.optional_vars or ast.Name(id="_paths", ctx=ast.Store())
+                flattened.append(ast.copy_location(ast.Assign(targets=[target], value=item.context_expr), statement))
+                flattened.extend(statement.body)
+                continue
+        flattened.append(statement)
+    body = flattened
+    first = _assigned_call(body[0]) if body else None
+    first_call = first[1] if first else body[0].value if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Call) else None
+    if first_call is None or name_of(first_call) != "init_script":
+        violations.append(Violation(path, body[0].lineno if body else 1, "first workflow operation must assign init_script()"))
+    elif first_call.args or first_call.keywords:
+        violations.append(Violation(path, first_call.lineno, "init_script() takes no arguments"))
+    direct_calls: dict[int, str] = {}
+    protocols: dict[str, str] = {}
+    for statement in body:
+        assigned = _assigned_call(statement)
+        if not assigned or name_of(assigned[1]) != "get_remote_info":
+            continue
+        role, call = assigned
+        direct_calls[id(call)] = role
+        arguments = bind(call, ("required_type", "allowed_envs"))
+        if arguments is None:
+            violations.append(Violation(path, call.lineno, "get_remote_info requires exactly (required_type, allowed_envs)"))
+            continue
+        protocol = _literal_text(arguments["required_type"])
+        if protocol not in {"ssh", "telnet", "ftp"}:
+            violations.append(Violation(path, call.lineno, "required_type must be a literal ssh, telnet, or ftp"))
+        else:
+            protocols[role] = protocol
+        try:
+            pairs = ast.literal_eval(arguments["allowed_envs"])
+        except (ValueError, TypeError):
+            pairs = None
+        if not isinstance(pairs, (list, tuple)) or not pairs or any(not isinstance(pair, (list, tuple)) or len(pair) != 2 or any(not isinstance(value, str) or not value for value in pair) for pair in pairs):
+            violations.append(Violation(path, call.lineno, "allowed_envs must be a nonempty literal array of (topology, connection) pairs"))
+        elif len({tuple(pair) for pair in pairs}) != len(pairs):
+            violations.append(Violation(path, call.lineno, "allowed_envs contains duplicate pairs"))
+    workflow = ast.Module(body=body, type_ignores=[])
+    for node in ast.walk(workflow):
+        if not isinstance(node, ast.Call):
+            continue
+        name = name_of(node)
+        if name == "get_remote_info" and id(node) not in direct_calls:
+            violations.append(Violation(path, node.lineno, "get_remote_info must be directly assigned once in the initialization block"))
+        if name in {"get_file", "create_file"}:
+            names = ("path", "filename") if name == "get_file" else ("path", "filename", "content")
+            arguments = bind(node, names)
+            if arguments is None:
+                violations.append(Violation(path, node.lineno, f"{name} requires {names}"))
+            elif isinstance(arguments["filename"], ast.Constant) and isinstance(arguments["filename"].value, str):
+                filename = arguments["filename"].value
+                if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+                    violations.append(Violation(path, node.lineno, "filename must be one exact basename"))
+        if name == "hdfs_download":
+            arguments = bind(node, ("path", "config_json_name"))
+            if arguments is None or not _literal_text(arguments["config_json_name"]):
+                violations.append(Violation(path, node.lineno, "hdfs_download requires (path, literal_config_name)"))
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            protocol = protocols.get(node.func.value.id)
+            if protocol == "telnet" and name in {"upload", "download"}:
+                violations.append(Violation(path, node.lineno, "Telnet does not support file transfer"))
+            if protocol == "ftp" and name in {"run", "execute"}:
+                violations.append(Violation(path, node.lineno, "FTP does not support commands"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "SCRIPT_ARGUMENTS" for target in node.targets):
+            try:
+                arguments = ast.literal_eval(node.value)
+            except (ValueError, TypeError):
+                arguments = None
+            if not isinstance(arguments, (list, tuple)) or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item.get("name") or item.get("type", "str") not in {"str", "bool", "int", "float", "dict", "list"} for item in arguments):
+                violations.append(Violation(path, node.lineno, "SCRIPT_ARGUMENTS must be a literal parameter schema array"))
+            elif len({item["name"] for item in arguments}) != len(arguments):
+                violations.append(Violation(path, node.lineno, "SCRIPT_ARGUMENTS contains duplicate names"))
+    return violations
+
+
 def validate_path(path: Path) -> list[Violation]:
     try:
-        source = path.read_text(encoding="utf-8")
+        source = path.read_text(encoding="utf-8-sig")
         tree = ast.parse(source, filename=str(path))
     except (OSError, UnicodeError, SyntaxError) as exc:
         line = getattr(exc, "lineno", None) or 1
@@ -461,7 +577,7 @@ def validate_path(path: Path) -> list[Violation]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _registered(node)
     ]
     if not functions and path.name != "__init__.py":
-        violations.append(Violation(path, 1, "script has no @register_script function"))
+        violations.extend(_plain_script_violations(path, tree))
     for function in functions:
         violations.extend(_function_violations(path, function))
     return violations

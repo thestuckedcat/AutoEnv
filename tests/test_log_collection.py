@@ -3,14 +3,13 @@ from __future__ import annotations
 import gzip
 import io
 import json
-import shutil
 import sqlite3
 import stat
 import subprocess
 import sys
 import tarfile
 import zipfile
-from datetime import datetime
+from contextvars import ContextVar
 from pathlib import Path
 
 import pytest
@@ -24,104 +23,108 @@ from autoenv.log_query import (
 )
 from autoenv.logs import LogCollection, LogSource, MetadataPattern, TimestampPattern
 from autoenv.registry import list_scripts
-from autoenv.results import RemoteBatchDownloadResult, RemoteDownloadedFile
+from autoenv.recorder import RunRecorder
+from autoenv.ssh_host import SSHConnectionInfo, SSHHost
+from local_remote.ssh import LocalSSHServer
 from autoenv.web_tools import WebToolDefinition, describe_tools, run_web_tool, run_workflow_tool
 
 
-class Recorder:
-    def __init__(self) -> None:
-        self.index = 0
-        self.results: list[tuple[str, object]] = []
-        self.messages: list[str] = []
-
-    def next_operation_id(self) -> str:
-        self.index += 1
-        return f"{self.index:04d}"
-
-    def record_result(self, name: str, result: object) -> None:
-        self.results.append((name, result))
-
-    def log(self, message: str, **_options: object) -> None:
-        self.messages.append(message)
+# The peers own remote disk fixtures. Every collection download still uses the
+# production SSHHost and SCPClient, real TCP, SSH channels, and SCP messages.
+_LOCAL_RESOURCES: ContextVar[dict] = ContextVar("log_collection_local_resources")
 
 
-class FakeBatchHost:
-    def __init__(self, files: list[tuple[Path, float]]) -> None:
-        self.files = files
-
-    def scp_download_many(self, remote_dir: str, *, glob: str, destination: Path):
-        now = datetime.now().astimezone()
-        downloaded = []
-        for source, mtime in self.files:
-            target = destination / source.name
-            shutil.copy2(source, target)
-            downloaded.append(
-                RemoteDownloadedFile(
-                    name=source.name,
-                    remote_file=f"{remote_dir}/{source.name}",
-                    local_file=str(target),
-                    remote_size=target.stat().st_size,
-                    remote_mtime=mtime,
-                )
-            )
-        return RemoteBatchDownloadResult(
-            run_id="sample-run",
-            operation_id="download",
-            protocol="scp",
-            target_name="log_server",
-            remote_dir=remote_dir,
-            glob=glob,
-            success=True,
-            status="success",
-            started_at=now,
-            finished_at=now,
-            duration_ms=0,
-            destination=str(destination),
-            files=tuple(downloaded),
-        )
+@pytest.fixture(autouse=True)
+def local_log_protocol_resources(tmp_path: Path):
+    resources = {"root": tmp_path / "protocol-peers", "servers": [], "hosts": [], "recorders": []}
+    resources["root"].mkdir()
+    token = _LOCAL_RESOURCES.set(resources)
+    try:
+        yield
+    finally:
+        for host in reversed(resources["hosts"]):
+            host.close()
+        for recorder in reversed(resources["recorders"]):
+            recorder.close()
+        for server in reversed(resources["servers"]):
+            server.close()
+            assert not server.errors
+        _LOCAL_RESOURCES.reset(token)
 
 
-class FakeMultiDirectoryHost:
-    """Serve a different local fixture set for each requested remote path."""
+def _recorder() -> RunRecorder:
+    resources = _LOCAL_RESOURCES.get()
+    recorder = RunRecorder(
+        resources["root"] / f"operation-{len(resources['recorders'])}.log",
+        console=io.StringIO(),
+    )
+    resources["recorders"].append(recorder)
+    return recorder
+
+
+class LocalMultiDirectoryHost:
+    """Record SDK requests and delegate all transfers to a genuine SSHHost."""
 
     def __init__(self, files_by_dir: dict[str, list[tuple[Path, float]]]) -> None:
-        self.files_by_dir = files_by_dir
+        resources = _LOCAL_RESOURCES.get()
+        self.server = LocalSSHServer(
+            resources["root"] / f"remote-{len(resources['servers'])}"
+        ).start()
+        resources["servers"].append(self.server)
         self.calls: list[tuple[str, Path]] = []
         self.globs: list[str] = []
+        self._hosts: dict[Path, SSHHost] = {}
+        for remote_dir, files in files_by_dir.items():
+            self._seed_directory(remote_dir, files)
+
+    def _seed_directory(self, remote_dir: str, files: list[tuple[Path, float]]) -> None:
+        self.server.path(remote_dir).mkdir(parents=True, exist_ok=True)
+        for source, mtime in files:
+            self.server.seed(
+                f"{remote_dir.rstrip('/')}/{source.name}", source.read_bytes(), mtime=mtime
+            )
 
     def scp_download_many(self, remote_dir: str, *, glob: str, destination: Path):
-        now = datetime.now().astimezone()
-        destination.mkdir(parents=True, exist_ok=True)
+        destination = Path(destination)
         self.calls.append((remote_dir, destination))
         self.globs.append(glob)
-        downloaded = []
-        for source, mtime in self.files_by_dir[remote_dir]:
-            target = destination / source.name
-            shutil.copy2(source, target)
-            downloaded.append(
-                RemoteDownloadedFile(
-                    name=source.name,
-                    remote_file=f"{remote_dir}/{source.name}",
-                    local_file=str(target),
-                    remote_size=target.stat().st_size,
-                    remote_mtime=mtime,
-                )
+        batch_dir = next(parent for parent in destination.parents if parent.name == "log_collection")
+        run_dir = batch_dir.parent
+        host = self._hosts.get(run_dir)
+        if host is None:
+            package_dir = run_dir / "packages"
+            package_dir.mkdir(exist_ok=True)
+            host = SSHHost(
+                name="log_server",
+                info=SSHConnectionInfo(
+                    host=self.server.host, port=self.server.port,
+                    username=self.server.username, password=self.server.password,
+                    connect_timeout=2.0,
+                ),
+                run_id=run_dir.name, package_dir=package_dir,
+                recorder=_recorder(), image_pattern_for=lambda _name: r".*",
             )
-        return RemoteBatchDownloadResult(
-            run_id="multi-run",
-            operation_id=f"download-{len(self.calls)}",
-            protocol="scp",
-            target_name="log_server",
-            remote_dir=remote_dir,
-            glob=glob,
-            success=True,
-            status="success",
-            started_at=now,
-            finished_at=now,
-            duration_ms=0,
-            destination=str(destination),
-            files=tuple(downloaded),
-        )
+            self._hosts[run_dir] = host
+            _LOCAL_RESOURCES.get()["hosts"].append(host)
+        result = host.scp_download_many(remote_dir, glob=glob, destination=destination)
+        if result.success:
+            for item in result.files:
+                assert Path(item.local_file).read_bytes() == self.server.path(item.remote_file).read_bytes()
+                assert ("scp", "download", item.remote_file) in self.server.transfers
+        return result
+
+
+class LocalBatchHost(LocalMultiDirectoryHost):
+    def __init__(self, files: list[tuple[Path, float]]) -> None:
+        super().__init__({})
+        self.files = files
+        self._seeded_dirs: set[str] = set()
+
+    def scp_download_many(self, remote_dir: str, *, glob: str, destination: Path):
+        if remote_dir not in self._seeded_dirs:
+            self._seed_directory(remote_dir, self.files)
+            self._seeded_dirs.add(remote_dir)
+        return super().scp_download_many(remote_dir, glob=glob, destination=destination)
 
 
 TIMESTAMP = TimestampPattern(
@@ -174,10 +177,10 @@ result=success
     run_dir = tmp_path / "logs" / "sample-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="sample-run", run_dir=run_dir, recorder=Recorder(), alias="样例批次"
+        run_id="sample-run", run_dir=run_dir, recorder=_recorder(), alias="样例批次"
     )
     result = collection.download(
-        FakeBatchHost([(first, 1.0), (second, 2.0), (third, 3.0)]),
+        LocalBatchHost([(first, 1.0), (second, 2.0), (third, 3.0)]),
         remote_dir="/var/log/product",
         glob="cpdt_*",
     )
@@ -236,10 +239,10 @@ def test_invalid_calendar_date_is_retained_with_question_mark_in_source_order(
     run_dir = tmp_path / "logs" / "invalid-date-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="invalid-date-run", run_dir=run_dir, recorder=Recorder()
+        run_id="invalid-date-run", run_dir=run_dir, recorder=_recorder()
     )
     assert collection.download(
-        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+        LocalBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
     ).success
     assert collection.extract_all().success
     group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
@@ -301,10 +304,10 @@ def test_match_line_block_keeps_only_timestamp_less_continuations_in_order(
     run_dir = tmp_path / "logs" / "line-block-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="line-block-run", run_dir=run_dir, recorder=Recorder()
+        run_id="line-block-run", run_dir=run_dir, recorder=_recorder()
     )
     assert collection.download(
-        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+        LocalBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
     ).success
     assert collection.extract_all().success
     group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
@@ -375,10 +378,10 @@ def test_match_line_block_resets_active_state_at_each_file_boundary(
     run_dir = tmp_path / "logs" / "line-block-files-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="line-block-files-run", run_dir=run_dir, recorder=Recorder()
+        run_id="line-block-files-run", run_dir=run_dir, recorder=_recorder()
     )
     assert collection.download(
-        FakeBatchHost([(first, 1.0), (second, 2.0)]),
+        LocalBatchHost([(first, 1.0), (second, 2.0)]),
         remote_dir="/logs",
         glob="cpdt_*",
     ).success
@@ -418,9 +421,9 @@ def test_strict_match_block_consumes_metadata_and_uses_confirmed_boundaries(
     )
     run_dir = tmp_path / "logs" / "strict-run"
     run_dir.mkdir(parents=True)
-    collection = LogCollection(run_id="strict-run", run_dir=run_dir, recorder=Recorder())
+    collection = LogCollection(run_id="strict-run", run_dir=run_dir, recorder=_recorder())
     assert collection.download(
-        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+        LocalBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
     ).success
     assert collection.extract_all().success
     group = collection.group(
@@ -489,10 +492,10 @@ def test_strict_match_block_keeps_file_head_until_first_end_and_resets_metadata(
     run_dir = tmp_path / "logs" / "strict-head-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="strict-head-run", run_dir=run_dir, recorder=Recorder()
+        run_id="strict-head-run", run_dir=run_dir, recorder=_recorder()
     )
     assert collection.download(
-        FakeBatchHost([(first, 1.0), (second, 2.0)]),
+        LocalBatchHost([(first, 1.0), (second, 2.0)]),
         remote_dir="/logs",
         glob="cpdt_*",
     ).success
@@ -535,7 +538,7 @@ def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Pat
     second = second_fixture / "cpdt_same.log"
     first.write_text("09:00:00 [AUTH] from first\n", encoding="utf-8")
     second.write_text("08:00:00 [AUTH] from second\n", encoding="utf-8")
-    host = FakeMultiDirectoryHost(
+    host = LocalMultiDirectoryHost(
         {
             "/logs/first": [(first, 20.0)],
             "/logs/second": [(second, 10.0)],
@@ -544,7 +547,7 @@ def test_multiple_remote_directories_keep_equal_basenames_isolated(tmp_path: Pat
     run_dir = tmp_path / "logs" / "multi-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="multi-run", run_dir=run_dir, recorder=Recorder(), alias="多目录"
+        run_id="multi-run", run_dir=run_dir, recorder=_recorder(), alias="多目录"
     )
 
     downloaded = collection.download_many(
@@ -598,7 +601,7 @@ def test_scripted_sources_use_per_path_globs_and_form_groups_after_extraction(
             "08:02:01 [DB] END\n",
         )
 
-    host = FakeMultiDirectoryHost(
+    host = LocalMultiDirectoryHost(
         {
             "/logs/auth": [(auth_plain, 1.0), (auth_archive, 2.0)],
             "/logs/database": [(database_archive, 3.0)],
@@ -607,7 +610,7 @@ def test_scripted_sources_use_per_path_globs_and_form_groups_after_extraction(
     run_dir = tmp_path / "logs" / "scripted-source-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="scripted-source-run", run_dir=run_dir, recorder=Recorder()
+        run_id="scripted-source-run", run_dir=run_dir, recorder=_recorder()
     )
     sources = (
         LogSource(name="auth", remote_dir="/logs/auth", glob="auth_*"),
@@ -663,10 +666,10 @@ def test_match_block_exclusion_keeps_block_time_from_removed_line(tmp_path: Path
     run_dir = tmp_path / "logs" / "block-exclusion-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="block-exclusion-run", run_dir=run_dir, recorder=Recorder()
+        run_id="block-exclusion-run", run_dir=run_dir, recorder=_recorder()
     )
     assert collection.download(
-        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
+        LocalBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="cpdt_*"
     ).success
     assert collection.extract_all().success
     group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
@@ -689,9 +692,9 @@ def test_scripted_sources_reject_duplicate_names_before_transfer(tmp_path: Path)
     run_dir = tmp_path / "logs" / "duplicate-source-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="duplicate-source-run", run_dir=run_dir, recorder=Recorder()
+        run_id="duplicate-source-run", run_dir=run_dir, recorder=_recorder()
     )
-    host = FakeMultiDirectoryHost({"/logs/one": [], "/logs/two": []})
+    host = LocalMultiDirectoryHost({"/logs/one": [], "/logs/two": []})
 
     with pytest.raises(ValueError, match="duplicate log source name"):
         collection.download_sources(
@@ -707,9 +710,9 @@ def test_scripted_sources_reject_duplicate_names_before_transfer(tmp_path: Path)
 def test_multiple_remote_directories_reject_duplicates_before_transfer(tmp_path: Path):
     run_dir = tmp_path / "logs" / "duplicate-dir-run"
     run_dir.mkdir(parents=True)
-    host = FakeMultiDirectoryHost({"/logs": []})
+    host = LocalMultiDirectoryHost({"/logs": []})
     collection = LogCollection(
-        run_id="duplicate-dir-run", run_dir=run_dir, recorder=Recorder()
+        run_id="duplicate-dir-run", run_dir=run_dir, recorder=_recorder()
     )
 
     with pytest.raises(ValueError, match="duplicate remote directory"):
@@ -721,39 +724,16 @@ def test_multiple_remote_directories_fail_as_one_batch_and_clean_raw_files(tmp_p
     fixture = tmp_path / "cpdt_first.log"
     fixture.write_text("08:00:00 [AUTH] first\n", encoding="utf-8")
 
-    class SecondDirectoryFails(FakeMultiDirectoryHost):
-        def scp_download_many(
-            self, remote_dir: str, *, glob: str, destination: Path
-        ):
-            if remote_dir == "/logs/missing":
-                now = datetime.now().astimezone()
-                destination.mkdir(parents=True, exist_ok=True)
-                self.calls.append((remote_dir, destination))
-                return RemoteBatchDownloadResult(
-                    run_id="failed-multi-run",
-                    operation_id="download-2",
-                    protocol="scp",
-                    target_name="log_server",
-                    remote_dir=remote_dir,
-                    glob=glob,
-                    success=False,
-                    status="remote_file_not_found",
-                    started_at=now,
-                    finished_at=now,
-                    duration_ms=0,
-                    destination=str(destination),
-                    error_type="REMOTE_FILE_NOT_FOUND",
-                    error_message="no matching files",
-                )
-            return super().scp_download_many(
-                remote_dir, glob=glob, destination=destination
-            )
-
-    host = SecondDirectoryFails({"/logs/first": [(fixture, 1.0)]})
+    # An actual empty remote directory produces REMOTE_FILE_NOT_FOUND after
+    # successful SSH metadata enumeration; no failed result is fabricated.
+    host = LocalMultiDirectoryHost({
+        "/logs/first": [(fixture, 1.0)],
+        "/logs/missing": [],
+    })
     run_dir = tmp_path / "logs" / "failed-multi-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="failed-multi-run", run_dir=run_dir, recorder=Recorder()
+        run_id="failed-multi-run", run_dir=run_dir, recorder=_recorder()
     )
 
     result = collection.download_many(
@@ -763,6 +743,8 @@ def test_multiple_remote_directories_fail_as_one_batch_and_clean_raw_files(tmp_p
     assert not result.success
     assert result.status == "remote_file_not_found"
     assert result.error_type == "REMOTE_FILE_NOT_FOUND"
+    assert ("scp", "download", "/logs/first/cpdt_first.log") in host.server.transfers
+    assert len([command for command in host.server.commands if command.startswith("remote_dir=")]) == 2
     assert list(collection.raw_dir.iterdir()) == []
     manifest = json.loads(collection.manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
@@ -879,9 +861,9 @@ def test_manifest_versions_rules_and_all_matchers_reuse_one_file_parse(
     )
     run_dir = tmp_path / "logs" / "rule-run"
     run_dir.mkdir(parents=True)
-    collection = LogCollection(run_id="rule-run", run_dir=run_dir, recorder=Recorder())
+    collection = LogCollection(run_id="rule-run", run_dir=run_dir, recorder=_recorder())
     assert collection.download(
-        FakeBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="*"
+        LocalBatchHost([(fixture, 1.0)]), remote_dir="/logs", glob="*"
     ).success
     assert collection.extract_all().success
     group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
@@ -1036,8 +1018,8 @@ def test_recursive_log_extraction_rejects_unsafe_zip_paths(tmp_path: Path, membe
         archive.writestr(member, "bad")
     run_dir = tmp_path / "logs" / "bad-run"
     run_dir.mkdir(parents=True)
-    collection = LogCollection(run_id="bad-run", run_dir=run_dir, recorder=Recorder())
-    assert collection.download(FakeBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*").success
+    collection = LogCollection(run_id="bad-run", run_dir=run_dir, recorder=_recorder())
+    assert collection.download(LocalBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*").success
     result = collection.extract_all()
     assert not result.success and "unsafe archive member" in str(result.error_message)
 
@@ -1051,8 +1033,8 @@ def test_recursive_log_extraction_rejects_zip_links(tmp_path: Path):
         archive.writestr(member, "target.log")
     run_dir = tmp_path / "logs" / "link-run"
     run_dir.mkdir(parents=True)
-    collection = LogCollection(run_id="link-run", run_dir=run_dir, recorder=Recorder())
-    collection.download(FakeBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
+    collection = LogCollection(run_id="link-run", run_dir=run_dir, recorder=_recorder())
+    collection.download(LocalBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
     result = collection.extract_all()
     assert not result.success and "links are not allowed" in str(result.error_message)
 
@@ -1082,10 +1064,10 @@ def test_recursive_log_extraction_handles_tar_tgz_and_nested_archives(tmp_path: 
     run_dir = tmp_path / "logs" / "archive-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="archive-run", run_dir=run_dir, recorder=Recorder()
+        run_id="archive-run", run_dir=run_dir, recorder=_recorder()
     )
     collection.download(
-        FakeBatchHost([(tar_gz, 1.0), (tgz, 2.0), (nested_zip, 3.0)]),
+        LocalBatchHost([(tar_gz, 1.0), (tgz, 2.0), (nested_zip, 3.0)]),
         remote_dir="/logs",
         glob="cpdt_*",
     )
@@ -1106,9 +1088,9 @@ def test_log_extraction_rejects_duplicate_members_and_cleans_partial_output(tmp_
     run_dir = tmp_path / "logs" / "duplicate-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="duplicate-run", run_dir=run_dir, recorder=Recorder()
+        run_id="duplicate-run", run_dir=run_dir, recorder=_recorder()
     )
-    collection.download(FakeBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
+    collection.download(LocalBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
     result = collection.extract_all()
     assert not result.success and "collision" in str(result.error_message)
     assert not (collection.expanded_dir / "duplicate.zip.expanded").exists()
@@ -1132,8 +1114,8 @@ def test_log_extraction_rejects_tar_links_and_special_files(
     run_id = f"tar-{member_type.hex()}"
     run_dir = tmp_path / "logs" / run_id
     run_dir.mkdir(parents=True)
-    collection = LogCollection(run_id=run_id, run_dir=run_dir, recorder=Recorder())
-    collection.download(FakeBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
+    collection = LogCollection(run_id=run_id, run_dir=run_dir, recorder=_recorder())
+    collection.download(LocalBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
     result = collection.extract_all()
     assert not result.success and expected in str(result.error_message)
 
@@ -1146,8 +1128,8 @@ def test_gzip_expansion_enforces_limit_before_retaining_large_output(
         handle.write(b"x" * 4096)
     run_dir = tmp_path / "logs" / "limit-run"
     run_dir.mkdir(parents=True)
-    collection = LogCollection(run_id="limit-run", run_dir=run_dir, recorder=Recorder())
-    collection.download(FakeBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
+    collection = LogCollection(run_id="limit-run", run_dir=run_dir, recorder=_recorder())
+    collection.download(LocalBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
     monkeypatch.setattr("autoenv.logs.MAX_EXPANDED_BYTES", source.stat().st_size + 100)
     result = collection.extract_all()
     assert not result.success and "expanded bytes exceed" in str(result.error_message)
@@ -1166,9 +1148,9 @@ def test_time_query_with_date_crosses_midnight_and_requires_time(tmp_path: Path)
     run_dir = tmp_path / "logs" / "midnight-run"
     run_dir.mkdir(parents=True)
     collection = LogCollection(
-        run_id="midnight-run", run_dir=run_dir, recorder=Recorder()
+        run_id="midnight-run", run_dir=run_dir, recorder=_recorder()
     )
-    collection.download(FakeBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
+    collection.download(LocalBatchHost([(source, 1.0)]), remote_dir="/logs", glob="*")
     assert collection.extract_all().success
     group = collection.group(glob="cpdt*.log", timestamp=TIMESTAMP)
     assert group.match_line(r"\[AUTH\]", "auth.log").success

@@ -42,7 +42,7 @@ class HDFSFileEntry:
 
 
 class HDFSClientProtocol(Protocol):
-    """Small client surface used by PackageManager and by test fakes."""
+    """Small client surface used by PackageManager and alternate HDFS clients."""
 
     def list_directory(self, path: str) -> Sequence[object]: ...
 
@@ -66,7 +66,7 @@ class HDFSClient:
 
     @property
     def session(self) -> Any:
-        # Import lazily so config parsing and fake-client tests do not require requests.
+        # Import lazily so offline config parsing does not require requests.
         if self._session is None:
             import requests
             import urllib3
@@ -78,6 +78,9 @@ class HDFSClient:
     def list_directory(self, path: str) -> list[HDFSFileEntry]:
         url = f"{self.base_url}/webhdfs/v1{path}?op=LISTSTATUS&user.name=hadoop"
         response = self.session.get(url, timeout=15, verify=self.verify_ssl)
+        if response.status_code == 404:
+            response.close()
+            raise FileNotFoundError(path)
         response.raise_for_status()
         statuses = response.json().get("FileStatuses", {}).get("FileStatus", [])
         if isinstance(statuses, dict):
@@ -109,6 +112,8 @@ class HDFSClient:
         with self.session.get(
             url, stream=True, timeout=60, verify=self.verify_ssl
         ) as response:
+            if response.status_code in {408, 504}:
+                raise TimeoutError(f"WebHDFS download timed out: {remote_path}")
             response.raise_for_status()
             with open(local_path, "wb") as handle:
                 for chunk in response.iter_content(8192):

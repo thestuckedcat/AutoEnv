@@ -1,120 +1,105 @@
-# AutoEnv UT 目标与排查指南
+# AutoEnv 本地协议测试与排查
 
-本文说明离线 UT 为什么存在、使用了什么简单实现，以及失败后先检查哪里。测试函数名描述被保护的行为；参数化测试会把同一目标应用到多组输入，因此 pytest 显示的每个参数 case 都属于同一契约。
+默认全量测试会启动本机临时端口的协议服务。SSH、SCP、SFTP、Telnet、FTP 和 WebHDFS 使用生产客户端及真实 TCP/协议通道，文件传输方法不打桩。服务全部绑定 `127.0.0.1`；每条测试隔离文件与连接并清理资源。`conftest.py` 的连接守卫拒绝非 loopback 连接，避免测试意外访问已注册的实验室目标。
 
-## 1. UT 如何做到不访问真实环境
-
-- `tmp_path`：为每条测试创建隔离的临时项目、`logs`、`state` 和 `packages`。
-- fake HDFS：用内存目录列表和本地字节写入代替 WebHDFS。
-- fake SSH/SFTP/SCP：用内存 Channel、Transport 和远端文件字典代替真实服务器，同时保留连接、上传、下载、匹配、校验、超时和断连行为。
-- fake FTP：用内存 FTP 客户端代替真实服务器，验证独立连接、覆盖和大小校验。
-- fake Telnet Socket/Clock：预置收发字节并推进虚拟时间，测试提示符、IAC、退出码、超时和重连。
-- `monkeypatch`：替换 UUID、CLI 调用或系统能力，保证结果确定且不产生外部副作用。
-- AST 契约验证器：只解析 `scripts/*.py`，不导入或执行环境函数。
-
-因此，UT 通过表示本地契约成立，不表示真实 HDFS、SSH、Telnet、远端路径或业务脚本已经验证成功。
-
-## 2. 失败后先怎么做
-
-先单独重跑 pytest 输出中的 node id：
+## 最简实现：运行
 
 ```powershell
-python -X utf8 -m pytest tests/test_runtime_registry.py::test_registered_funcs_reuse_context_and_loop_until_exit -vv
-```
-
-排查顺序：
-
-1. 看第一条失败，不先处理由它连带产生的后续失败。
-2. 对照断言左值/右值，判断是实现行为变化，还是测试预期已经过时。
-3. 查看对应运行日志或临时 `result.json`；需要保留临时目录时使用 `pytest --basetemp=<目录>`。
-4. 只修复相关实现或同步确认后的契约，不通过放宽断言掩盖真实回归。
-5. 单条通过后重跑对应测试文件，再跑统一契约和全量 UT。
-
-常用命令：
-
-```powershell
-# 精确重跑失败项
-python -X utf8 -m pytest <pytest输出的node-id> -vv
-
-# 验证所有生成环境脚本
-python -X utf8 -m pytest tests/test_generated_script_contract.py -vv
-
-# 全量离线回归
+python -m pip install -e ".[test]"
+# 可选：复现当前已测直接依赖组合（非完整锁文件）
+python -m pip install -c constraints-local-tested.txt -e ".[test]"
 python -X utf8 -m pytest -q
+
+# 新公开接口通过真正 CLI 验证，除 HDFS 外全部真实本地协议
+python -X utf8 tools/local_simulation.py
+
+# 网络能力与跨协议流程
+python -X utf8 -m pytest tests/test_ssh_host.py tests/test_telnet_client.py tests/test_interfaces_web_ftp.py tests/test_package_extractor.py tests/test_local_protocol_workflow.py tests/test_log_collection.py -q
+
+# 精确重跑失败项
+python -X utf8 -m pytest <pytest输出的完整node-id> -vv
+
+# 全部环境脚本静态契约
+python -X utf8 .agents/skills/autoenv-script-generator/scripts/validate_environment_script.py
+python -X utf8 -m pytest tests/test_generated_script_contract.py -q
 ```
 
-## 3. 测试文件总览
+需要 `pyproject.toml` 声明的 Paramiko >=3、scp、requests 和 pytest。缺少协议依赖时测试应直接失败，不能跳过或恢复假客户端。本地协议服务不要求系统安装 sshd、telnetd、FTP 或 HDFS。
 
-| 文件 | 简单实现 | 主要目标 | 失败优先检查 |
-|---|---|---|---|
-| `test_runtime_registry.py` | 临时项目、注入输入、内存 console | 调用点自动元数据、RunContext、last-run、package `!newest` 快捷选择、组合脚本、`register_func` 生命周期 | `autoenv/registry.py`、`autoenv/runtime.py`、`result.json` |
-| `test_command_files.py` | 纯内存上传映射、临时输出文件 | `S{file_name}`、Host 隔离、完整 shell 文本生成 | `autoenv/command_files.py` |
-| `test_generated_script_contract.py` | 临时 Python 片段和 AST 验证器 | skill 生成脚本的统一静态契约，包括调用点元数据字面量和两类命令接口的上传目标 | 失败消息对应行、验证器和生成脚本 |
-| `test_ssh_host.py` | fake Paramiko/SFTP/SCP/远端文件系统 | SSH 状态、连接复用、按输出响应、单/批量传输、BusyBox 无 `find`/无 `wc` 枚举、四路并行峰值、稳定结果顺序、远端 mtime、日志批量无大小比对、批量进度/静默逐文件明细、部分失败清理、上传校验、占位符目标 | `autoenv/ssh_host.py` 和 fake 收到的命令/响应/文件 |
-| `test_telnet_client.py` | fake Socket、Clock、提示符字节流 | Telnet 模式探测、按输出响应、退出结果、断连、上传来源 | `autoenv/telnet_client.py` 和预置收发字节流 |
-| `test_package_extractor.py` | fake HDFS、临时压缩包、注入 `.run` runner | 下载路径、原子文件、提取安全和摘要 | `package_manager.py`、`extractor.py`、临时包内容 |
-| `test_results_selectors.py` | 临时文件树和 recorder | 结果模型、选择器安全、序列化、脱敏、静默写入与批量计数摘要 | `results.py`、`selectors.py`、`recorder.py` |
-| `test_cli.py` | monkeypatch 注册表和执行函数 | 菜单选择、命令模式和退出码 | `autoenv/cli.py` 的参数/输出映射 |
-| `test_interfaces_web_ftp.py` | 临时环境 JSON、fake FTP/HTTP server、动态模块 | LaunchRequest 合并、多环境标签绑定、脚本连接/HDFS/普通输入元数据、唯一 Web 启动链与固定端口、workflow 进度事件/进度条、Find 上下文输入与双色 class、模板 Web 契约、下载结果复用、FTP、local Web Tool 和导入边界 | `startWeb.py`、`webPage/server.py`、`interface.py`、`ftp_host.py`、`web_tools.py`、Web API |
-| `test_log_collection.py` | 确认日志、strict/legacy block、slot/socket 模板、非法日期、line-block、来源、压缩包、SQLite、离线 workflow | strict 文件头/重复 BEGIN/首 END/EOF/块外丢弃、逐字段继承与 unknown、consume、安全解压、分块/时间/Find 查询、workflow 隔离 | `autoenv/logs.py`、`autoenv/log_query.py`、`webPage/tools/log_collection.py` |
-| `test_log_error_triage_skill.py` | 临时普通/GZ 日志、临时知识库、子进程 CLI | `[ERROR]` 精确提取与上下文、隐藏文件忽略、编码/大小写入口、知识模板安全创建与禁止覆盖、Skill/人工确认契约 | `.agents/skills/log-error-triage/`、`logKnowledge/` |
+本次新接口的实测搭建、CLI 命令/日志路径与字节证据见 [LOCAL_SIMULATION.md](../docs/LOCAL_SIMULATION.md)。普通脚本使用 main()/init_script()/get_remote_info()/FileHandle，无需装饰器；老SDK测试仅证明保留的高级组件不回归。
 
-## 4. `register_func` 每条 UT 的目的
+## 补充：本地模拟远端
 
-| UT | 简单实现 | 为什么存在 | 失败时怎么查 |
-|---|---|---|---|
-| `test_register_func_requires_an_active_registered_script` | 在运行上下文外应用装饰器 | 防止把 func 错放到模块顶层，导入时静默注册 | 检查 `_CURRENT_FUNCS` 判定和脚本缩进位置 |
-| `test_registered_funcs_reuse_context_and_loop_until_exit` | 注入 `1,2,3,0`，运行成功、异常和失败结果三种 func | 保证菜单循环、同一 Context/Host、异常隔离及 `func_runs` 顺序 | 检查 `_run_func_menu()`、ContextVar reset、`result.json` 摘要 |
-| `test_func_menu_reprompts_after_invalid_selections` | 输入非数字、越界值、退出 | 防止错误输入执行错误 func 或直接终止运行 | 检查数字解析、范围判断和 `continue` 分支 |
-| `test_func_menu_is_not_opened_when_main_flow_fails` | 主流程返回失败，输入函数若被调用就让测试失败 | 保证只有环境真正拉起后才开放附加流程 | 检查 `if success and registered_funcs` 的调用条件 |
-| `test_duplicate_func_name_fails_the_main_program` | 同一运行注册两个同名 func | 保证菜单编号不会对应两个含义不同的流程 | 检查当前运行列表的名称去重和名称规范化 |
-| `test_registered_func_requires_one_context_argument` | 注册零参数 func | 保证执行时总能传入与主流程相同的 `RunContext` | 检查 `inspect.signature()` 校验和 func 定义签名 |
+| 服务 | 真实通信 | 模拟内容与验证证据 |
+| --- | --- | --- |
+| `local_remote/ssh.py` | Paramiko SSH 握手/密码鉴权/channel、SFTP subsystem、SCP sink/source 消息与确认字节 | 文件落到隔离目录；内部 mkdir/MD5/大小/目录/mtime 查询读真实文件；业务命令仅记录和响应；记录传输路径、输入字节及并发峰值 |
+| `local_remote/telnet.py` | TCP 连接、IAC 协商、提示符、退出码 marker、原始控制字节 | 业务命令和 probe 分开记录；POSIX 或设备 prompt、分片输出、缺 marker、超时、断线和重新连接 |
+| `local_remote/ftp.py` | ftplib 控制连接、主动/被动数据连接、STOR/RETR/PWD/SIZE/MKD | 上传/下载实际字节；完整二进制、空文件、覆盖、目录、权限、鉴权、大小不一致和连接失败 |
+| `local_remote/webhdfs.py` | requests HTTP LISTSTATUS、OPEN、307 重定向、流式正文 | 服务端目录元数据、真实请求与流式字节；newest/override、404 候选消失、408/500、大小不一致和 `.part` 清理 |
 
-已注册 func 的执行失败但主结果仍为成功是有意设计：主环境已经启动，func 的结果单独记录。`register_func()` 自身若因重复名称、错误签名或错误作用域注册失败，主流程会是 `program_error`。若这些语义需要改变，应同时修改实现、本文、README、详细设计、注册指南、skill 和对应 UT。
+允许在**服务端**配置协议错误、截断数据、修改收到的文件、输出与退出状态。这代表可控的远端行为，客户端依然通过同一种真实协议访问它。禁止替换 Paramiko、SCPClient、SFTP、ftplib、requests、socket_factory 或文件传输方法来制造成功。
 
-## 5. 上传占位符与 shell 生成 UT
+业务命令不会被本机 shell 执行。命令测试保证送达、输入响应、输出解析和状态分类；文件传输验证协议记录及接收后的完整字节/摘要，不以“调用 put/get”作为成功证据。
 
-| UT | 保护目标 | 失败时怎么查 |
-|---|---|---|
-| `test_uploaded_file_registry_resolves_repeated_placeholders` | 同一占位符出现多次时全部替换 | 查看 selector 到实际 basename 的记录 |
-| `test_selector_with_braces_can_be_used_as_an_exact_placeholder` | 正则选择器自身含 `{}` 仍能精确替换 | 检查已知 selector 优先匹配逻辑 |
-| `test_placeholder_must_reference_a_successful_upload` | 未上传文件不能进入命令 | 检查上传成功后才调用 `record()` |
-| `test_malformed_placeholder_is_rejected` | 空、缺右括号、嵌套括号不能发送 | 检查占位符剩余文本解析和错误消息 |
-| `test_selector_cannot_resolve_to_two_actual_names` | 同一目标上一个 selector 不得指向两个包名 | 检查上传目标、selector 和实际文件名 |
-| `test_uploaded_file_names_are_isolated_by_target` | 不同 SSH Host 的实际包名互不串用 | 检查 `target_name` 是否在上传和执行两侧一致传递 |
-| `test_unbound_command_rejects_an_ambiguous_upload_target` | Telnet 未指定来源且存在多个候选时拒绝猜测 | 设置 `uploaded_files_from` 或排除重复来源 |
-| `test_script_placeholders_must_share_an_upload_target` | 一个生成脚本的依赖必须在同一 Host 可用 | 检查所有依赖上传顺序和目标 Host |
-| `test_generate_sh_file_resolves_a_complete_script_without_modifying_its_layout` | 只换包名，保留 CRLF、shebang、布局和末尾形式 | 比较输入/输出字节，检查 `newline=""` |
-| `test_generate_sh_file_requires_one_complete_script_string` | 禁止恢复成命令列表 API | 检查调用方是否传入一个三引号字符串 |
-| `test_generate_sh_file_rejects_invalid_filename` | 输出只能是 packages 根目录的 `.sh` 文件 | 检查文件名后缀、绝对路径、子目录和 `..` |
+## 补充：组件测试范围
 
-SSH/Telnet 文件中的占位符 UT 进一步证明：只有通过 MD5 校验的上传才可替换，SSH 绑定当前 Host，Telnet 使用明确的 `uploaded_files_from`。SCP UT 还检查目标参数使用远端目录，并确认目录、覆盖状态和 MD5 检查只使用普通 SSH 命令，整个 SCP 上传不会打开 SFTP 会话。
+`test_udk_v100_workflows.py` 将仓库中的两个 UDK V100 脚本交给真实 CLI 宿主，在隔离项目登记 `SingleUnions_S3`，使用真实 loopback SSH/SCP/SFTP/Telnet 和本地 WebHDFS 字节流。只替换环境信息与 HDFS 端点，10 秒等待、handler、解压、上传和命令客户端均执行实际实现；服务端在隔离目录模拟重启、启动和进程列表，绝不运行主机破坏性 shell。运行 `python -X utf8 -m pytest -q tests/test_udk_v100_workflows.py`；业务规则与现场尚未验证部分见 [UDK V100 工作流](../docs/UDK_V100_WORKFLOWS.md)。
 
-## 6. 统一环境脚本契约每条 UT 的目的
+2026-10-11 UDK V100 扩展最终全量离线回归：**781 passed、2 skipped、1 warning，160.44s**。新增 22 项工作流测试（单独运行 39.10s）和 5 项 Telnet 返回码/中间提示符回归，完整 Telnet 测试为 68 passed。跳过仍为 Windows 符号链接权限，warning 仍为既有重复 ZIP fixture。三个环境拉起测试均真实等待重启后的 10 秒，成功分支还验证首次 SSH 恢复时 boot_id 未变化不能继续。
 
-| UT | 为什么存在 | 失败时怎么查 |
-|---|---|---|
-| `test_all_repository_environment_scripts_satisfy_the_shared_contract` | 让所有 `scripts/*.py` 使用同一份规则 | 先运行验证器；按 `文件:行号:消息` 修脚本，不修改聚合断言 |
-| `test_contract_rejects_a_command_list_instead_of_complete_shell_text` | 保证粘贴脚本保持为一整段文本 | 检查 `generate_sh_file()` 第二个参数 |
-| `test_contract_rejects_inline_selectors_and_generate_before_upload` | 保证集中声明、变量复用和先上传后生成 | 把 selector 移到函数开头，并调整操作顺序 |
-| `test_contract_rejects_execute_on_a_different_upload_target` | 防止 A Host 上传的文件在 B Host 命令中误替换 | 对齐上传对象与执行对象 |
-| `test_contract_checks_execute_on_output_upload_target` | 保证按输出响应接口也执行相同的上传目标检查 | 将初始命令使用的文件上传到执行对象 |
-| `test_contract_accepts_an_exact_regex_selector_with_braces` | 防止验证器误伤合法正则 selector | 检查验证器是否先匹配已声明 selector |
-| `test_contract_rejects_module_level_and_non_final_registered_funcs` | 保证 func 位于主流程成功路径末尾且签名正确 | 移入 `@register_script` 函数末尾，保留一个 ctx 参数 |
+独立单文件网页新增 `test_product_log_standalone_build.py`、`test_product_log_standalone_archives.py`、`test_product_log_standalone_parser.py`。运行 `python -X utf8 -m pytest -q tests/test_product_log_standalone_build.py tests/test_product_log_standalone_archives.py tests/test_product_log_standalone_parser.py`，需要 Node 执行实际浏览器 JavaScript；最终 HTML 使用者只需浏览器，打包只需 Python 标准库。测试覆盖生成产物的资源全部内嵌、许可、确定性、vendor SHA256、`-I -S` 构建、已有代码不变、真实 codec、多层压缩、编码、分段/查询/模块/日期及 Python 对照。实际生成 HTML 的 Worker 在禁用网络 API 下处理 6,011 条样本，全量统一导出与 Python 一致。内置浏览器拒绝 `file://`，未做直接打开/交互验收；边界和构建命令见 [独立版说明](../product_log/standalone/README.md)。
 
-如果反例 UT 突然“不再失败”，通常是验证器漏检；如果合法示例突然失败，通常是验证器误报。两者都应同时查看测试片段、验证器实现和 `scripts/example.py`。
+2026-10-11 单文件网页扩展最终全量离线回归：**754 passed、2 skipped、1 warning，121.22s**。新增 120 项 standalone 测试（构建/完整 Worker/高亮 9、归档 49、解析/查询 62）；两项跳过仍为 Windows 符号链接权限，warning 仍为既有重复 ZIP fixture。GZIP 填充、可选头与各成员完整性、Unicode casefold 高亮均有真实回归。
 
-## 7. 按输出关键词响应 UT
+2026-10-11 diag/var 扩展最终全量离线回归：**634 passed、2 skipped、1 warning，71.55s**。两项跳过均为本机 Windows 不允许创建符号链接；warning 是既有重复 ZIP 成员 fixture。新增 22 项产品收集和 30 项解析/映射测试，另以真实 CLI/HTTP 验证完整多层合成包；浏览器结果见 [功能记录](../newFeature/2026-10-11-local-product-log-parser.md)。
 
-SSH 和 Telnet 测试都把关键词拆成两个接收分片，证明接口按累计输出匹配而不是只检查单包。成功 case 检查 Ctrl+B 的实际字节 `b"\x02"`，失败 case 检查关键词缺失、命令提前退出或响应发送失败时的状态、阶段和部分输出。
+新增本地产品日志测试直接构造真实 ZIP/TAR/GZ 与多文件用户态/内核态/固件日志，不访问设备。运行 `python -X utf8 -m pytest -q tests/test_local_file_operations.py tests/test_product_logs.py tests/test_product_log_collection.py tests/test_product_log_domains.py tests/test_product_log_web.py tests/test_product_log_integration.py tests/test_product_log_retention.py`，验证搜索/解压/复制、跨文件 seg、重复段、编码、时间顺序、分组与查询、独立 CLI、真实 loopback HTTP 分块上传及任务回收。
 
-Telnet 成功发送后主动关闭 fake Socket，是为了验证旧 Linux Shell 提示符不会带到 Bootloader 会话；对象本身没有永久关闭，后续操作仍可懒重连。SSH 只关闭本次 Channel，Transport 保持可复用。
-## 8. Web、下载和 FTP 扩展 UT
+`test_product_log_collection.py` 验证 auto/product/generic 分流、默认精确 diag/var 目录及多候选消歧、仅一类存在、diag 历史字典序/current 最后、dmesg 数字轮转/current 最后、多层 var 及不受 diag 模式限制的内核选择。`test_product_log_domains.py` 使用真实文件与索引验证用户态 UDK 后缀归一和 udk2 排除、12 个英文月份、无日期绝不继承、来源保留、动态模块映射/不存在/重叠匹配、固件类型名称、统一时间与未知上下文、索引版本 2 及旧批次重导。
 
-- `tests/test_interfaces_web_ftp.py`：验证下载/FTP、资源标签、日志虚拟滚动窗口、slot/socket/模板隐藏/字号控件、秒级服务端关联入口、规则预览、双格式导出、异步面板保护、Find 配色、SCP 进度、Web 启动和 Agent/Tool 契约。
-- 同一文件还扫描仓库中的 `serve_forever()` 实现，要求只存在 `webPage/server.py`；验证 `startWeb.py` 拒绝全部参数，服务只能绑定固定的 `127.0.0.1:8765`，且旧 Web 目录不存在。
-- `tests/test_log_collection.py`：验证 workflow Tool 的 `RunContext` 运行结果、未捕获异常堆栈只落 `run.log` 且页面只显示单行错误、脚本化来源按路径/glob 分组、多远端目录同名文件隔离、strict/legacy block、逐字段继承、consume、单文件一次解析、manifest 规则/hash/schema、服务端时间关联、规则预览、双格式导出、旧索引兼容、非法日期、确认样例、归档安全、Find 上下文与批次查询。
-- `tests/test_log_error_triage_skill.py`：验证日志提取辅助脚本和人工知识库脚手架；所有输入、GZ 和输出均位于临时目录，不读取真实业务日志。
-- `tests/test_ssh_host.py` 新增 SFTP 精确/正则下载，以及 SCP 批量多匹配、BusyBox 非 GNU 且无 `wc` 的枚举、四路并行峰值、稳定排序、远端 mtime、日志批量无大小比对、逐文件进度、静默明细和失败清理。
-- `tests/test_package_extractor.py` 新增 ZIP 单文件提取与路径穿越拒绝。
-- 资源标签 HTTP API 使用测试进程内的本机临时端口验证；其余 Web HTTP API 另做本机冒烟测试。UT 使用假 PTY，不启动真实 SSH、Telnet、FTP、HDFS 或 Agent CLI。
+3 GiB 自动清理以 `test_product_log_retention.py` 的小阈值真实目录测试覆盖，不创建数 GiB 的测试文件；验证精确触发边界、旧数据优先、活动/浏览/最新结果保护、上传及受管路径输入引用、重启恢复、外部原件不变、部分删除后的真实统计及 Windows junction 跳过。`test_product_log_web.py` 另验证真实 HTTP 占用接口、解除浏览保护后的回收、历史列表同步和仅保护数据超阈值时仍可查询。
+
+可运行 `python -X utf8 tests/product_log_sample.py logs/product-log-demo/product.tar.gz --source-dir logs/product-log-demo/source` 重建网页混排样本：Type 0–4 × Dev 0–5 共 30 组固件、每组 120 条；`udk log/UBE/MEME/HBOOT` 四种驱动、各 500 条。`test_product_log_integration.py` 通过真实 CLI 核对所有分组的精确数量、跨 7 文件的 14 段组装和时间排序；名称含空格的 ModuleName 另有解析回归。
+
+diag/var 演示样本使用 `python -X utf8 tests/product_log_domain_sample.py logs/product-log-domain-demo/product.tar.gz --source-dir logs/product-log-domain-demo/source` 生成。网页填 diag=`diag/slot62`、var=`var`，日志模式留空，或运行 `python -X utf8 -m product_log logs/product-log-domain-demo/product.tar.gz --collection-mode product --diag-directory diag/slot62 --var-directory var`。预期 11 文件、2,003 用户态、408 内核态（8 条时间未知）、3,600 固件、统一时间 6,011 条；udk 用户态 500 条、内核匹配 104 条，UBE 的 mami 内核匹配 100 条。样本覆盖六种压缩格式和两条多层 var 链，包含 `.1/.2/.10/current`、UDK 两种后缀、udk2 与多 Slot/Cpu；原始文件及概要在 `logs/product-log-domain-demo/source/`。
+
+| 文件 | 覆盖目标 | 失败优先检查 |
+| --- | --- | --- |
+| `test_ssh_host.py` | 真实命令、关键词响应、鉴权/断连/复用、双向 SCP/SFTP、二进制/空文件/Unicode、MD5、覆盖、唯一匹配、四路 SCP、截断/失败清理和占位符 | ssh_host、commands/transfers、run.log |
+| `test_telnet_client.py` | 真实 TCP、模式、IAC 分片、marker、退格/ANSI/UTF-8、超时/断连、Ctrl+B/原始字节、占位符来源及重连 | telnet_client、commands/probes/raw_inputs |
+| `test_interfaces_web_ftp.py` | FTP 主动/被动真实传输与校验；保留 LaunchRequest、固定 Web 启动、资源、Tool、PTY/UI 边界 | ftp_host、FTP 记录、Web/interface |
+| `test_package_extractor.py` | HTTP 包选择/重定向/原子替换/清理；本地 TAR/ZIP 提取、安全与摘要 | package_manager、HTTP 记录、extractor |
+| `test_runtime_registry.py` | 元数据、参数保存、HTTP 下载、newest/rerun、独立目录、组合脚本和 func 生命周期 | runtime/registry、params/result/last-run |
+| `test_local_protocol_workflow.py` | WebHDFS → ZIP → SCP/SFTP → shell → SSH/Telnet → SCP/SFTP → FTP → 日志 → func → rerun | 每步结果、双方字节、最终记录及命令 |
+| `test_log_collection.py` | 所有日志经真实 SCP 获取；归档、来源隔离、strict/legacy/metadata、SQLite/查询/export/Find、workflow | 真实 SSHHost、SDK 请求、logs/log_query |
+| `test_product_logs.py` / `test_product_log_collection.py` | 独立本地整理、模式分流、diag/var 来源与嵌套压缩、跨文件固件组装、稳定业务排序 | product_log/workflow、manifest、来源路径 |
+| `test_product_log_domains.py` | 两态驱动、UDK 归一、dmesg 日期与未知、模块表动态查询、统一时间和固件类型 | parser/index/module_map、原始来源和记录字段 |
+| `test_product_log_web.py` / `test_product_log_integration.py` / `test_product_log_retention.py` | 真实 HTTP/CLI、样本精确计数、模块表恢复、任务隔离与受管目录回收 | product_log/web、batch manifest、storage 状态 |
+| `test_command_files.py` | 上传映射、Host 隔离、占位符及原样 shell 文本 | command_files |
+| `test_results_selectors.py` | 结果、选择器安全、序列化、脱敏及 recorder 摘要 | results/selectors/recorder |
+| `test_generated_script_contract.py` | 全部 scripts 的共享 AST 契约及非法调用反例 | 验证器报错行 |
+| `test_udk_v100_workflows.py` | 两个发布脚本的真实 CLI、本地 WebHDFS 下载、重启/真实等待、SCP/SFTP 字节、固件解压、串口结束和业务检查 | 脚本/本轮 runtime、peer 命令/传输、boot_id、final_operation |
+| `test_cli.py` | 真 CLI 子进程、非交互参数、静态发现、准备/执行状态、单log路径、全部输出捕获 | cli/script_files/session、params/result/run.log/output.log |
+| `test_remote_environment.py` | 新对象自检、真实 SCP/SFTP/FTP 双向、Telnet被动流/关键词/登录、retry与失败分类 | remote_environment/原client、peer原始字节与传输记录 |
+| `test_script_files_session.py` | AST普通main/顶层/with初始化、零参数、角色/白名单/组网交集、历史与只读参数、生命周期/源码快照 | script_files/session/catalog、workflow-source/params/result |
+| `test_cli_protocol_flow.py` | 真CLI连接本地协议，上传下载handler链、命令分支、CtrlB、恢复与最终自检状态 | CLI/对象/真实peer、源行号与final_operation |
+| `test_web_cli_bridge.py` | 新环境登记、描述/表单绑定、真实CLI subprocess、独立输出轮询与日志定位 | webPage/server与output.log/run.log |
+| `test_log_error_triage_skill.py` / `test_sdd_skills.py` | 分析辅助脚本、知识模板及技能/SDD 合同 | 项目技能及本地子进程输出 |
+
+纯解析、菜单、系统/PTY 能力和静态契约测试仍允许局部隔离；`.run` 提取测试注入本地 runner。它们不替代网络传输。日志测试的薄代理记录 SDK 请求并调用生产 `SSHHost.scp_download_many()`，没有伪成功结果或本地 copy2 下载。
+
+## 补充：结果和已知边界
+
+- `execute_on_output()` 成功仅表示关键词出现且响应已发出；测试额外在服务端确认完整字节收到。
+- Paramiko 无 exit-status 时返回 `-1`；实现按断连处理，`expect_disconnect=True` 仅在命令已发出后允许成功。
+- WebHDFS 404 映射为 `FileNotFoundError`，消失的 newest 候选继续跳过；HTTP 408/504 映射为下载超时。
+- Telnet 退格清理使用实际 `\x08`，避免把正则 word boundary 当作退格而破坏输出和 marker。
+- 迟缓 SSH banner 在 Paramiko 3.5 下可能抛 `SSHException("No existing session")`，当前为 `PROTOCOL_ERROR/CONNECT`，不会发送命令；不靠假 socket.timeout 强行改变分类。
+- 新 Telnet 对象可按配置 username/password 及 login_prompt/password_prompt 进行登录；无配置时不猜登录，不把普通业务命令当凭据。具体设备登录提示仍需目标验收。
+- 本机协议测试不能证明真实 HDFS 集群、BusyBox applet、设备登录策略或业务命令语义。
+
+先重跑失败 node id，再对照生产实现、服务端记录和临时 run.log；不要放宽断言、跳过依赖或注入假客户端来消除失败。
+
+2026-10-10 冻结后的最终全量离线回归：**401 passed、1 skipped、1 warning，37.77s**。跳过tests/test_results_selectors.py:150是Windows符号链接权限；warning是test_log_collection.py重复ZIP成员fixture的预期提示。共享脚本契约3文件通过、静态合同16 passed；compileall、JS语法检查、skill quick_validate与git diff --check均通过。
+
+local_simulation真CLI4流程退出码0/0/2/1，直接复制并运行仓库all_interfaces.py（include_hdfs=false）。2048字节SCP/SFTP/FTP主动被动摘要一致、空文件、CtrlB02、一次重启与恢复、源码溯源和print/stderr/fd/继承child输出都通过。

@@ -37,6 +37,91 @@ def test_all_repository_environment_scripts_satisfy_the_shared_contract() -> Non
     assert violations == [], "\n".join(map(str, violations))
 
 
+def test_plain_main_accepts_explicit_paths_objects_and_handlers(tmp_path) -> None:
+    assert _validate_source(tmp_path, '''
+from autoenv import init_script, get_remote_info, create_file
+SCRIPT_ARGUMENTS = [{"name": "folder", "type": "str", "default": "/tmp"}]
+def main():
+    paths = init_script()
+    dut = get_remote_info("ssh", [("loopback", "ssh")])
+    file = create_file(paths.runtime_path, "data.bin", b"binary")
+    dut.upload(file, paths.arguments["folder"])
+''') == []
+
+
+def test_plain_contract_rejects_dynamic_target_and_wrong_protocol(tmp_path) -> None:
+    violations = _validate_source(tmp_path, '''
+from autoenv import init_script, get_remote_info
+def main():
+    paths = init_script()
+    console = get_remote_info("telnet", [("loopback", "console")])
+    console.upload(None, "/tmp")
+    if True:
+        dynamic = get_remote_info("ssh", [("loopback", "ssh")])
+''')
+    assert any("Telnet does not support file transfer" in item.message for item in violations)
+    assert any("directly assigned once" in item.message for item in violations)
+
+
+def test_plain_contract_requires_initialization_and_literal_whitelist(tmp_path) -> None:
+    violations = _validate_source(tmp_path, '''
+from autoenv import init_script, get_remote_info
+def main(ctx):
+    print("before init")
+    paths = init_script()
+    dut = get_remote_info("ssh", config)
+''')
+    assert any("zero arguments" in item.message for item in violations)
+    assert any("first workflow operation" in item.message for item in violations)
+    assert any("nonempty literal array" in item.message for item in violations)
+
+
+def test_plain_contract_accepts_aliases_keywords_and_default_string_schema(tmp_path) -> None:
+    assert _validate_source(tmp_path, '''
+from autoenv import init_script as initialize, get_remote_info as remote, create_file, get_file, hdfs_download
+SCRIPT_ARGUMENTS = [{"name": "remote_dir", "default": "/tmp"}]
+def main():
+    paths = initialize()
+    dut: object = remote(required_type="ssh", allowed_envs=[("loopback", "ssh")])
+    file = create_file(filename="data.bin", content=b"binary", path=paths.runtime_path)
+    existing = get_file(filename="data.bin", path=paths.runtime_path)
+    package = hdfs_download(config_json_name="A1", path=paths.runtime_path)
+    dut.upload(file=file, path="/tmp")
+''') == []
+
+
+def test_plain_contract_supports_with_initialization_and_fixed_roles(tmp_path) -> None:
+    assert _validate_source(tmp_path, '''
+from autoenv import init_script, get_remote_info, create_file
+def main():
+    with init_script() as paths:
+        dut = get_remote_info("ssh", allowed_envs=[("loopback", "ssh")])
+        file = create_file(path=paths.runtime_path, filename="data.bin", content=b"binary")
+        dut.upload(file, "/tmp")
+''') == []
+
+
+def test_plain_contract_accepts_initialization_without_unused_path_variable(tmp_path) -> None:
+    assert _validate_source(tmp_path, '''
+from autoenv import init_script, get_remote_info
+def main():
+    init_script()
+    dut = get_remote_info("ssh", [("loopback", "ssh")])
+    print(dut.run("echo READY"))
+''') == []
+
+
+def test_plain_contract_rejects_positional_only_main_and_duplicate_call_fields(tmp_path) -> None:
+    violations = _validate_source(tmp_path, '''
+from autoenv import init_script, get_remote_info
+def main(paths, /):
+    paths = init_script()
+    dut = get_remote_info("ssh", required_type="ssh", allowed_envs=[("loopback", "ssh")])
+''')
+    assert any("zero arguments" in item.message for item in violations)
+    assert any("requires exactly" in item.message for item in violations)
+
+
 def test_contract_rejects_a_command_list_instead_of_complete_shell_text(tmp_path) -> None:
     violations = _validate_source(
         tmp_path,

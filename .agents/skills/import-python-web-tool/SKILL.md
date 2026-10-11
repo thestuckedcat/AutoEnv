@@ -5,6 +5,8 @@ description: Safely inspect an uploaded Python script or Python project ZIP, ide
 
 # Import a Python utility
 
+When the provided Python or procedure is a remote environment/test workflow, route to `.agents/skills/autoenv-script-generator/SKILL.md` and generate an ordinary `scripts/*.py` with explicit objects. The current common Web page launches these files through CLI; no Web Tool adapter or registration decorator is needed. Continue below only when the user requests a dedicated local utility Tool.
+
 1. Treat the uploaded path as untrusted. Do not import or run it during inspection.
 2. For ZIP input, run `scripts/safe_extract.py INPUT OUTPUT`. Reject password-protected archives, links, absolute paths, `..`, compiled binaries, executables, environment files, credentials, and oversized expansion.
 3. Read the Python source statically. Identify entry functions, inputs, outputs, dependencies, file/network access, subprocess calls, global mutations, and import-time side effects.
