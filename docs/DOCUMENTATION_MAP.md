@@ -13,14 +13,14 @@ AutoEnv 当前用于个人、本机、单任务操作。常用入口是普通 Py
 | 拉起 UDK V100 环境或替换固件 | `scripts/UDK_V100.py`、`scripts/UDK_V100_Firmware.py` | [UDK V100 工作流](UDK_V100_WORKFLOWS.md)，含共享组网、包配置、串口判据与模拟测试 |
 | 查普通脚本可用接口 | `autoenv` 公共导出及环境对象 | [接口说明](SCRIPT_API_ANALYSIS.md)；[完整用法示例](../scripts/all_interfaces.py) |
 | 在网页登记环境、运行脚本 | `python -X utf8 startWeb.py` → <http://127.0.0.1:8765/> | [网页用法](web_usage.md) |
-| 整理并查看用户态、内核态和固件日志 | `python -m product_log` 或同一服务的 `/product-logs/` | [产品日志说明](../product_log/README.md)，包括 diag/var 收集、分段拼接、模块表、分类/统一时间、查询和自动清理 |
+| 整理并查看用户态、内核态和固件日志 | `python -m product_log` 或同一服务的 `/product-logs/` | [产品日志说明](../product_log/README.md)，包括归档全量准备、diag/varlog 收集、分段拼接、模块表、分类/统一时间、查询和自动清理 |
 | 生成可直接打开的单文件离线日志网页 | `python -X utf8 tools/build_product_log_page.py` → `dist/product-log-offline.html` | [独立离线页说明](../product_log/standalone/README.md)；生成仅用 Python 标准库，使用者只需要现代浏览器 |
 | 修改 Web/CLI 桥接 | `webPage/server.py` 与 CLI/session | [Web 接手说明](WEB_ARCHITECTURE_AND_HANDOFF.md) |
 | 运行离线测试、构造日志或排查失败 | `tests/` | [测试说明](../tests/README.md)；[本地协议模拟](LOCAL_SIMULATION.md) |
 
 Web 只支持源码仓库根目录中的 `python -X utf8 startWeb.py`，固定地址为 `http://127.0.0.1:8765/`。SDK 与 CLI 可通过项目安装使用；wheel 包含 `autoenv`、`scripts`、`product_log` 及产品日志静态资源，但不提供独立 Web 启动器。安装 wheel 不等于完整源码 Web 的安装验收。
 
-单文件离线日志页是源码构建产物，由浏览器直接运行全部内嵌代码；构建命令不启动服务器，也不改变 wheel 安装或 SDK/CLI/服务端入口。输入经文件选择授权，来源为相对路径，结果只存页面内存；模块表用 JSON 导入/导出，磁盘解压、绝对路径导入、历史批次和 3 GiB 回收仍属于服务端版本。
+单文件离线日志页是源码构建产物，由浏览器直接运行全部内嵌代码；构建命令不启动服务器，也不改变 wheel 安装或 SDK/CLI/服务端入口。ZIP LZMA（算法 14）及 RAR4/RAR5 普通和固实压缩的解码器、WASM 和许可均随 HTML 内嵌，运行不加载网络资源。输入经文件选择授权，来源为相对路径，结果只存页面内存；模块表用 JSON 导入/导出，磁盘解压、绝对路径导入、历史批次和 3 GiB 回收仍属于服务端版本。
 
 ## 哪份文档负责什么
 
@@ -30,8 +30,8 @@ Web 只支持源码仓库根目录中的 `python -X utf8 startWeb.py`，固定�
 | --- | --- | --- |
 | 安装和最短上手流程 | [QUICK_START.md](QUICK_START.md) | 根 README 只提供入口；[webPage/QUICK_START.md](../webPage/QUICK_START.md) 导向网页用法 |
 | 普通脚本及文件 SDK 的 API 名称、参数和返回语义 | [SCRIPT_API_ANALYSIS.md](SCRIPT_API_ANALYSIS.md)，对应 `autoenv/__init__.py`、`script_session.py`、`remote_environment.py`、`file_handles.py` | [机读目录](script-api-catalog.json) 是同步摘要；示例展示调用场景，不另定义默认值 |
-| 产品日志导入、解析、查询与保留规则 | [product_log/README.md](../product_log/README.md)，对应 `product_log/` | [日志设计书第 12 节](LOCAL_PRODUCT_LOG_DESIGN.md#12-diag-用户态var-内核态与模块映射已确认实现) 定义当前产品模式；第 1–11 节保留初版通用设计，不替代后续业务规则或通用 SDK 接口说明 |
-| 单文件离线日志页构建、使用和边界 | [product_log/standalone/README.md](../product_log/standalone/README.md)，对应 `tools/build_product_log_page.py` 与 `product_log/standalone/` | [日志设计书第 13 节](LOCAL_PRODUCT_LOG_DESIGN.md#13-单文件离线日志网页) 定义浏览器数据流及与 Python 版本的对照方式 |
+| 产品日志导入、解析、查询与保留规则 | [product_log/README.md](../product_log/README.md)，对应 `product_log/` | 当前全量归档准备、默认 varlog、旧 var 兼容及本机 RAR 后端边界以此 README 为使用入口；[日志设计书第 12 节](LOCAL_PRODUCT_LOG_DESIGN.md#12-diag-用户态var-内核态与模块映射已确认实现) 保留此前 diag/var 设计，不覆盖后续规则；第 1–11 节保留初版通用设计 |
+| 单文件离线日志页构建、使用和边界 | [product_log/standalone/README.md](../product_log/standalone/README.md)，对应 `tools/build_product_log_page.py` 与 `product_log/standalone/` | [日志设计书第 13 节](LOCAL_PRODUCT_LOG_DESIGN.md#13-单文件离线日志网页) 保留浏览器数据流和 Python 对照设计；新增格式与解码资源以当前使用说明和清单为准 |
 | 连接配置、类型、白名单和选择规则 | [ENVIRONMENT_REGISTRATION_GUIDE.md](ENVIRONMENT_REGISTRATION_GUIDE.md) | 快速开始和网页用法仅保留操作步骤 |
 | Web 操作与桥接实现 | [web_usage.md](web_usage.md)、[WEB_ARCHITECTURE_AND_HANDOFF.md](WEB_ARCHITECTURE_AND_HANDOFF.md) | 分别面向使用者和接手开发者 |
 | 依赖声明与已测环境快照 | [pyproject.toml](../pyproject.toml)、[constraints-local-tested.txt](../constraints-local-tested.txt) | 下述环境说明解释验证边界；历史测试次数不代表全部版本兼容性 |
@@ -64,6 +64,8 @@ python -m pip install -c constraints-local-tested.txt -e ".[test]"
 
 真实日志可以直接在本机使用，本项目不把脱敏作为本地解析的前置条件。真实设备日志、账号配置和运行产物保留在本机，不提交 Git；建议把样本放在已忽略的 `logs/`。仓库中的测试使用构造日志，样本生成和预期数量见 [产品日志测试说明](../product_log/README.md#测试)。
 
-产品日志 `auto/product/generic` 是独立收集规则，不改变普通环境脚本或文件 SDK 的搜索/排序合同。当前索引版本为 2，旧产品日志批次需要重新导入；diag/var 构造样本与核心/收集测试见 [测试说明](../tests/README.md)。
+产品日志 `auto/product/generic` 都先递归准备输入中的全部支持压缩包，再定位目录和选择日志。默认内核目录为 `varlog`，仅缺失时回退到旧 `var`，显式选择旧 `var` 的构造样本仍有效；旧 archive_patterns 参数保留校验但不限制准备阶段。文件 SDK 的搜索/排序合同不变，`detect_archive()` 增加 `rar`；解压边界见 [产品日志说明](../product_log/README.md#输出与读取规则)。当前索引版本为 2，旧产品日志批次需要重新导入；构造样本与核心/收集测试见 [测试说明](../tests/README.md)，RAR 固定样本来源见 [归档测试夹具](../tests/fixtures/product_log_archives/README.md)。
+
+归档格式与常见串口兼容的实现及本地验证范围见 [2026-10-13 功能记录](../newFeature/2026-10-13-archive-and-serial-compatibility.md)。串口的 command/keyword/prompt 自检范围与 `exit_status_available` 由 [接口说明](SCRIPT_API_ANALYSIS.md) 和 [UDK 工作流](UDK_V100_WORKFLOWS.md) 维护；提示符就绪不等于业务命令已获得退出码 0。验证未访问真实串口、BMC、1260 或 HDFS。
 
 产品日志 Web 的上传与历史批次达到默认 3 GiB（`3 * 1024**3` 字节）时触发自动清理，具体顺序和保护规则以 [产品日志说明](../product_log/README.md) 为准。它只管理 Web 专属目录，CLI 指定输出、外部输入目录和普通环境脚本日志由使用者管理。阈值是清理触发条件，不是磁盘硬配额。

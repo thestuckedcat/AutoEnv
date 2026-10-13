@@ -39,13 +39,15 @@ python -X utf8 -m autoenv.cli run demo --non-interactive --topology "单机直�
 
 ## 补充功能
 
-产品日志独立于环境脚本：同一 Web 服务的 `/product-logs/` 页面支持压缩包/文件夹导入，分别收集 `diag` 用户态/固件和 `var` 内核日志，并按分类或统一时间查看。可用以下命令显式选择产品模式：
+产品日志独立于环境脚本：同一 Web 服务的 `/product-logs/` 页面支持压缩包/文件夹导入，分别收集 `diag` 用户态/固件和 `varlog` 内核日志，并按分类或统一时间查看。可用以下命令显式选择产品模式：
 
 ```powershell
-python -X utf8 -m product_log INPUT --collection-mode product --diag-directory diag/slot62 --var-directory var
+python -X utf8 -m product_log INPUT --collection-mode product --diag-directory diag/slot62 --var-directory varlog
 ```
 
-默认 `auto` 在找到精确的 `diag` 或 `var` 目录后使用产品规则，未找到则按原通用规则处理；显式旧 `--directory` 在 `auto` 中继续选择通用模式。需要任意日志目录/通配符时使用 `--collection-mode generic --directory PATH`。产品目录多命中会报错，支持 `diag/slot62` 等部分路径消歧；只找到一类仍可解析，显式产品模式两类都不存在时报错。
+默认 `auto` 在找到精确的 `diag` 或 `varlog` 目录后使用产品规则；只有 `varlog` 不存在时才查找旧 `var`，显式 `--var-directory var` 仍有效。`varlog` 多命中会报错，不回退。未找到产品目录则按通用规则处理；显式旧 `--directory` 在 `auto` 中继续选择通用模式。需要任意日志目录/通配符时使用 `--collection-mode generic --directory PATH`。支持 `diag/slot62` 等部分路径消歧；只找到一类仍可解析，显式产品模式两类都不存在时报错。
+
+各模式均先递归展开输入中所有支持的压缩包，再定位目录和选取日志，包括 diag、通用及未选中目录里的多层包。旧 `--archive-pattern` 仍接收和校验，但不限制准备阶段；网页已移除该过滤输入。日志文件模式和递归选项控制后续选取，不会阻止准备嵌套包。
 
 产品默认将 `diaglog_*.log` 字典序排列后读最新 `diag.log`，内核按 `.1/.2/.../.10/...` 数字顺序后读最新 current。网页模块表预置 `udk→udk→udk`、`UBE→UBE→mami`；旧索引批次需要重新导入。完整整理、分类及映射规则见 [product_log/README.md](../product_log/README.md)。
 
@@ -55,13 +57,13 @@ python -X utf8 -m product_log INPUT --collection-mode product --diag-directory d
 python -X utf8 tools/build_product_log_page.py
 ```
 
-把生成的 `dist/product-log-offline.html` 交给使用者，直接在现代桌面浏览器打开并选择压缩包或文件夹。构建仅需 Python 标准库，使用阶段只有浏览器；全部资源内嵌，无服务或网络加载。来源保留相对路径，日志仅存页面内存，模块表可导入/下载 JSON；磁盘工作区、历史批次与 3 GiB 清理由原服务端版本提供。详细步骤见 [独立离线页说明](../product_log/standalone/README.md)。
+把生成的 `dist/product-log-offline.html` 交给使用者，直接在现代桌面浏览器打开并选择压缩包或文件夹。构建仅需 Python 标准库，使用阶段只有浏览器；ZIP LZMA（算法 14）、RAR4/RAR5 普通及固实压缩的解码器、WASM 和许可均内嵌，无服务或网络加载。来源保留相对路径，日志仅存页面内存，模块表可导入/下载 JSON；磁盘工作区、历史批次与 3 GiB 清理由原服务端版本提供。详细步骤见 [独立离线页说明](../product_log/standalone/README.md)，本机 SDK 的 RAR 后端边界见 [产品日志说明](../product_log/README.md#输出与读取规则)。
 
 普通脚本可使用命令执行、文件传输、本地文件/HDFS、Telnet 关键词等待和业务参数。各接口的参数、返回值及失败语义统一查 [接口说明](SCRIPT_API_ANALYSIS.md)；连接类型、上传方式、白名单与历史选择查 [环境登记](ENVIRONMENT_REGISTRATION_GUIDE.md)。
 
 最小例子：[example.py](../scripts/example.py)；可复制模板：[template.py](../scripts/template.py)；全部接口：[all_interfaces.py](../scripts/all_interfaces.py)。
 
-具体业务例子：[UDK V100 环境拉起与固件替换](UDK_V100_WORKFLOWS.md)。两个脚本复用 `SingleUnions_S3`，需要填写连接与包路径；生成的 `start_env.sh` 目前只有用户要求的占位内容。
+具体业务例子：[UDK V100 环境拉起与固件替换](UDK_V100_WORKFLOWS.md)。两个脚本复用 `SingleUnions_S3`，需要填写连接与包路径；生成的 `start_env.sh` 目前只有用户要求的占位内容。串口适配覆盖已登录、仅用户名和密码挑战场景，`auto` 区分 POSIX 与设备提示符；自检范围与退出状态可用性见该说明。固件流程仍要求退出码 0，并在命令正常返回后检查 `success`。这些适配通过本地协议测试，未验证真实串口硬件。
 
 发布示例的 `if __name__ == "__main__"` 转发同一个 CLI，因此 `python scripts/example.py --non-interactive ...` 也有完整日志捕获/释放。CLI执行脚本时跳过这个guard再调用main，不递归。
 

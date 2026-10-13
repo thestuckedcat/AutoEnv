@@ -9,10 +9,11 @@ import shutil
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Iterable
 
-from autoenv import find_subdir, fuzz_search, get_file, get_handler
+from autoenv import get_file, get_handler
+from autoenv.file_handles import _matches, _walk_paths
 from autoenv.local_archives import MAX_EXPANDED_BYTES, MAX_EXPANDED_FILES, detect_archive
 
 from ._storage import INDEX_SCHEMA_VERSION, write_manifest
@@ -32,15 +33,6 @@ def _patterns(values: Iterable[str] | None) -> list[str]:
     return result
 
 
-def _search(root: Path, patterns: list[str], recursive: bool) -> list[Path]:
-    if not patterns:
-        return list(get_handler(root, recursive).paths)
-    paths: set[Path] = set()
-    for pattern in patterns:
-        paths.update(fuzz_search(root, pattern, recursive).paths)
-    return sorted(paths, key=lambda path: (path.name, path.relative_to(root).as_posix()))
-
-
 def _identity(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
 
@@ -54,14 +46,16 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
                  directory_pattern: str = "", archive_patterns: Iterable[str] | None = None,
                  file_patterns: Iterable[str] | None = None, recursive: bool = True,
                  collection_mode: str = "auto", diag_directory_pattern: str = "diag",
-                 var_directory_pattern: str = "var",
+                 var_directory_pattern: str = "varlog",
                  copy_patterns: Iterable[str] | None = None, rename_map: dict[str, str] | None = None,
                  workers: int = 4, progress: Callable[[dict], None] | None = None,
                  cancelled: Callable[[], bool] | None = None) -> dict:
     """Prepare, parse and atomically publish a single isolated batch.
 
-    Generic/diag child archives are expanded once; product var expands every
-    nested layer. Auto detects product directories, retaining explicit generic
+    Every supported archive is expanded before unique directory selection,
+    including all nested layers outside the selected directories. The deprecated
+    archive_patterns argument is retained for callers but no longer limits this
+    preparation. Auto detects product directories, retaining explicit generic
     directory selection. A file copied into ``selected`` replaces
     its original candidate, while independent files with identical bytes remain.
     Errors/cancellation preserve a non-ready manifest and never publish queries.
@@ -113,9 +107,6 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
         if progress:
             progress({"stage": stage, "count": count, "message": message})
 
-    def external_generated(path: Path) -> bool:
-        return input_path.is_dir() and path.is_relative_to(batch_dir)
-
     budget_files = budget_bytes = 0
 
     def account(root: Path) -> None:
@@ -138,7 +129,7 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
         else:
             detected = detect_archive(input_path)
             if detected is None:
-                raise ValueError("File input must be a supported ZIP/TAR/GZIP archive")
+                raise ValueError("File input must be a supported ZIP/TAR/GZIP/RAR archive")
             emit("extracting", 0, "Extracting top-level input archive")
             input_root = get_file(input_path.parent, input_path.name).unzip(
                 work / "input", max_files=MAX_EXPANDED_FILES, max_bytes=MAX_EXPANDED_BYTES,
@@ -151,107 +142,46 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
             manifest["archives"].append({"path": str(input_path), "origin_path": str(input_path),
                                           "destination": str(input_root), "format": detected, "level": 0})
         manifest["input_root"] = str(input_root)
-        emit("collecting", 0, "Locating the unique target directory")
         excluded = (batch_dir,) if input_path.is_dir() else ()
-        targets: dict[str, Path] = {}
-        effective_mode = collection_mode
-        if collection_mode != "generic" and not (collection_mode == "auto" and directory_pattern):
-            for domain, pattern in (("user", diag_directory_pattern), ("kernel", var_directory_pattern)):
-                # SDK single-component keywords intentionally use substring matching.
-                # A character-class glob keeps the default product directory names
-                # exact while retaining the SDK's safe traversal and unique-match rule.
-                directory_rule = {"diag": "[d]iag", "var": "[v]ar"}.get(pattern, pattern)
-                try:
-                    targets[domain] = find_subdir(input_root, directory_rule, recursive=True, exclude_paths=excluded)
-                except FileNotFoundError:
-                    pass
-            if not targets and collection_mode == "product":
-                raise FileNotFoundError("No diag or var directory matches the product collection rules")
-            effective_mode = "product" if targets else "generic"
-        else:
-            effective_mode = "generic"
-        if effective_mode == "generic":
-            targets = {"user": find_subdir(input_root, directory_pattern, recursive=bool(recursive),
-                                           exclude_paths=excluded) if directory_pattern else input_root}
-        elif targets.get("user") == targets.get("kernel"):
-            raise ValueError("diag and var directory rules must select different directories")
-        manifest["collection_mode"] = effective_mode
-        manifest["target_paths"] = {domain: str(target) for domain, target in targets.items()}
-        manifest["target_path"] = str(targets.get("user", next(iter(targets.values()))))
-
-        candidates: dict[Path, dict] = {}
-        copy_candidates: dict[Path, dict] = {}
+        # Each root keeps its physical isolation and its archive ancestry. A
+        # logical directory prefix skips archive filenames so partial paths can
+        # span a packing boundary without exposing task-generated hash folders.
+        forest: list[dict] = [{"root": input_root, "parent": None, "archive": None,
+                              "prefix": (input_root.name,), "files": [], "level": 0}]
         archives: list[tuple[Path, str, dict, int]] = []
-        kernel_name = re.compile(r"^cpdt_dmesg_current\.log(?:\.(\d+))?$")
+        archive_entries: dict[Path, dict] = {}
 
-        def collect_target(target: Path, domain: str) -> None:
-            is_kernel = effective_mode == "product" and domain == "kernel"
-            walk_recursive = True if is_kernel else bool(recursive)
-            selected_patterns = file_patterns or (["diaglog_*.log", "diag.log"] if effective_mode == "product" else [])
-            device_source = "target:" + target.relative_to(input_root).as_posix()
-            other_targets = tuple(other for other_domain, other in targets.items()
-                                  if other_domain != domain and other.is_relative_to(target))
+        def source_for(path: Path, node: dict) -> dict:
+            member = path.relative_to(node["root"]).as_posix()
+            original = node["archive"]
+            relative = original["relative_path"] + "!/" + member if original else member
+            return {
+                "path": str(path), "relative_path": relative,
+                "provenance_parts": [*original["provenance_parts"], member] if original else [member],
+                "origin_path": original["origin_path"] + "!/" + member if original else (
+                    f"{top_archive}!/{member}" if top_archive else str(path)),
+                "archive_path": original["path"] if original else top_archive,
+                "member_path": member if original else (member if top_archive else ""),
+                "original_name": path.name,
+            }
 
-            def initial_excluded(path: Path) -> bool:
-                # Both domains may be nested. The explicitly selected child
-                # domain owns its entire subtree, including every archive.
-                return external_generated(path) or any(path.is_relative_to(other) for other in other_targets)
-
-            def source_for(path: Path, root: Path, original: dict | None = None) -> dict:
-                member = path.relative_to(root).as_posix()
-                relative = original["relative_path"] + "!/" + member if original else path.relative_to(input_root).as_posix()
-                return {
-                    "path": str(path), "relative_path": relative,
-                    "provenance_parts": [*original["provenance_parts"], member] if original else [relative],
-                    "origin_path": original["origin_path"] + "!/" + member if original else (
-                        f"{top_archive}!/{relative}" if top_archive else str(path)),
-                    "archive_path": original["path"] if original else top_archive,
-                    "member_path": member if original else (relative if top_archive else ""),
-                    "device_source": device_source, "log_domain": domain,
-                    "original_name": path.name,
-                }
-
-            def scan(root: Path, original: dict | None, level: int, discover_archives: bool) -> None:
-                detected_paths: dict[Path, str | None] = {}
-
-                def kind_for(path: Path) -> str | None:
-                    check_cancelled(cancelled)
-                    if path not in detected_paths:
-                        detected_paths[path] = detect_archive(path)
-                    return detected_paths[path]
-
-                if discover_archives:
-                    # var must discover every nested archive, independent of diag pattern choices.
-                    for path in _search(root, [] if is_kernel else archive_patterns, walk_recursive):
-                        if original is None and initial_excluded(path):
-                            continue
-                        kind = kind_for(path)
-                        if kind:
-                            archives.append((path, kind, source_for(path, root, original), level))
-                selected = _search(root, [] if is_kernel else selected_patterns, walk_recursive)
-                if is_kernel:
-                    selected = [path for path in selected if kernel_name.fullmatch(path.name)]
-                elif effective_mode == "product" and not file_patterns:
-                    selected = [path for path in selected if path.name == "diag.log" or (
-                        path.name.startswith("diaglog_") and path.name.endswith(".log"))]
-                copies = _search(root, copy_patterns, walk_recursive) if copy_patterns and not is_kernel else []
-                for path in set(selected + copies):
-                    if (original is None and initial_excluded(path)) or kind_for(path):
-                        continue
-                    source = source_for(path, root, original)
-                    if path in selected:
-                        candidates[path] = source
-                    if path in copies:
-                        copy_candidates[path] = source
-
-            queue_start = len(archives)
-            scan(target, None, 1, True)
-            cursor = queue_start
-            while cursor < len(archives):
-                path, kind, original, level = archives[cursor]
-                cursor += 1
+        cursor = 0
+        while cursor < len(forest):
+            node = forest[cursor]
+            cursor += 1
+            files = sorted(_walk_paths(node["root"], True, exclude_paths=excluded if node["parent"] is None else ()),
+                           key=lambda path: (path.name, path.relative_to(node["root"]).as_posix()))
+            for path in files:
+                check_cancelled(cancelled)
+                kind = detect_archive(path)
+                node["files"].append((path, kind))
+                if kind is None:
+                    continue
+                original = source_for(path, node)
+                level = node["level"] + 1
+                archives.append((path, kind, original, level))
                 destination = work / "expanded" / _identity(_source_key(original))
-                emit("extracting", cursor, f"Extracting {original['relative_path']}")
+                emit("extracting", len(archives), f"Extracting {original['relative_path']}")
                 if budget_files >= MAX_EXPANDED_FILES or budget_bytes >= MAX_EXPANDED_BYTES:
                     raise ValueError("Task cumulative archive expansion budget exhausted")
                 expanded = get_file(path.parent, path.name).unzip(
@@ -261,14 +191,134 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
                 )
                 check_cancelled(cancelled)
                 account(expanded)
-                manifest["archives"].append({"path": str(path), "origin_path": original["origin_path"],
-                                              "destination": str(expanded), "format": kind, "level": level,
-                                              "log_domain": domain,
-                                              "provenance_parts": original["provenance_parts"]})
-                scan(expanded, original, level + 1, is_kernel)
+                entry = {"path": str(path), "origin_path": original["origin_path"],
+                         "destination": str(expanded), "format": kind, "level": level,
+                         "provenance_parts": original["provenance_parts"]}
+                manifest["archives"].append(entry)
+                archive_entries[path] = entry
+                forest.append({"root": expanded, "parent": node, "archive": original,
+                               "prefix": (*node["prefix"], *path.relative_to(node["root"]).parent.parts),
+                               "files": [], "level": level})
 
-        for domain, target in targets.items():
-            collect_target(target, domain)
+        emit("collecting", 0, "Locating unique target directories after all archive layers are expanded")
+
+        def find_prepared_directory(pattern: str, recurse: bool = True) -> tuple[Path, dict]:
+            if not isinstance(pattern, str):
+                raise TypeError("partial_path must be a string")
+            normalized = pattern.replace("\\", "/")
+            components = normalized.split("/")
+            if (not normalized or normalized.startswith("/") or PureWindowsPath(pattern).drive
+                    or ":" in normalized or "\x00" in normalized
+                    or any(not part or part in {".", ".."} or "**" in part for part in components)):
+                raise ValueError("partial_path must contain safe relative directory components")
+            matches: list[tuple[Path, dict]] = []
+            for node in forest:
+                check_cancelled(cancelled)
+                directories = list(_walk_paths(node["root"], True, directories=True,
+                                               exclude_paths=excluded if node["parent"] is None else ()))
+                if node["parent"] is None:
+                    directories.insert(0, node["root"])
+                for candidate in directories:
+                    logical = (*node["prefix"], *candidate.relative_to(node["root"]).parts)
+                    if not recurse and len(logical) > 2:
+                        continue
+                    found = (_matches(logical[-1], components[0], fuzzy=True) if len(components) == 1 else
+                             len(logical) >= len(components) and all(
+                                 _matches(name, rule, fuzzy=False)
+                                 for name, rule in zip(logical[-len(components):], components)))
+                    if found:
+                        matches.append((candidate, node))
+            if not matches:
+                raise FileNotFoundError(f"no directory matches {pattern!r} in prepared input")
+            if len(matches) > 1:
+                raise ValueError(f"ambiguous directory {pattern!r}: " + ", ".join(
+                    source_for(path, node)["origin_path"] for path, node in matches))
+            return matches[0]
+
+        targets: dict[str, Path] = {}
+        target_nodes: dict[str, dict] = {}
+        effective_mode = collection_mode
+        if collection_mode != "generic" and not (collection_mode == "auto" and directory_pattern):
+            for domain, pattern in (("user", diag_directory_pattern), ("kernel", var_directory_pattern)):
+                directory_rule = {"diag": "[d]iag", "varlog": "[v]arlog", "var": "[v]ar"}.get(pattern, pattern)
+                try:
+                    targets[domain], target_nodes[domain] = find_prepared_directory(directory_rule)
+                except FileNotFoundError:
+                    if domain == "kernel" and pattern == "varlog":
+                        # Compatibility is only an absence fallback. An ambiguous
+                        # varlog tree must still fail instead of selecting var.
+                        try:
+                            targets[domain], target_nodes[domain] = find_prepared_directory("[v]ar")
+                        except FileNotFoundError:
+                            pass
+            if not targets and collection_mode == "product":
+                raise FileNotFoundError("No diag or varlog directory matches the product collection rules")
+            effective_mode = "product" if targets else "generic"
+        else:
+            effective_mode = "generic"
+        if effective_mode == "generic":
+            targets["user"], target_nodes["user"] = (find_prepared_directory(directory_pattern, bool(recursive))
+                                                      if directory_pattern else (input_root, forest[0]))
+        elif targets.get("user") == targets.get("kernel"):
+            raise ValueError("diag and varlog directory rules must select different directories")
+        manifest["collection_mode"] = effective_mode
+        manifest["target_paths"] = {domain: str(target) for domain, target in targets.items()}
+        manifest["target_path"] = str(targets.get("user", next(iter(targets.values()))))
+        candidates: dict[Path, dict] = {}
+        copy_candidates: dict[Path, dict] = {}
+        kernel_name = re.compile(r"^cpdt_dmesg_current\.log(?:\.(\d+))?$")
+
+        def belongs(path: Path, node: dict, domain: str, recurse: bool = True) -> bool:
+            directory_depth = 0
+            while True:
+                if node is target_nodes[domain]:
+                    if not path.is_relative_to(targets[domain]):
+                        return False
+                    return recurse or directory_depth + len(path.relative_to(targets[domain]).parent.parts) == 0
+                directory_depth += len(path.relative_to(node["root"]).parent.parts)
+                if node["parent"] is None:
+                    return False
+                path, node = Path(node["archive"]["path"]), node["parent"]
+
+        def owning_domain(path: Path, node: dict) -> str | None:
+            matches = [domain for domain in targets if belongs(path, node, domain)]
+            if not matches:
+                return None
+            # A selected child domain owns its full subtree across packing
+            # boundaries. Each source is collected once, even for nested domains.
+            return max(matches, key=lambda domain: (
+                target_nodes[domain]["level"], len(targets[domain].relative_to(target_nodes[domain]["root"]).parts)))
+
+        for node in forest:
+            for path, kind in node["files"]:
+                check_cancelled(cancelled)
+                domain = owning_domain(path, node)
+                if domain is None:
+                    continue
+                if kind:
+                    archive_entries[path]["log_domain"] = domain
+                    continue
+                is_kernel = effective_mode == "product" and domain == "kernel"
+                if not belongs(path, node, domain, True if is_kernel else bool(recursive)):
+                    continue
+                selected_patterns = file_patterns or (["diaglog_*.log", "diag.log"] if effective_mode == "product" else [])
+                if is_kernel:
+                    selected = bool(kernel_name.fullmatch(path.name))
+                elif effective_mode == "product" and not file_patterns:
+                    selected = path.name == "diag.log" or (path.name.startswith("diaglog_") and path.name.endswith(".log"))
+                else:
+                    selected = not selected_patterns or any(_matches(path.name, pattern or "*", fuzzy=True)
+                                                             for pattern in selected_patterns)
+                copy = not is_kernel and any(_matches(path.name, pattern or "*", fuzzy=True) for pattern in copy_patterns)
+                if not selected and not copy:
+                    continue
+                source = source_for(path, node)
+                source.update(log_domain=domain,
+                              device_source="target:" + source_for(targets[domain], target_nodes[domain])["relative_path"])
+                if selected:
+                    candidates[path] = source
+                if copy:
+                    copy_candidates[path] = source
         emit("collecting", len(candidates), "Collecting prepared log sources")
         for key in rename_map:
             if "/" in key:

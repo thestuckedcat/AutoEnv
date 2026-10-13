@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "product_log" / "standalone"
 
 
-def verified_vendor() -> dict[str, str]:
+def verified_vendor() -> dict[str, str | bytes]:
     vendor = SOURCE / "vendor"
     manifest = json.loads((vendor / "manifest.json").read_text(encoding="utf-8"))
     result = {}
@@ -28,7 +28,7 @@ def verified_vendor() -> dict[str, str]:
         data = path.read_bytes()
         if hashlib.sha256(data).hexdigest() != expected:
             raise ValueError(f"Vendored asset checksum differs: {name}")
-        result[name] = data.decode("utf-8")
+        result[name] = data if name.endswith(".wasm") else data.decode("utf-8")
     return result
 
 
@@ -39,6 +39,42 @@ def compression_source() -> str:
     for name in ("fflate-0.8.3.js", "xz-decompress-0.2.3.js"):
         pieces.append("(function(){const module=undefined,exports=undefined,define=undefined;\n"
                       + vendor[name] + "\n}).call(globalThis);\n")
+    pieces.append("(function(){const module=undefined,exports=undefined,define=undefined,process=undefined;\n"
+                  + vendor["libarchive-wasm-1.2.0.js"]
+                  + "\nglobalThis.OfflineLibarchiveFactory=libarchive;}).call(globalThis);\n")
+    wasm = base64.b64encode(vendor["libarchive-wasm-1.2.0.wasm"]).decode("ascii")
+    pieces.append("globalThis.OfflineLibarchiveBinary=" + json.dumps(wasm) + ";\n")
+    unrar_loader = vendor["node-unrar-2.0.2.js"]
+    if unrar_loader.count("export default Module;") != 1:
+        raise ValueError("Unexpected pinned UnRAR module export")
+    # Preserve vendored bytes; adapt the one ESM export for this classic worker bundle.
+    pieces.append("(function(){const process=undefined;\n"
+                  + unrar_loader.replace("export default Module;", "globalThis.OfflineUnrarFactory=Module;")
+                  + "\n})();\n")
+    wasm = base64.b64encode(vendor["node-unrar-2.0.2.wasm"]).decode("ascii")
+    pieces.append("globalThis.OfflineUnrarBinary=" + json.dumps(wasm) + ";\n")
+    pieces.append("(function(){const factories={},modules={};\n"
+                  "function require(name){if(modules[name])return modules[name].exports;"
+                  "const module={exports:{}};modules[name]=module;"
+                  "if(!factories[name])throw new Error('Unknown embedded UnRAR module: '+name);"
+                  "factories[name](require,module,module.exports);return module.exports;}\n")
+    for name in ("Extractor", "ExtractorData.helper", "ExtractorData"):
+        asset = vendor[f"node-unrar-{name}.js"]
+        asset = "\n".join(line for line in asset.splitlines() if not line.startswith("//# sourceMappingURL="))
+        pieces.append(f"factories['./{name}']=function(require,module,exports){{\n" + asset + "\n};\n")
+    pieces.append("globalThis.OfflineUnrarExtractor=require('./ExtractorData').ExtractorData;})();\n")
+    lzma = vendor["lzma-d-2.3.2.js"]
+    raw_output = "decode($toByteArray(this$static.d.output))"
+    write_output = "function $write_0(this$static, buf, off, len) {"
+    if lzma.count(raw_output) != 2 or lzma.count(write_output) != 1:
+        raise ValueError("Unexpected pinned LZMA decompressor output")
+    # Do not let the library's automatic UTF8 conversion alter binary bytes.
+    # The same validated ZIP size bounds allocation even when the size is zero.
+    lzma = lzma.replace(raw_output, "$toByteArray(this$static.d.output)").replace(
+        write_output, write_output + "\nif(this$static.count+len>offlineLzmaLimit)throw new Error('LZMA output exceeds ZIP member size');")
+    pieces.append("(function(){const onmessage=undefined;let offlineLzmaLimit=0;\n" + lzma
+                  + "\nglobalThis.OfflineLzmaBytes=function(bytes,size){offlineLzmaLimit=size;"
+                  "return Uint8Array.from(LZMA.decompress(bytes));};}).call(globalThis);\n")
     pieces.append("""
 (function () {
   'use strict';
@@ -123,6 +159,23 @@ def compression_source() -> str:
   }
   globalThis.OfflineCompression = {
     ungzip,
+    unlzma: (bytes, size, flags) => {
+      if (bytes.length < 14 || (bytes[2] | bytes[3] << 8) !== 5) throw new Error('Invalid ZIP LZMA properties');
+      if (size===0 && !(flags&2)) {
+        // Without an EOS marker, a known zero output size finishes immediately.
+        // Still validate properties and the complete five-byte range header.
+        const dictionary=new DataView(bytes.buffer,bytes.byteOffset+5,4).getUint32(0,true);
+        if(bytes[4]>=225||dictionary>99999999||bytes[9]!==0) throw new Error('Invalid ZIP LZMA properties');
+        return new Uint8Array(0);
+      }
+      // ZIP method 14 has a four-byte SDK/properties header. LZMA-alone has
+      // five property bytes followed by the known eight-byte unpacked size.
+      const frame=new Uint8Array(bytes.length+4),data=new DataView(frame.buffer);
+      frame.set(bytes.subarray(4,9));
+      data.setUint32(5,size>>>0,true);data.setUint32(9,Math.floor(size/4294967296),true);
+      frame.set(bytes.subarray(9),13);
+      return globalThis.OfflineLzmaBytes(frame,size);
+    },
     inflateRaw: bytes => globalThis.fflate.inflateSync(bytes),
     bunzip: bytes => new Uint8Array(Bunzip.decode(bytes, undefined, true)),
     unxz: async bytes => new Uint8Array(await new Response(
@@ -131,6 +184,8 @@ def compression_source() -> str:
   };
 })();
 """)
+    pieces.append((SOURCE / "libarchive-codec.js").read_text(encoding="utf-8"))
+    pieces.append((SOURCE / "unrar-codec.js").read_text(encoding="utf-8"))
     return "\n".join(pieces)
 
 

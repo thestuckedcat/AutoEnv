@@ -36,7 +36,7 @@ def main():
 | get_handler | path；recursive=False | FileHandleGroup | 全部普通文件，按文件名字典序 |
 | find_subdir | path；partial_path；recursive=True | Path | 唯一目录；可用 diag/slot62 消歧 |
 | detect_archive | path | zip/tar/gz 或 None | TAR压缩变体归为tar；内容识别 |
-| FileHandle.unzip | 输出目录；可选 max_files/max_bytes | Path | 内容识别 ZIP/TAR/GZ；安全展开 |
+| FileHandle.unzip | 输出目录；可选 max_files/max_bytes | Path | 内容识别 ZIP/TAR/GZ/RAR；安全展开当前一层 |
 | FileHandle.move_to | 目的目录 | FileHandle | 复制，保留源文件；同名报错 |
 | FileHandle.rename | 新 basename | FileHandle | 真实重命名；使用返回的新 handler |
 | hdfs_download | 本地目录；config.json 名称 | FileHandle | 独立，无 ctx |
@@ -48,6 +48,10 @@ FileHandle 提供本地 path、filename 与完整性信息。ScriptPaths 提供 
 FileHandleGroup 固定路径排序，首次取用成员时建立并缓存 handler；搜索支持 `* ? [abc] [!abc]`，区分大小写，不跟随链接目录。独立产品日志模块、CLI 与网页共用 `product_log.workflow`，具体示例见 [产品日志](../product_log/README.md)。
 
 SSH upload_type 在环境配置中为 scp/sftp。Telnet 没有文件方法，FTP 没有命令方法。上传失败异常携带操作结果，execute 普通非零/超时/未知返回结果供脚本处理；入参或能力错误仍抛异常。
+
+环境对象的 `available` 和 `self_check_result` 记录创建时的自检。`RemoteCheckResult` 提供 `success/status/transport_ready/error_type/error_message`，并增加 `check_scope`、`exit_status_available`：Telnet POSIX 唯一标记且退出 0 为 `command/True`；非 POSIX 配置完整 `probe_command/probe_keyword` 并匹配业务响应为 `keyword/False`；两项都留空，仅确认有效提示符就绪为 `prompt/False`。其他协议这两个补充字段默认 None。失败结果保留具体错误，`unavailable` 本身不是根因。
+
+Telnet 通常使用 `shell_mode="auto"` 检测能力，`posix` 强制要求返回码，`prompt_only` 直接使用提示符。业务探针必须成对配置，不能猜设备命令。登记账号密码后会先观察登录或 shell 提示：已登录不再发送凭据，`Last login` 横幅不触发认证；真正登录仍按配置提示完成。自检的 `available` 只证明其 `check_scope` 范围，prompt 就绪不能冒充普通业务命令退出 0。
 
 ## 补充分支
 
@@ -74,3 +78,5 @@ def check(dut):
 旧 RunContext、SSHHost/TelnetClient/FTPHost、结果模型、selectors 和日志采集 SDK 是已有高级组件使用的底层接口；新业务脚本不要默认回到旧声明/占位符。低层连接传输细节继续由原客户端负责，新入口只做适配。
 
 机读目录：[script-api-catalog.json](script-api-catalog.json)。本地实际协议验证：[LOCAL_SIMULATION.md](LOCAL_SIMULATION.md)。每条命令/文件动作在 run.log 保留源码位置与结果，output.log 则用于 Web 简洁实时展示。
+
+RAR 元数据由随包保存的固定 rarfile 原始模块读取，数据通过本机 bsdtar 标准输出解压，SDK 自行验证并写入隔离临时目录。Windows 可使用系统 tar.exe，其他系统需可用的 bsdtar；系统后端对 RAR4 固实或某些 Unicode 名称不支持时明确失败，不公布部分结果。离线日志 HTML 的内嵌解码器独立支持 RAR4/5 固实，区别及解压预算见 [产品日志说明](../product_log/README.md)。

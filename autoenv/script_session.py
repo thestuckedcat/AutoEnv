@@ -170,7 +170,15 @@ class ExecutionSession:
             state = result.get("status", "success")
             exit_code = result.get("exit_code")
             suffix = f" exit={exit_code}" if exit_code is not None else ""
+            if result.get("check_scope") is not None:
+                suffix += f" check_scope={result['check_scope']}"
+            if result.get("exit_status_available") is not None:
+                suffix += " exit_status=" + ("known" if result["exit_status_available"] else "unknown")
             self.emit(f"[{prefix}] {state}{suffix}")
+            if result.get("error_type") or result.get("error_message"):
+                detail = ": ".join(str(result[name]) for name in ("error_type", "error_message") if result.get(name))
+                detail = detail.replace("\n", "\\n").replace("\r", "\\r")
+                self.emit(f"[{prefix}] 原因 {detail[:240]}")
             self.recorder.log(f"FLOW END {json.dumps(origin, ensure_ascii=False)} status={state}{suffix}", console=False)
         finally:
             _TRACE.reset(token)

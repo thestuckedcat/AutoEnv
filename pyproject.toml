@@ -26,6 +26,7 @@ include = ["autoenv*", "scripts*", "product_log*"]
 
 [tool.setuptools.package-data]
 autoenv = ["resource_labels.json"]
+"autoenv._vendor" = ["RARFILE_LICENSE.txt", "rarfile_manifest.json"]
 product_log = ["static/*.html", "static/*.js", "static/*.css"]
 
 [tool.pytest.ini_options]

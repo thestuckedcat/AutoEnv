@@ -5,6 +5,7 @@ import base64
 import bz2
 from functools import lru_cache
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -36,12 +37,17 @@ def _javascript() -> str:
     return module.compression_source() + "\n" + archive
 
 
-def _prepare(files: dict[str, bytes], rules: dict | None = None, *, cancel_at: str = "") -> dict:
+def _prepare(files: dict[str, bytes], rules: dict | None = None, *, cancel_at: str = "", code: str | None = None) -> dict:
     harness = r"""
 const vm = require('node:vm'), fs = require('node:fs'), crypto = require('node:crypto');
 const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const context = vm.createContext({Uint8Array,Uint32Array,ArrayBuffer,DataView,TextDecoder,
-  Blob,Response,ReadableStream,WebAssembly,atob,btoa,setTimeout,clearTimeout});
+  Blob,Response,ReadableStream,WebAssembly,atob,btoa,setTimeout,clearTimeout,
+  WorkerGlobalScope:function(){},location:{href:'blob:offline-decoder-test'},
+  importScripts:()=>{throw new Error('Offline decoder attempted network access');},
+  fetch:()=>{throw new Error('Offline decoder attempted network access');},
+  XMLHttpRequest:()=>{throw new Error('Offline decoder attempted network access');}});
+context.self=context;
 vm.runInContext(request.code, context, {filename:'offline-archives.js'});
 const files = request.files.map(file => ({path:file.path,bytes:Uint8Array.from(Buffer.from(file.bytes,'base64'))}));
 const before = files.map(file => crypto.createHash('sha256').update(file.bytes).digest('hex'));
@@ -58,7 +64,7 @@ let cancelled = false;
   } catch (error) { process.stdout.write(JSON.stringify({error:String(error.message || error)})); }
 })();
 """
-    request = {"code": _javascript(), "files": [{"path": path, "bytes": base64.b64encode(data).decode("ascii")}
+    request = {"code": _javascript() if code is None else code, "files": [{"path": path, "bytes": base64.b64encode(data).decode("ascii")}
                                                 for path, data in files.items()],
                "rules": rules or {}, "cancel_at": cancel_at}
     completed = subprocess.run([NODE, "-e", harness], input=json.dumps(request), text=True,
@@ -106,7 +112,7 @@ def test_browser_collector_real_dense_nested_domain_archive(tmp_path):
     assert sum(source["text"].count("WITHOUT DATE") for source in result["sources"]) == 8
 
 
-@pytest.mark.parametrize("format", ["tar", "tar.gz", "tgz", "tar.bz2", "tar.xz", "zip", "zip-descriptor", "zip-bzip", "gz", "bz2", "xz"])
+@pytest.mark.parametrize("format", ["tar", "tar.gz", "tgz", "tar.bz2", "tar.xz", "zip", "zip-descriptor", "zip-bzip", "zip-lzma", "zip-lzma-descriptor", "gz", "bz2", "xz"])
 def test_every_archive_type_uses_embedded_codec(format):
     payload = "2000-01-06 03:51:36.383 中文日志\n".encode()
     tar = _tar({"diag.log": payload})
@@ -115,6 +121,8 @@ def test_every_archive_type_uses_embedded_codec(format):
                "zip": lambda: _zip({"diag.log": payload}),
                "zip-descriptor": lambda: _zip({"diag.log": payload}, descriptor=True),
                "zip-bzip": lambda: _zip({"diag.log": payload}, method=zipfile.ZIP_BZIP2),
+               "zip-lzma": lambda: _zip({"diag.log": payload}, method=zipfile.ZIP_LZMA),
+               "zip-lzma-descriptor": lambda: _zip({"diag.log": payload}, method=zipfile.ZIP_LZMA, descriptor=True),
                "gz": lambda: gzip.compress(payload), "bz2": lambda: bz2.compress(payload), "xz": lambda: lzma.compress(payload)}[format]()
     name = "diag.log." + format if format in {"gz", "bz2", "xz"} else "package." + format
     # Container recognition is content-based, including a gzip disguised as .tgz.
@@ -123,6 +131,204 @@ def test_every_archive_type_uses_embedded_codec(format):
     assert output["result"]["sources"][0]["text"] == payload.decode()
     assert output["result"]["sources"][0]["original_name"] == "diag.log"
     assert output["result"]["input_unchanged"]
+
+
+@pytest.mark.parametrize("version", [4, 5])
+def test_rar_compressed_fixtures_are_decoded_without_external_runtime(version):
+    archive = ROOT / "tests" / "fixtures" / "product_log_archives" / f"compressed-rar{version}.rar"
+    payload = (b"2000-01-06 03:51:36.383 C01-A06-sfu2 %%01UBFWD/7/UBSDK_DIAG(D):Service=fwmd0;"
+               b"UB Forward SDK module. (SlotId=62, CpuId=0, ModuleName=udk, Info=RAR log)\n") * 64
+    # Genuine compressed archives, generated once by RAR 6.00 with -m5.
+    output = _prepare({"disguised.bundle": archive.read_bytes()}, {"collection_mode": "generic"})
+    assert "error" not in output, output
+    assert output["result"]["sources"][0]["text"] == payload.decode()
+    assert output["result"]["sources"][0]["original_name"] == "diag.log"
+    assert output["result"]["archives"][0]["format"] == "rar"
+    assert output["result"]["input_unchanged"]
+
+
+@pytest.mark.parametrize("version", [4, 5])
+def test_rar_solid_fixture_extracts_all_files_without_losing_decoder_state(version):
+    fixture = ROOT / "tests/fixtures/product_log_archives" / f"solid-rar{version}.rar"
+    output = _prepare({"logs.rar": fixture.read_bytes()}, {"collection_mode": "generic"})
+    assert "error" not in output, output
+    assert [source["original_name"] for source in output["result"]["sources"]] == ["diag.log", "diaglog_01.log"]
+    assert output["result"]["sources"][0]["text"].count("Info=RAR log)\n") == 64
+    assert output["result"]["sources"][1]["text"].count("RAR historical log)\n") == 64
+
+
+def test_rar5_blake2_checksum_does_not_assume_an_optional_crc_field():
+    fixture = ROOT / "tests/fixtures/product_log_archives/blake2-rar5.rar"
+    output = _prepare({"logs.rar": fixture.read_bytes()}, {"collection_mode": "generic"})
+    assert "error" not in output, output
+    assert output["result"]["sources"][0]["text"].count("Info=RAR log)\n") == 64
+
+
+def test_rar5_hardlink_is_rejected_as_a_link_before_native_extraction():
+    fixture = ROOT / "tests/fixtures/product_log_archives/hardlink-rar5.rar"
+    output = _prepare({"logs.rar": fixture.read_bytes()}, {"collection_mode": "generic"})
+    assert "链接" in output["error"], output
+
+
+def test_rar_unicode_member_name_is_preserved_by_native_decoder():
+    fixture = ROOT / "tests/fixtures/product_log_archives/unicode-rar4.rar"
+    output = _prepare({"logs.rar": fixture.read_bytes()}, {"collection_mode": "generic"})
+    assert "error" not in output, output
+    assert output["result"]["sources"][0]["original_name"] == "diaglog_中文.log"
+    assert output["result"]["sources"][0]["text"] == "Unicode RAR 日志\n"
+
+
+@pytest.mark.parametrize("version", [4, 5])
+@pytest.mark.parametrize("encryption", ["file", "header"])
+def test_rar_encrypted_headers_and_members_are_rejected_explicitly(version, encryption):
+    fixture = ROOT / "tests/fixtures/product_log_archives" / f"encrypted-{encryption}-rar{version}.rar"
+    output = _prepare({"logs.rar": fixture.read_bytes()}, {"collection_mode": "generic"})
+    assert "加密" in output["error"], output
+
+
+def _rar4_stored(files: list[tuple[str, bytes, int]]) -> bytes:
+    """Build genuine RAR4 stored members with header/data CRCs for metadata cases."""
+    def header(kind: int, flags: int, body: bytes = b"") -> bytes:
+        data = struct.pack("<BHH", kind, flags, len(body) + 7) + body
+        return struct.pack("<H", zlib.crc32(data) & 0xffff) + data
+    output = bytearray(b"Rar!\x1a\x07\x00" + header(0x73, 0, b"\0" * 6))
+    for name, payload, mode in files:
+        raw_name = name.encode("ascii")
+        body = struct.pack("<IIBIIBBHI", len(payload), len(payload), 3, zlib.crc32(payload),
+                           0, 20, 0x30, len(raw_name), mode) + raw_name
+        output.extend(header(0x74, 0x8000, body) + payload)
+    output.extend(header(0x7b, 0x4000))
+    return bytes(output)
+
+
+@pytest.mark.parametrize("files,rule,message", [
+    ([("../diag.log", b"escape", 0o100644)], {}, "不安全"),
+    ([("a.log", b"a", 0o100644), ("A.log", b"b", 0o100644)], {}, "冲突"),
+    ([("diag.log", b"target.log", 0o120777)], {}, "链接"),
+    ([("diag.log", b"larger than budget", 0o100644)], {"max_bytes": 3}, "限制"),
+])
+def test_rar_validated_metadata_rejects_unsafe_members_before_data(files, rule, message):
+    result = _prepare({"logs.rar": _rar4_stored(files)}, {"collection_mode": "generic", **rule})
+    assert message in result["error"], result
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_LZMA])
+def test_zip_crc_rejection_is_preserved_when_lzma_decoder_is_present(method):
+    archive = bytearray(_zip({"diag.log": b"real log payload"}, method=method))
+    central = archive.index(b"PK\x01\x02")
+    archive[central + 16] ^= 1
+    output = _prepare({"logs.zip": bytes(archive)}, {"collection_mode": "generic"})
+    assert "CRC" in output["error"], output
+
+
+@pytest.mark.parametrize("version", [4, 5])
+def test_rar_rejects_truncated_compressed_payload(version):
+    fixture = ROOT / "tests" / "fixtures" / "product_log_archives" / f"compressed-rar{version}.rar"
+    output = _prepare({"logs.rar": fixture.read_bytes()[:100]}, {"collection_mode": "generic"})
+    assert "error" in output, output
+    assert "读取" in output["error"] or "截断" in output["error"] or "解压" in output["error"], output
+
+
+def test_generated_single_html_decodes_nested_rar_and_zip_lzma_offline(tmp_path):
+    import re
+    spec = importlib.util.spec_from_file_location("archive_generated_builder", ROOT / "tools" / "build_product_log_page.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    output = tmp_path / "offline.html"
+    builder.build_page(output)
+    text = output.read_text(encoding="utf-8")
+    encoded = re.search(r'<script id="offline-worker" type="application/octet-stream">([^<]+)</script>', text).group(1)
+    code = base64.b64decode(encoded).decode("utf-8")
+    rar4 = (ROOT / "tests/fixtures/product_log_archives/compressed-rar4.rar").read_bytes()
+    rar5 = (ROOT / "tests/fixtures/product_log_archives/compressed-rar5.rar").read_bytes()
+    nested = _zip({"rar4.rar": rar4, "rar5.rar": rar5, "last.zip": _zip({
+        "diaglog_03.log": b"nested LZMA log\n"}, method=zipfile.ZIP_LZMA)}, method=zipfile.ZIP_LZMA)
+    result = _prepare({"outer.zip": nested}, {"collection_mode": "generic"}, code=code)
+    assert "error" not in result, result
+    assert result["result"]["counts"]["archives"] == 4
+    assert [source["original_name"] for source in result["result"]["sources"]] == ["diag.log", "diag.log", "diaglog_03.log"]
+    assert result["result"]["sources"][-1]["text"] == "nested LZMA log\n"
+    assert result["result"]["input_unchanged"]
+
+
+def test_zip_lzma_reads_all_chunks_and_empty_unicode_members(monkeypatch):
+    payload = ("large 中文 log\n" * 12000).encode("utf-8")
+    with monkeypatch.context() as context:
+        context.setattr(zipfile, "ZIP64_LIMIT", 32)
+        archive = _zip({"diaglog_中文.log": payload, "diag.log": b""},
+                       method=zipfile.ZIP_LZMA, descriptor=True)
+    output = _prepare({"logs.zip": archive}, {"collection_mode": "generic"})
+    assert "error" not in output, output
+    assert [(source["original_name"], source["text"]) for source in output["result"]["sources"]] == [
+        ("diag.log", ""), ("diaglog_中文.log", payload.decode("utf-8"))]
+
+
+def test_zip_lzma_central_directory_order_is_independent_of_local_member_order():
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("diaglog_中文.log", b"LZMA", compress_type=zipfile.ZIP_LZMA)
+        archive.writestr("diaglog_01.log", b"deflate", compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("diag.log", b"bzip2", compress_type=zipfile.ZIP_BZIP2)
+    data = bytearray(output.getvalue())
+    end = data.rindex(b"PK\x05\x06")
+    start = struct.unpack_from("<I", data, end + 16)[0]
+    records, cursor = [], start
+    while cursor < end:
+        length = 46 + sum(struct.unpack_from("<HHH", data, cursor + 28))
+        records.append(bytes(data[cursor:cursor + length]))
+        cursor += length
+    data[start:end] = b"".join(reversed(records))
+    with zipfile.ZipFile(io.BytesIO(data)) as oracle:
+        assert oracle.read("diaglog_中文.log") == b"LZMA"
+    result = _prepare({"logs.zip": bytes(data)}, {"collection_mode": "generic"})
+    assert "error" not in result, result
+    assert {source["original_name"]: source["text"] for source in result["result"]["sources"]} == {
+        "diaglog_中文.log": "LZMA", "diaglog_01.log": "deflate", "diag.log": "bzip2"}
+
+
+def test_zip_lzma_binary_payload_is_never_automatically_converted_to_utf8():
+    payload = bytes(range(256)) * 300 + b"\xc0\xaf\xed\xa0\x80\0"
+    result = _prepare({"logs.zip": _zip({"diag.log": payload}, method=zipfile.ZIP_LZMA)},
+                      {"collection_mode": "generic"})
+    assert "error" not in result, result
+    assert result["result"]["sources"][0]["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("damage", ["properties", "stream"])
+def test_zip_lzma_rejects_invalid_properties_and_truncated_stream(damage):
+    data = bytearray(_zip({"diag.log": b"real LZMA log\n" * 200}, method=zipfile.ZIP_LZMA))
+    central = data.index(b"PK\x01\x02")
+    start = 30 + len("diag.log")
+    if damage == "properties":
+        data[start + 4] = 255
+    else:
+        # Declare only the ZIP SDK/properties header, leaving no range-coded stream.
+        struct.pack_into("<I", data, central + 20, 9)
+        struct.pack_into("<I", data, 18, 9)
+    result = _prepare({"logs.zip": bytes(data)}, {"collection_mode": "generic"})
+    assert "error" in result, result
+
+
+@pytest.mark.parametrize("payload", [b"", b"known size without EOS\n" * 200], ids=["empty", "nonempty"])
+def test_zip_lzma_without_eos_flag_uses_declared_unpacked_size(payload):
+    data = bytearray(_zip({"diag.log": payload}, method=zipfile.ZIP_LZMA))
+    start, central = 30 + len("diag.log"), data.index(b"PK\x01\x02")
+    packed = bytes(data[start:central])
+    packed = packed[:-5] if payload else packed[:9] + b"\0" * 5
+    delta = len(packed) - (central - start)
+    data[start:central] = packed
+    central += delta
+    end = data.rindex(b"PK\x05\x06")
+    for offset in (6, central + 8):
+        struct.pack_into("<H", data, offset, struct.unpack_from("<H", data, offset)[0] & ~2)
+    struct.pack_into("<I", data, 18, len(packed))
+    struct.pack_into("<I", data, central + 20, len(packed))
+    struct.pack_into("<I", data, end + 16, central)
+    with zipfile.ZipFile(io.BytesIO(data)) as oracle:
+        assert oracle.read("diag.log") == payload
+    result = _prepare({"logs.zip": bytes(data)}, {"collection_mode": "generic"})
+    assert "error" not in result, result
+    assert result["result"]["sources"][0]["sha256"] == hashlib.sha256(payload).hexdigest()
 
 
 @pytest.mark.parametrize("format", [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT])
@@ -160,14 +366,14 @@ def test_directory_matching_and_domain_ownership():
     assert len(result["archives"]) == 1 and result["archives"][0]["level"] == 1
 
 
-def test_diag_one_layer_var_recurses_and_numeric_order_ignores_diag_options():
+def test_all_nested_archives_expand_before_domain_collection_and_numeric_order():
     files = {"diag/package.zip": _zip({"deep.zip": _zip({"diag.log": b"too deep"}), "diaglog_01.log": b"history"}),
              "diag/diag.log": b"latest",
              "var/outer.tar.gz": gzip.compress(_tar({"middle.zip": _zip({
                  "cpdt_dmesg_current.log.10": b"10", "cpdt_dmesg_current.log.2": b"2",
                  "cpdt_dmesg_current.log.1": b"1", "cpdt_dmesg_current.log": b"current"})}))}
     result = _prepare(files, {"archive_patterns": ["*.zip"], "recursive": False})["result"]
-    assert [source["text"] for source in result["sources"]] == ["history", "latest", "1", "2", "10", "current"]
+    assert [source["text"] for source in result["sources"]] == ["history", "latest", "too deep", "1", "2", "10", "current"]
     assert all(source["log_domain"] == "kernel" for source in result["sources"][-4:])
 
 

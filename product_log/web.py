@@ -459,7 +459,7 @@ def _rules(data: dict[str, Any]) -> dict[str, Any]:
     result["collection_mode"] = data.get("collection_mode", "auto")
     if result["collection_mode"] not in {"auto", "product", "generic"}:
         raise ValueError("collection_mode must be auto, product or generic")
-    for name, default in (("diag_directory_pattern", "diag"), ("var_directory_pattern", "var")):
+    for name, default in (("diag_directory_pattern", "diag"), ("var_directory_pattern", "varlog")):
         value = data.get(name, default)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{name} must be a nonempty directory pattern")

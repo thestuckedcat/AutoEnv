@@ -221,14 +221,14 @@ def test_nested_archives_plus_bare_files_copy_rename_and_source_provenance(tmp_p
         packed.writestr("c.txt", driver("copied other type") + "\n")
         inner = io.BytesIO()
         with zipfile.ZipFile(inner, "w") as nested:
-            nested.writestr("never.log", driver("too deep"))
+            nested.writestr("nested.log", driver("nested source"))
         packed.writestr("inner.zip", inner.getvalue())
     batch = tmp_path / "batch"
     manifest = run_analysis(root, batch, directory_pattern="diag/slot62", file_patterns=["*.log"],
                             copy_patterns=["*.txt", "a.log"], rename_map={"a.log": "a-renamed.log"})
-    assert manifest["counts"]["files"] == 3
+    assert manifest["counts"]["files"] == 4
     assert manifest["counts"]["firmware_records"] == 2
-    assert manifest["counts"]["driver_records"] == 1
+    assert manifest["counts"]["driver_records"] == 2
     assert manifest["counts"]["dumps"] == 1
     assert (target / "a.log").exists()
     zero = next(row for row in query_records(batch, kind="firmware")["records"] if row["seg"] == 0)
