@@ -1,2 +1,4 @@
 # Keep vendored upstream bytes intact for manifest SHA256 verification.
 product_log/standalone/vendor/** -text -whitespace
+autoenv/_vendor/rarfile.py -text -whitespace
+autoenv/_vendor/RARFILE_LICENSE.txt -text -whitespace

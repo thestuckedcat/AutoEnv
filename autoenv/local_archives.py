@@ -12,8 +12,11 @@ import lzma
 import os
 import shutil
 import stat
+import struct
+import subprocess
 import tarfile
 import tempfile
+import threading
 import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import BinaryIO, Callable
@@ -36,7 +39,7 @@ def _open_payload(source: Path) -> BinaryIO:
 
 
 def detect_archive(path: str | os.PathLike[str]) -> str | None:
-    """Identify ZIP, any supported TAR compression, or standalone GZIP by content.
+    """Identify ZIP, RAR, supported TAR compression, or standalone GZIP by content.
 
     A known ZIP/GZIP/BZ2/XZ signature is returned even when its payload is damaged;
     extraction then reports the corruption instead of silently treating it as a
@@ -49,7 +52,9 @@ def detect_archive(path: str | os.PathLike[str]) -> str | None:
     if not source.is_file():
         raise FileNotFoundError(source)
     with source.open("rb") as stream:
-        signature = stream.read(6)
+        signature = stream.read(8)
+    if signature.startswith((b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")):
+        return "rar"
     if signature[:4] in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"} or zipfile.is_zipfile(source):
         return "zip"
     try:
@@ -64,7 +69,7 @@ def detect_archive(path: str | os.PathLike[str]) -> str | None:
     except (tarfile.HeaderError, EOFError, OSError, lzma.LZMAError):
         if signature[:2] == b"\x1f\x8b":
             return "gz"
-        if signature[:3] == b"BZh" or signature == b"\xfd7zXZ\x00":
+        if signature[:3] == b"BZh" or signature[:6] == b"\xfd7zXZ\x00":
             return "tar"
         if source.name.lower().endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")):
             # A broken TAR header has no dependable content signature. The
@@ -277,6 +282,164 @@ def _extract_gzip(source: Path, destination: Path, members: _Members) -> None:
     members.check()
 
 
+class _RarMetadataReader:
+    """Bound header reads and never let metadata parsing open another volume."""
+
+    def __init__(self, stream: BinaryIO, members: _Members, size: int) -> None:
+        self.stream, self.members, self.size = stream, members, size
+        self.total = 0
+        self.limit = max(1024, members.max_files * 8) * 512 + 8 * _CHUNK
+
+    def read(self, size: int = -1) -> bytes:
+        if self.members.check_cancelled:
+            self.members.check_cancelled()
+        if size < 0 or size > 2 * _CHUNK or self.total + size > self.limit:
+            raise ValueError("RAR metadata exceeds safety limit")
+        self.total += size
+        return self.stream.read(size)
+
+    def tell(self) -> int:
+        return self.stream.tell()
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        if self.members.check_cancelled:
+            self.members.check_cancelled()
+        target = offset if whence == os.SEEK_SET else (
+            self.tell() + offset if whence == os.SEEK_CUR else self.size + offset)
+        if not 0 <= target <= self.size:
+            raise ValueError("RAR truncated or invalid member offset")
+        return self.stream.seek(offset, whence)
+
+
+def _rar_members(source: Path, members: _Members) -> list[tuple[object, tuple[str, ...], bool]]:
+    from ._vendor import rarfile as rar
+
+    checked = []
+
+    class MetadataOnly:
+        # The upstream reader normally decompresses comments during listing.
+        # These adapters parse file metadata only, without invoking its optional
+        # crypto/decompressor backends or hiding duplicate versioned entries.
+        def _parse_subblocks(self, header, data, offset):
+            return offset
+
+        def _parse_block_header(self, stream):
+            start = stream.tell()
+            header = super()._parse_block_header(stream)
+            if header is None and stream.tell() != start:
+                raise ValueError("RAR invalid or oversized archive header")
+            return header
+
+        def process_entry(self, stream, member):
+            if member.flags & rar.RAR_MAIN_VOLUME and member.type == rar.RAR_BLOCK_MAIN:
+                raise ValueError("RAR multi-volume archives are not supported")
+            if member.type != rar.RAR_BLOCK_FILE:
+                return
+            if member.flags & (rar.RAR_FILE_SPLIT_BEFORE | rar.RAR_FILE_SPLIT_AFTER):
+                raise ValueError("RAR multi-volume archives are not supported")
+            if member.needs_password():
+                raise ValueError("encrypted RAR archives are not supported")
+            if member.is_symlink() or member.file_redir is not None:
+                raise ValueError(f"archive links are not allowed: {member.filename!r}")
+            directory = member.isdir()
+            mode = stat.S_IFMT(member.mode or 0) if member.host_os == rar.RAR_OS_UNIX else 0
+            if mode not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                raise ValueError(f"archive special files are not allowed: {member.filename!r}")
+            if getattr(member, "file_flags", 0) & rar.RAR5_FILE_FLAG_UNKNOWN_SIZE:
+                raise ValueError("RAR unknown expanded file sizes are not supported")
+            parts = members.add(member.filename, directory=directory, size=member.file_size)
+            checked.append((member, parts, directory))
+
+    class Metadata3(MetadataOnly, rar.RAR3Parser):
+        pass
+
+    class Metadata5(MetadataOnly, rar.RAR5Parser):
+        pass
+
+    with source.open("rb") as stream:
+        signature = stream.read(8)
+        parser_type = Metadata5 if signature.startswith(rar.RAR5_ID) else Metadata3
+        bounded = _RarMetadataReader(stream, members, source.stat().st_size)
+        parser = parser_type(bounded, None, True, rar.DEFAULT_CHARSET, True, None, 0, True)
+        try:
+            parser.parse()
+        except (rar.Error, EOFError, IndexError, OverflowError, struct.error) as error:
+            raise ValueError(f"RAR metadata is corrupt or unsupported: {error}") from error
+        if parser.needs_password() or parser.has_header_encryption():
+            raise ValueError("encrypted RAR archives are not supported")
+    return checked
+
+
+def _rar_backend() -> str:
+    candidates = ("tar.exe", "bsdtar") if os.name == "nt" else ("bsdtar", "tar")
+    for name in candidates:
+        executable = shutil.which(name)
+        if not executable:
+            continue
+        try:
+            version = subprocess.run([executable, "--version"], capture_output=True, timeout=10,
+                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if version.returncode == 0 and b"bsdtar" in version.stdout.lower():
+            return executable
+    raise ValueError("RAR extraction requires bsdtar; use the built-in Windows tar.exe or an available libarchive bsdtar")
+
+
+def _extract_rar(source: Path, destination: Path, members: _Members) -> None:
+    checked = _rar_members(source, members)
+    executable = _rar_backend()
+    for member, parts, directory in checked:
+        if members.check_cancelled:
+            members.check_cancelled()
+        target = destination.joinpath(*parts)
+        if directory:
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # The backend emits one selected member to stdout and never writes to
+        # disk. The Python sink owns path validation and the byte budget. --
+        # prevents a filename from becoming an option. bsdtar interprets member
+        # selectors as globs, so escape the legal bracket characters as well.
+        selector = member.filename.replace("[", "\\[").replace("]", "\\]")
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen([executable, "-xOf", str(source), "--", selector],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            stop = threading.Event()
+            reader_error: list[BaseException] = []
+
+            def consume() -> None:
+                try:
+                    with target.open("xb") as writer:
+                        _copy_limited(process.stdout, writer, member.file_size)
+                except BaseException as error:
+                    reader_error.append(error)
+                    process.kill()
+                finally:
+                    stop.set()
+
+            reader = threading.Thread(target=consume, name="rar-extraction", daemon=True)
+            reader.start()
+            try:
+                while not stop.wait(0.05):
+                    if members.check_cancelled:
+                        members.check_cancelled()
+                exit_code = process.wait()
+                errors.seek(0)
+                detail = errors.read(8192).decode("utf-8", "replace").strip()
+                if exit_code:
+                    raise ValueError(f"RAR decompression failed for {member.filename!r}: {detail or f'bsdtar exit {exit_code}'}")
+                if reader_error:
+                    raise ValueError(f"RAR decompression failed for {member.filename!r}: {reader_error[0]}") from reader_error[0]
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                reader.join()
+                process.stdout.close()
+
+
 def _destination_empty(destination: Path) -> bool:
     from .file_handles import _assert_no_links
 
@@ -324,6 +487,8 @@ def extract_archive(
             _extract_zip(source_path, temporary, members)
         elif archive_type == "tar":
             _extract_tar(source_path, temporary, members)
+        elif archive_type == "rar":
+            _extract_rar(source_path, temporary, members)
         else:
             _extract_gzip(source_path, temporary, members)
         if check_cancelled:

@@ -207,10 +207,12 @@ def test_telnet_console_selfcheck_and_prompt_result_remains_unknown(session):
         assert server.commands == ["check", "inspect", "inspect"] and not server.probes
 
 
-def test_telnet_missing_probe_does_not_send_bytes_but_allows_read_and_ctrl_b(session):
+def test_telnet_prompt_readiness_does_not_send_commands_and_allows_read_and_ctrl_b(session):
     with LocalTelnetServer(passive=True, shell_mode="prompt_only", prompt="loader>", negotiation=(b"\xff\xfb\x01",)) as server:
         remote = create_remote(session, telnet_config(server, shell_mode="prompt_only"))
-        assert not remote.available and remote.transport_ready
+        assert remote.available and remote.transport_ready
+        assert remote.self_check_result.check_scope == "prompt"
+        assert remote.self_check_result.exit_status_available is False
         initial = remote.read()
         assert "Local Telnet test peer" in initial and server.commands == [] and not server.probes
         remote.mark_output()
@@ -218,7 +220,7 @@ def test_telnet_missing_probe_does_not_send_bytes_but_allows_read_and_ctrl_b(ses
         output = remote.telnet_wait_exec("STOP_BOOT", b"\x02")
         assert "中文 STOP_BOOT" in output and server.wait_for_raw(b"\x02")
         assert server.raw_inputs == [b"\x02"]
-        assert remote.transport_ready and not remote.available
+        assert remote.transport_ready and remote.available
         assert "bootloader>" in remote.read()
         assert server.negotiation_replies == [b"\xff\xfe\x01"]
 

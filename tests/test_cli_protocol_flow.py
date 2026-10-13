@@ -176,6 +176,7 @@ def test_cli_unrecovered_selfcheck_is_final_failure_even_after_passive_read(tmp_
         save_connection(project, "loopback", {
             "name": "console", "type": "telnet", "host": server.host, "port": server.port,
             "timeout": 1, "shell_mode": "prompt_only",
+            "probe_command": "status", "probe_keyword": "BUSINESS_READY",
         })
         source = '''from autoenv import get_remote_info, init_script
 def main():
@@ -188,7 +189,7 @@ def main():
         assert state["final_operation"]["result"]["status"] == "unavailable"
         assert state["final_operation"]["result"]["success"] is False
         assert "unavailable" in log_path.with_name("output.log").read_text(encoding="utf-8")
-        assert server.commands == []
+        assert server.commands == ["status"]
 
 
 def test_cli_child_loopback_guard_blocks_external_target(tmp_path):

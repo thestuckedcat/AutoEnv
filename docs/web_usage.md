@@ -66,7 +66,7 @@ def main():
 
 HDFS 输入由脚本中的 `hdfs_download(path, "config包名")` 发现。留空沿用 `config.json`，填写时只覆盖远端 HDFS 路径。复杂参数通过请求 JSON 传给同一 CLI，其余参数转换为 `--topology/--bind/--package/--arg`。
 
-Telnet 连接为 TCP 串口网关，不是本地 COM。`posix` 可读取 shell 返回码；`prompt_only` 需要设备自检命令和响应关键词，普通命令能否成功应使用该设备输出判断。填写账号密码后，会按登录提示符认证；自定义提示符位于展开项，默认 `login:` 和 `Password:`。无认证网关留空账号密码。Telnet 不提供文件传输。
+Telnet 连接为 TCP 串口网关，不是本地 COM。一般推荐 `auto` 检测返回码能力；`posix` 强制读取 shell 返回码；`prompt_only` 不发 POSIX 探测。设备自检命令和响应关键词可同时留空，仅按有效提示符确认就绪，也可成对填写设备明确支持的业务探针，不能只填一项。自检结果 `check_scope=command/keyword/prompt` 区分退出码、业务响应和提示符检查，`exit_status_available` 仅 POSIX 为 true；prompt_only 普通命令仍返回未知退出状态。填写账号密码后先观察实际提示，需要登录才认证，已登录会话不重发凭据，`Last login` 横幅不触发登录；默认提示为 `login:` 和 `Password:`，自定义提示符位于展开项。无认证网关留空账号密码。Telnet 不提供文件传输，具体判据见 [UDK V100 使用说明](UDK_V100_WORKFLOWS.md)。
 
 ## 补充组件与测试
 

@@ -40,13 +40,13 @@ run/rerun 结束只输出完整 run.log 的绝对路径，退出码 0 成功、1
 
 UDK V100 的两个普通脚本为 [环境拉起](scripts/UDK_V100.py) 和 [固件替换](scripts/UDK_V100_Firmware.py)，共用 `SingleUnions_S3` 组网。配置、占位 shell、串口完成判据与本地模拟测试见 [使用说明](docs/UDK_V100_WORKFLOWS.md)。
 
-本地产品日志入口为 <http://127.0.0.1:8765/product-logs/>：拖入压缩包、选择上传文件夹或填写服务端绝对目录，自动收集 `diag` 用户态/固件及 `var` 内核态日志。页面保留分类视图，并增加统一时间视图和“模块 → 用户态 ModuleName → 内核关键词”对应表；每次任务显示独立工作区的绝对路径。
+本地产品日志入口为 <http://127.0.0.1:8765/product-logs/>：拖入压缩包、选择上传文件夹或填写服务端绝对目录，自动收集 `diag` 用户态/固件及 `varlog` 内核态日志；默认只有找不到 `varlog` 时才回退到旧 `var`，显式选择 `var` 仍有效。页面保留分类视图、统一时间视图和“模块 → 用户态 ModuleName → 内核关键词”对应表；每次任务显示独立工作区的绝对路径。
 
-功能集中在 [product_log](product_log/README.md)，也可独立执行 `python -X utf8 -m product_log INPUT --collection-mode product --diag-directory diag/slot62 --var-directory var`，无需登记设备。CLI 默认 `auto` 发现精确的 `diag`/`var` 目录后采用产品规则，未发现则使用通用规则；`generic` 保留原有任意目录/文件通配符整理，网页固定采用产品规则。旧版本解析批次需重新导入。
+功能集中在 [product_log](product_log/README.md)，也可独立执行 `python -X utf8 -m product_log INPUT --collection-mode product --diag-directory diag/slot62 --var-directory varlog`，无需登记设备。CLI 默认 `auto` 发现精确的 `diag`/`varlog`（或兼容的旧 `var`）目录后采用产品规则，未发现则使用通用规则；`generic` 保留任意目录/文件通配符整理，网页固定采用产品规则。所有模式都先递归展开整个输入中的支持压缩包，再定位目录和选择日志，包括 diag、通用目录及未选中目录里的包。旧版本解析批次需重新导入。
 
-文件 SDK 的搜索、解压、复制、重命名接口见 [接口表](docs/SCRIPT_API_ANALYSIS.md)；产品日志整理与 Web 达到 3 GiB 后的自动清理规则见 [产品日志说明](product_log/README.md)。清理只覆盖 Web 管理的上传与历史批次，外部原文件和独立 CLI 输出由使用者管理。
+文件 SDK 的搜索、解压、复制、重命名接口见 [接口表](docs/SCRIPT_API_ANALYSIS.md)；RAR 解压的本机后端边界、产品日志整理与 Web 达到 3 GiB 后的自动清理规则见 [产品日志说明](product_log/README.md)。清理只覆盖 Web 管理的上传与历史批次，外部原文件和独立 CLI 输出由使用者管理。
 
-需要单文件离线网页时，在源码根目录运行 `python -X utf8 tools/build_product_log_page.py`，生成 `dist/product-log-offline.html`。将这个 HTML 交给使用者，在现代桌面浏览器打开后选择压缩包或文件夹即可解析；使用阶段只需要浏览器。代码、样式及解压器全部内嵌，构建脚本仅用 Python 标准库。日志保存在当前页面内存，来源显示相对路径，模块表可导入/下载 JSON；详细用法及能力边界见 [独立离线页说明](product_log/standalone/README.md)。已有 SDK、CLI 与服务端网页入口保持原有行为。
+需要单文件离线网页时，在源码根目录运行 `python -X utf8 tools/build_product_log_page.py`，生成 `dist/product-log-offline.html`。将这个 HTML 交给使用者，在现代桌面浏览器打开后选择压缩包或文件夹即可解析；使用阶段只需要浏览器。支持 ZIP LZMA（算法 14）和 RAR4/RAR5 普通及固实压缩，代码、样式、解码器、WASM 与许可全部内嵌，构建脚本仅用 Python 标准库，运行不加载网络资源或系统解压程序。日志保存在当前页面内存，来源显示相对路径，模块表可导入/下载 JSON；详细用法及能力边界见 [独立离线页说明](product_log/standalone/README.md)。归档与串口适配的本轮变化及验证范围见 [功能记录](newFeature/2026-10-13-archive-and-serial-compatibility.md)。
 
 最小示例：[example.py](scripts/example.py)；模板：[template.py](scripts/template.py)；全量用法：[all_interfaces.py](scripts/all_interfaces.py)。上手见 [快速开始](docs/QUICK_START.md)，连接配置见 [环境登记](docs/ENVIRONMENT_REGISTRATION_GUIDE.md)，参数和返回语义见 [接口表](docs/SCRIPT_API_ANALYSIS.md)，网页操作见 [Web 用法](docs/web_usage.md)。Agent 生成 Python 的规则见 [脚本 skill](.agents/skills/autoenv-script-generator/SKILL.md)。
 

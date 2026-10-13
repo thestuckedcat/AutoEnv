@@ -20,6 +20,39 @@
       "source": "https://registry.npmjs.org/xz-decompress/-/xz-decompress-0.2.3.tgz",
       "integrity": "sha512-O8v6HG8T0PrKBcpyWA13GkSYWFvncwzuzcLx5A7++l3HsE3atmoetXjIxrZ/JV/nbvSZ7WS4+3XvREZuVn+rEA==",
       "license": "MIT"
+    },
+    {
+      "name": "libarchive-wasm",
+      "version": "1.2.0",
+      "source": "https://registry.npmjs.org/libarchive-wasm/-/libarchive-wasm-1.2.0.tgz",
+      "integrity": "sha512-aunFn8oL9VwGRj+brRvdOv8BRUD4Ea1WxJW45IdiuXE2Vp/m/X+M1UxSU+yPzXfc1mPPC8AARaflg/CtF11u8g==",
+      "license": "MIT",
+      "linked_components": {
+        "libarchive": "3.7.7",
+        "zlib": "1.3.1",
+        "bzip2": "1.0.8",
+        "xz/liblzma": "5.6.4",
+        "OpenSSL": "3.4.1"
+      },
+      "upstream_git_head": "2e72c66d92fb8aa5914d0ff2f9e29608e38f2294"
+    },
+    {
+      "name": "node-unrar-js",
+      "version": "2.0.2",
+      "source": "https://registry.npmjs.org/node-unrar-js/-/node-unrar-js-2.0.2.tgz",
+      "integrity": "sha512-hLNmoJzqaKJnod8yiTVGe9hnlNRHotUi0CreSv/8HtfRi/3JnRC8DvsmKfeGGguRjTEulhZK6zXX5PXoVuDZ2w==",
+      "license": "MIT (JavaScript adapter); UnRAR License (native decoder)",
+      "upstream_native_version": "6.1.7",
+      "emscripten_version": "3.1.13",
+      "native_source": "https://www.rarlab.com/rar/unrarsrc-6.1.7.tar.gz",
+      "native_source_sha256": "de75b6136958173fdfc530d38a0145b72342cf0d3842bf7bb120d336602d88ed"
+    },
+    {
+      "name": "lzma",
+      "version": "2.3.2",
+      "source": "https://registry.npmjs.org/lzma/-/lzma-2.3.2.tgz",
+      "integrity": "sha512-DcfiawQ1avYbW+hsILhF38IKAlnguc/fjHrychs9hdxe4qLykvhT5VTGNs5YRWgaNePh7NTxGD4uv4gKsRomCQ==",
+      "license": "MIT"
     }
   ],
   "assets": {
@@ -30,6 +63,25 @@
     "seek-bzip-index.js": "71e9584b89c6468f5b65b78498e3d37793eff429051820a724bf3a09f87c605e",
     "seek-bzip-LICENSE.txt": "d14894ed4184c6a1ce6d0ad5a091c24e0552b08dda48562f3fae97812321f650",
     "seek-bzip-stream.js": "4ec2d27a74d7c16e797a1f70ea11bc73584b407baf8428d54fe6bba19040332d",
-    "xz-decompress-0.2.3.js": "3e1c069c559e5c08e2c6a237ecb93687151725e517d36847c3d10b2b8975a93c"
+    "xz-decompress-0.2.3.js": "3e1c069c559e5c08e2c6a237ecb93687151725e517d36847c3d10b2b8975a93c",
+    "libarchive-wasm-1.2.0.js": "a6ff1e5c9b3e43c4c0344b80bcac10b8fbd88167245804d88d923357102c721e",
+    "libarchive-wasm-1.2.0.wasm": "99889a4e7c3d1968303ef334a0ca89efffaf8867eb7cbd7c265602d8e0b50e63",
+    "libarchive-wasm-LICENSE.txt": "a89ba5433c3963dc09ef35344f59f9940143867c94b89df3b2eb7d8cc5efeccc",
+    "libarchive-COPYING.txt": "6d8ecf5f1a51d534c82a85db4344e1d0e620207bbb59c1b071d4d8e6e8e5c3ad",
+    "zlib-LICENSE.txt": "ace889521a004a91d771c7c2407e3fa89cfec39ffacc96e13cb42fda7669f58e",
+    "bzip2-LICENSE.txt": "b59f647296a58a74f773e284bdbf64139a727943d66ebdab65270f9706ff3a8a",
+    "xz-COPYING.txt": "50f5b82272a5ae71ba7e46cb523556dee46807761198742c8476761edfbb8cf9",
+    "xz-COPYING.0BSD.txt": "163edf26390c9a030cfdcd0065ae8c2020d1c68199183efd1df5e9a8a1f476ed",
+    "openssl-LICENSE.txt": "ff420781e0005270cd1894a265e526dec4eb332f99df62a481b06672db202290",
+    "emscripten-LICENSE.txt": "1d678c6d3e6fca3245faaf72b66097b8df241172b38c8d9a16601e3a72b66386",
+    "node-unrar-2.0.2.js": "2f6d35bcf13656600d332dbd009fbcfdafa4a324896dca69252865b35ef36096",
+    "node-unrar-2.0.2.wasm": "c7d79f869196e3c79c053ba74a8f629116de8293a94f60cc851bbcd7977d0c2b",
+    "node-unrar-Extractor.js": "67f783db4c60b81a25e86058e0f147fca1d1ee863aecf890a0fe5092db19e3b6",
+    "node-unrar-ExtractorData.js": "4d0001f2a77b2690f0e194e285807253b92b60e8805188191ae009b040743231",
+    "node-unrar-ExtractorData.helper.js": "416dfaa021d9a8ea152feafdbdfad86226e01e3e1029ba75d8e65669f0adbb96",
+    "node-unrar-LICENSE.txt": "263ab8403cf8651aeff39ce72202a2d8a07eb29e3c37a7190cc6e2e3c0e8da36",
+    "UnRAR-LICENSE.txt": "6ecc1687808b7d66b24f874755abfed7464d9751ed0001cd4e8e5d9bf397ff8a",
+    "lzma-d-2.3.2.js": "5995a52fee48eb099976d754de8dda1d5d2b8f0400c2393faefacc4bbf7e6f7b",
+    "lzma-LICENSE.txt": "2a85a87a012b6f2099902bc20e94f4292c222a80f66072ecf5151d1377377385"
   }
 }

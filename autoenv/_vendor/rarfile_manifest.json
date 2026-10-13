@@ -1,0 +1,24 @@
+{
+  "name": "rarfile",
+  "version": "4.2",
+  "license": "ISC",
+  "use": "metadata parsing only; decompression streams through built-in bsdtar",
+  "source_archive": {
+    "url": "https://files.pythonhosted.org/packages/26/3f/3118a797444e7e30e784921c4bfafb6500fb288a0c84cb8c32ed15853c16/rarfile-4.2.tar.gz",
+    "sha256": "8e1c8e72d0845ad2b32a47ab11a719bc2e41165ec101fd4d3fe9e92aa3f469ef"
+  },
+  "files": [
+    {
+      "path": "rarfile.py",
+      "upstream_path": "rarfile.py",
+      "sha256": "43d4c5c8e847524c96a496ef15be29e9e7d829909be47c00887ed77d2277cc39",
+      "bytes": 105004
+    },
+    {
+      "path": "RARFILE_LICENSE.txt",
+      "upstream_path": "LICENSE",
+      "sha256": "351350167805c294c7b3e170081ce1265445c46fbeb3e999e13b616c90c64a20",
+      "bytes": 756
+    }
+  ]
+}

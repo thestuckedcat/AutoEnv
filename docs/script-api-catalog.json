@@ -61,13 +61,13 @@
       "name": "FileHandle.unzip",
       "category": "local_file",
       "parameters": ["unzip_path: PathLike", "max_files: int = 10000 (keyword)", "max_bytes: int = 5368709120 (keyword)"],
-      "returns": "Path (safe content-detected ZIP/TAR/GZ extraction)"
+      "returns": "Path (safe single-layer content-detected ZIP/TAR/GZ/RAR extraction; RAR requires local bsdtar)"
     },
     {
       "name": "detect_archive",
       "category": "local_file",
       "parameters": ["path: PathLike"],
-      "returns": "Literal[zip,tar,gz] | None (TAR includes compressed variants)"
+      "returns": "Literal[zip,tar,gz,rar] | None (TAR includes compressed variants)"
     },
     {
       "name": "FileHandle.move_to",
@@ -240,6 +240,15 @@
       "size": "int",
       "sha256": "str"
     },
+    "RemoteCheckResult": {
+      "success": "bool",
+      "status": "available | unavailable",
+      "transport_ready": "bool",
+      "error_type": "str | None",
+      "error_message": "str | None",
+      "check_scope": "command | keyword | prompt | None",
+      "exit_status_available": "bool | None"
+    },
     "CommandResult": {
       "status": "CommandStatus",
       "exit_code": "int | None",
@@ -284,6 +293,16 @@
   "configuration": {
     "directory": "environments/topologies/<topology>/connections.json",
     "format": "array of flat connection objects",
+    "telnet_self_check": {
+      "recommended_shell_mode": "auto",
+      "posix": "unique probe output and exit status 0; check_scope=command, exit_status_available=true",
+      "prompt_only_with_probe": "paired probe_command/probe_keyword, excluding command echo; check_scope=keyword, exit_status_available=false",
+      "prompt_only_without_probe": "connected transport and recognized prompt only; check_scope=prompt, exit_status_available=false",
+      "partial_probe_configuration": "fails self-check",
+      "credentials": "send only when the configured login prompt is active; preserve an already logged-in shell, ignoring Last login banners",
+      "unknown_command_result": "prompt readiness does not create exit status; execute remains RESULT_UNKNOWN with exit_code=None",
+      "other_protocols": "check_scope and exit_status_available default to None"
+    },
     "ssh_upload_type": [
       "scp",
       "sftp"

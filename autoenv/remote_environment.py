@@ -38,6 +38,8 @@ class RemoteCheckResult:
     duration_ms: int
     error_type: str | None = None
     error_message: str | None = None
+    check_scope: str | None = None
+    exit_status_available: bool | None = None
 
 
 class _Remote:
@@ -51,6 +53,8 @@ class _Remote:
         self.target_name = f"{self.topology}/{self.name}" if self.topology else self.name
         self.available = False
         self.self_check_result: RemoteCheckResult | None = None
+        self._check_scope: str | None = None
+        self._exit_status_available: bool | None = None
         self._closed = False
         self._lock = RLock()
         self._client = self._new_client()
@@ -77,6 +81,8 @@ class _Remote:
     def _self_check(self) -> RemoteCheckResult:
         started = datetime.now().astimezone()
         error_type = error_message = None
+        self._check_scope = None
+        self._exit_status_available = None
         try:
             self._probe()
             self.available = True
@@ -90,6 +96,7 @@ class _Remote:
             self.target_name, self.available, "available" if self.available else "unavailable",
             self.transport_ready, started, finished,
             max(0, int((finished - started).total_seconds() * 1000)), error_type, error_message,
+            self._check_scope, self._exit_status_available,
         )
         self.self_check_result = result
         self.session.recorder.record_result("REMOTE SELF CHECK", result)
@@ -255,6 +262,9 @@ class TelnetRemote(_Remote):
     def _probe(self) -> None:
         username = self.config.get("username", "")
         password = self.config.get("password", "")
+        command, keyword = self.config.get("probe_command"), self.config.get("probe_keyword")
+        if bool(command) != bool(keyword):
+            raise ValueError("SELF_CHECK_NOT_CONFIGURED: probe_command and probe_keyword must be supplied together")
         if password and not username:
             raise ValueError("Telnet password requires a username")
         if username:
@@ -262,13 +272,17 @@ class TelnetRemote(_Remote):
                 username, password, login_prompt=self.config.get("login_prompt", "login:"),
                 password_prompt=self.config.get("password_prompt", "Password:"),
             )
-        if self._client.info.shell_mode == "prompt_only":
+        elif self._client.info.shell_mode == "prompt_only":
             self._client.connect_passive()
-            command, keyword = self.config.get("probe_command"), self.config.get("probe_keyword")
-            if not command or not keyword:
-                raise ValueError("SELF_CHECK_NOT_CONFIGURED: console requires probe_command and probe_keyword")
-            self._client.wait_passive(keyword, probe_data=(command + "\r\n").encode("utf-8"))
+        self._client.prepare_command_session()
+        if self._client.shell_mode == "prompt_only":
+            self._check_scope = "keyword" if command else "prompt"
+            self._exit_status_available = False
+            if command:
+                self._client.wait_passive(keyword, probe_data=(command + "\r\n").encode("utf-8"))
         else:
+            self._check_scope = "command"
+            self._exit_status_available = True
             token = f"__AUTOENV_SELF_CHECK_{uuid.uuid4().hex}__"
             result = self._client.execute(f"printf '%s\\n' {shlex.quote(token)}")
             if not result.success:

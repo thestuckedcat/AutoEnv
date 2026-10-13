@@ -43,6 +43,12 @@ python -X utf8 -m pytest tests/test_generated_script_contract.py -q
 
 ## 补充：组件测试范围
 
+2026-10-13 的压缩与串口兼容扩展新增 `test_product_log_preparation.py`、`test_product_log_standalone_preparation.py`、`test_local_rar_archives.py`、`test_product_log_offline_rar_integration.py`、`test_serial_compatibility.py`、`test_serial_readiness_logging.py`。准备测试覆盖全森林展开后才定位 diag/varlog、旧 var 回退、跨包部分路径、字面 `!/` 与包内路径的不同身份、非递归的普通目录深度；真实 RAR4/5、固实、ZIP14、损坏与不支持成员均有实际解码回归。
+
+最终全量离线回归：**873 passed、2 skipped、1 warning，195.22s**。两项跳过为 Windows 符号链接权限，warning 为既有重复 ZIP fixture。单入口静态检查排除 logs/runtime_path 等运行产物，避免历史完整源码快照被误当作当前服务实现；当前固定端点及唯一启动方式检查继续通过。离线解码/构建 88 项、新增完整 RAR Worker 集成 2 项、串口/Telnet/Remote/CLI 专项 124 项均通过。
+
+实际生成 HTML 的 Worker 在禁止网络 API 的 Node 环境处理 ZIP→ZIP-LZMA→RAR4/5，分别验证 64 条用户态和 1 条内核态、排序、模块表与 Python 全量导出摘要一致。串口使用真实 loopback TCP，覆盖登录/已登录/用户名后直接进入 shell、历史登录与密码横幅、POSIX/auto/prompt_only、失败业务探针和未知退出状态；自检摘要验证范围、原因且不复制原始设备输出。RAR 样本来源见 [合成夹具](fixtures/product_log_archives/README.md)，SDK 系统 bsdtar 的能力边界见 [产品说明](../product_log/README.md)。本轮验证结果见 [功能记录](../newFeature/2026-10-13-archive-and-serial-compatibility.md)。
+
 `test_udk_v100_workflows.py` 将仓库中的两个 UDK V100 脚本交给真实 CLI 宿主，在隔离项目登记 `SingleUnions_S3`，使用真实 loopback SSH/SCP/SFTP/Telnet 和本地 WebHDFS 字节流。只替换环境信息与 HDFS 端点，10 秒等待、handler、解压、上传和命令客户端均执行实际实现；服务端在隔离目录模拟重启、启动和进程列表，绝不运行主机破坏性 shell。运行 `python -X utf8 -m pytest -q tests/test_udk_v100_workflows.py`；业务规则与现场尚未验证部分见 [UDK V100 工作流](../docs/UDK_V100_WORKFLOWS.md)。
 
 2026-10-11 UDK V100 扩展最终全量离线回归：**781 passed、2 skipped、1 warning，160.44s**。新增 22 项工作流测试（单独运行 39.10s）和 5 项 Telnet 返回码/中间提示符回归，完整 Telnet 测试为 68 passed。跳过仍为 Windows 符号链接权限，warning 仍为既有重复 ZIP fixture。三个环境拉起测试均真实等待重启后的 10 秒，成功分支还验证首次 SSH 恢复时 boot_id 未变化不能继续。

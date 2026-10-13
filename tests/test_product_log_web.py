@@ -79,6 +79,22 @@ def _zip_logs() -> bytes:
     return output.getvalue()
 
 
+def test_http_default_kernel_directory_prefers_varlog_to_legacy_var(product_http):
+    root, request, _manager, _session = product_http
+    source = root / "input"
+    for directory, message in (("varlog", "correct directory"), ("var", "legacy directory")):
+        target = source / directory / "cpdt_dmesg_current.log"
+        target.parent.mkdir(parents=True)
+        target.write_text(f"[Thu Jan 6 04:36:49 2000] <thread:1:2> udk {message}\n", encoding="utf-8")
+    started = request("/api/product-logs/start", {"input_path": str(source)})
+    completed = _completed(request, started["batch_id"])
+    assert completed["status"] == "ready", completed
+    response = request("/api/product-logs/query?" + urlencode({
+        "batch_id": started["batch_id"], "kind": "driver", "log_domain": "kernel"}))
+    assert len(response["records"]) == 1
+    assert "correct directory" in response["records"][0]["text"]
+
+
 def test_chunked_archive_real_workflow_query_source_export_and_isolation(product_http):
     root, request, manager, script_session = product_http
     original_events = list(script_session.events)
