@@ -6,25 +6,25 @@
 
 在源码根目录运行 `python -X utf8 tools/build_product_log_page.py`，输出 `dist/product-log-offline.html`；构建脚本仅依赖 Python 标准库，也可用 `python -I -S -X utf8 tools/build_product_log_page.py`。HTML 包含全部样式、脚本及解压器，使用者在现代桌面浏览器打开后选择压缩包/文件夹即可使用，无需安装 Python、Node 或启动服务、联网加载资源。
 
-独立页保留 diag/var 收集、三类日志、分段拼接、模块对应表、分类/统一时间、搜索与导出规则。解析在浏览器 Worker 中执行，来源为用户选择文件的相对路径；日志与配置只存当前页面内存，模块表可导入/下载 JSON。它没有服务端绝对路径导入、磁盘解压目录、历史批次或 3 GiB 清理；可选复制/重命名只操作内存副本。浏览器 JavaScript 与现有 Python 通过真实样本对照验证，现有 SDK、CLI、HTTP 和 wheel 入口均不调整。完整操作、兼容范围及验收边界见 [standalone/README.md](standalone/README.md)。
+独立页保留 diag/varlog 收集、三类日志、分段拼接、模块对应表、分类/统一时间、搜索与导出规则。解析在浏览器 Worker 中执行，来源为用户选择文件的相对路径；日志与配置只存当前页面内存，模块表可导入/下载 JSON。它没有服务端绝对路径导入、磁盘解压目录、历史批次或 3 GiB 清理；可选复制/重命名只操作内存副本。浏览器 JavaScript 与现有 Python 通过真实样本对照验证，现有 SDK、CLI、HTTP 和 wheel 入口均不调整。完整操作、兼容范围及验收边界见 [standalone/README.md](standalone/README.md)。
 
 ## 使用
 
 在项目根目录执行：
 
 ```powershell
-python -X utf8 -m product_log "D:\logs\product.tar.gz" --collection-mode product --diag-directory diag/slot62 --var-directory var --workers 4
-python -X utf8 -m product_log "D:\logs\input" --collection-mode generic --output "D:\logs\batch-001" --archive-pattern "target*" --file-pattern "*.txt"
+python -X utf8 -m product_log "D:\logs\product.tar.gz" --collection-mode product --diag-directory diag/slot62 --var-directory varlog --workers 4
+python -X utf8 -m product_log "D:\logs\input" --collection-mode generic --output "D:\logs\batch-001" --file-pattern "*.txt"
 python -X utf8 startWeb.py
 ```
 
 唯一 Web 服务地址为 <http://127.0.0.1:8765/>，产品日志页面为 <http://127.0.0.1:8765/product-logs/>。可拖入/选择压缩包、上传浏览器选定文件夹，或填写 Web 服务所在机器可访问的绝对目录。浏览器文件夹上传显示的是服务端落盘路径；填写本地路径读取服务端目录，不从浏览器猜测文件系统路径。
 
-CLI 默认创建 `runtime_path/product-log-<UUID>` 独立批次；`--output` 可指定新目录或预存上传输入的目录，但不能已含 `manifest.json/index.sqlite3/product_log/.shards`，不覆盖已有批次。网页使用 `product` 收集模式；CLI 默认 `auto`，发现 diag/var 时使用产品规则，没有时使用通用规则。显式 `--directory` 在 auto 中保留通用目录选择；`generic` 可显式指定原整理流程。
+CLI 默认创建 `runtime_path/product-log-<UUID>` 独立批次；`--output` 可指定新目录或预存上传输入的目录，但不能已含 `manifest.json/index.sqlite3/product_log/.shards`，不覆盖已有批次。网页使用 `product` 收集模式；CLI 默认 `auto`，发现 diag/varlog（或兼容的旧 var）时使用产品规则，没有时使用通用规则。显式 `--directory` 在 auto 中保留通用目录选择；`generic` 可显式指定原整理流程。
 
-产品模式通过 `--diag-directory`、`--var-directory` 分别定位唯一目录，默认精确目录名 `diag`、`var`；`var` 属于输入内容。允许部分路径如 `diag/slot62` 在任意深度匹配连续组件；多命中报错并给出候选。一类目录缺失时解析另一类，两类都缺失时 product 报错。diag 默认只收集 `diaglog_*.log`、`diag.log`；历史文件名字典序升序，最新 `diag.log` 最后。var 默认收集 `cpdt_dmesg_current.log.<数字>`，数字升序 `.1,.2,.10`，最新无后缀文件最后。
+产品模式通过 `--diag-directory`、`--var-directory` 分别定位唯一目录，默认精确目录名 `diag`、`varlog`；只有 varlog 不存在时才兼容旧 var，显式 `--var-directory var` 仍有效。允许部分路径如 `diag/slot62` 在任意深度匹配连续组件；压缩包文件名不算目录组件，允许部分路径跨打包边界；多命中报错并给出候选。一类目录缺失时解析另一类，两类都缺失时 product 报错。diag 默认只收集 `diaglog_*.log`、`diag.log`；历史文件名字典序升序，最新 `diag.log` 最后。内核目录默认收集 `cpdt_dmesg_current.log.<数字>`，数字升序 `.1,.2,.10`，最新无后缀文件最后。
 
-`--archive-pattern`、`--file-pattern` 和 `--copy-pattern` 可重复，使用文件名关键词或 glob。产品模式中的 archive/file 模式只控制 diag，文件模式留空使用标准名；var 始终递归展开全部受支持压缩包并按 dmesg 文件名收集。`--no-recursive` 限制通用/diag 搜索，var 仍递归。`--workers` 控制文件解析并发数。
+`--file-pattern` 和 `--copy-pattern` 可重复，使用文件名关键词或 glob。所有支持的压缩包在定位目录前完整递归展开，包括未选中目录内的包；旧 `--archive-pattern` 字段继续接收和校验，但不再限制准备阶段。文件模式只控制通用/diag 日志选择，产品内核目录按 dmesg 文件名收集。`--no-recursive` 限制通用/diag 的普通目录搜索，内核仍递归；它不会阻止准备嵌套包。`--workers` 控制文件解析并发数。
 
 成功退出码为 0，stdout 为 manifest JSON，阶段进度写 stderr。参数、文件或取消错误为退出码 2，并保留 failed/cancelled manifest；失败索引不发布为可查询结果。
 
@@ -34,7 +34,9 @@ CLI 默认创建 `runtime_path/product-log-<UUID>` 独立批次；`--output` 可
 
 每任务工作区包含 `product_log/input/`（顶层包）、`product_log/expanded/`（每个子包独立目录）、`product_log/selected/`（可选复制结果），批次根有 `manifest.json` 和 `index.sqlite3`。目录输入直接读原目录；网页显示实际输入根目录与工作区绝对路径。
 
-支持内容识别 ZIP、TAR、TAR.GZ/TGZ、TAR.BZ2、TAR.XZ 和单文件 GZ。顶层、diag 和通用模式保持原一轮匹配子包展开；产品 var 使用队列递归展开，包括压缩包内的压缩包，直到无待处理包，保留完整来源链。拒绝目录穿越、绝对成员路径、链接、特殊文件及名称冲突，非空输出目录不覆盖，损坏包明确失败。RAR/7Z 与加密包不支持。
+支持内容识别 ZIP（含 LZMA/算法 14）、RAR、TAR、TAR.GZ/TGZ、TAR.BZ2、TAR.XZ 和单文件 GZ。先用队列准备整个压缩包森林，直到没有待处理包，再定位唯一目录；保留完整来源链。拒绝目录穿越、绝对成员路径、链接、特殊文件及名称冲突，非空输出目录不覆盖，损坏包明确失败。7Z、加密和分卷包不支持。
+
+Python RAR 元数据使用随 SDK 保存的固定版本 rarfile，实际解压使用 Windows 自带 tar.exe/libarchive 或可用的 bsdtar，无需安装 Python 包；后端仅输出文件字节，由 SDK 验证并写入隔离目录。本机 bsdtar 对某些 RAR4 固实压缩或 Unicode 文件名不支持时会明确失败，且不发布部分结果。独立 HTML 内嵌另一条 RAR 解码路径，支持 RAR4/RAR5 普通及固实压缩，不依赖系统解压程序。
 
 固件每段必须由标准驱动头开始，含日期、SlotId、CpuId、ModuleName、Unit、logType、seg。后续固件正文不用日期开头。一段不跨文件；多个段可跨文件。产品模式使用上述 diag 历史/current 顺序，通用模式按 `(文件名, 相对路径)` 字典序；文件内保持原行序。seg=0 开新读取，非零 seg 接续同一流最近的读取；EOF 仅结束当前段。seg 编号排序完成拼接，重复非零段和重复正文都保留，缺失/重复/倒序段以诊断呈现。不同主机、服务、模块和设备来源隔离，避免合并不相关日志。
 
@@ -42,7 +44,7 @@ CLI 默认创建 `runtime_path/product-log-<UUID>` 独立批次；`--output` 可
 
 用户态驱动按 `(SlotId, CpuId, ModuleName)` 自动分组，所有实际字段组合进入下拉框。仅 `udk` 及空白后缀名称（`udk log`、`udk upgrade`，不区分大小写）归一为 `udk`，原始字段仍保留；`udk2` 和其他模块不合并。固件按 `(SlotId, CpuId, DevId, LogType)` 分组，打印组件作为附加字段。类型名为 `0=bios`、`1=IMP`、`2=IMU`、`3=HSM`，其他值显示数字。
 
-var 的每条非空行作为内核态驱动索引。`[Thu Jan 6 04:36:49 2000]` 解析为 `2000-01-06 04:36:49`，英文月份显式转换；每条无日期行一律标记时间未知，简洁模式显示 `[时间未知]`，不继承前一行或其他文件日期。SlotId/CpuId 显示未知，来源路径/行号保留。用户态简洁模式输出 `日期 Info=<...> 日志内容`，内核简洁模式输出日期及线程/正文；驱动原本模式保留完整原行。
+内核目录的每条非空行作为内核态驱动索引。`[Thu Jan 6 04:36:49 2000]` 解析为 `2000-01-06 04:36:49`，英文月份显式转换；每条无日期行一律标记时间未知，简洁模式显示 `[时间未知]`，不继承前一行或其他文件日期。SlotId/CpuId 显示未知，来源路径/行号保留。用户态简洁模式输出 `日期 Info=<...> 日志内容`，内核简洁模式输出日期及线程/正文；驱动原本模式保留完整原行。
 
 网页模块表包含“模块 / 用户态 ModuleName / 内核态关键词”，默认 `udk/udk/udk`、`UBE/UBE/mami`；其他解析出的用户模块自动补入，内核关键词留空表示“未配置”。指定用户模块未出现则显示“不存在”，仍可按内核关键词查询。用户态名称按规范化字段精确匹配，内核关键词在原始整行上按不区分大小写的字面子串匹配。修改并保存表格立即查询现有索引，不重新解压/解析。保存结果位于每批次 `module-map.json`，重新打开批次恢复；删除自动发现行后若其 ModuleName 仍未映射，会再次补入。
 
@@ -91,7 +93,7 @@ for handler in handlers:
 
 `fuzz_search` 在没有通配符时匹配文件名子串，`accurate_search` 此时匹配精确文件名；含 `* ? [abc] [!abc]` 时匹配整个 basename。空模式匹配全部，区分大小写；结果统一按文件名字典序，再按相对路径排序。handler 组支持重复遍历、长度、索引，首次取用成员建立并缓存完整性快照。`get_file()` 的 SHA-256 合同保持不变。`move_to/rename` 返回新的不可变 handler，同名文件默认报错。
 
-`detect_archive(path)` 返回 `zip/tar/gz/None`；TAR 的压缩变体均归为 tar。`find_subdir(..., exclude_paths=[output_dir])` 可排除生成目录；`unzip/verify` 的 `check_cancelled` 回调可中断流式摘要和展开。文件 handler 构造时仍会计算完整 SHA-256。
+`detect_archive(path)` 返回 `zip/tar/gz/rar/None`；TAR 的压缩变体均归为 tar。`find_subdir(..., exclude_paths=[output_dir])` 可排除生成目录；`unzip/verify` 的 `check_cancelled` 回调可中断流式摘要和展开。文件 handler 构造时仍会计算完整 SHA-256。
 
 ## 测试
 

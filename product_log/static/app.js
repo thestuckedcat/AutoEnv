@@ -92,7 +92,7 @@ $('importForm').addEventListener('submit', async event => {
     // Once submitted, the task must be cancelled by its server ID. Do not abort
     // the start response and lose the identity of a running server-side task.
     state.uploadController = null; $('stopTask').disabled = true;
-    const result = await post('start', {input_path: $('inputPath').value.trim(), upload_id: uploadId, collection_mode: 'product', diag_directory_pattern: $('directoryPattern').value.trim() || 'diag', var_directory_pattern: $('varDirectoryPattern').value.trim() || 'var', archive_patterns: $('archivePatterns').value, file_patterns: $('filePatterns').value, copy_patterns: $('copyPatterns').value, rename_map: renames, recursive: $('recursive').checked, workers: Number($('workers').value)});
+    const result = await post('start', {input_path: $('inputPath').value.trim(), upload_id: uploadId, collection_mode: 'product', diag_directory_pattern: $('directoryPattern').value.trim() || 'diag', var_directory_pattern: $('varDirectoryPattern').value.trim() || 'varlog', archive_patterns: $('archivePatterns').value, file_patterns: $('filePatterns').value, copy_patterns: $('copyPatterns').value, rename_map: renames, recursive: $('recursive').checked, workers: Number($('workers').value)});
     state.active = result.batch_id; state.uploadId = null;
     $('workingPath').textContent = result.batch_dir + (result.batch_dir.includes('\\') ? '\\product_log' : '/product_log');
     $('stopTask').disabled = false; poll();

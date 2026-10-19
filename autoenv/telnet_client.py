@@ -341,6 +341,23 @@ class TelnetClient:
             self._active_shell_mode = None
             self._passive_prompt_floor = self._passive_cursor
 
+    def _respond_to_observed_login_prompt(self, prompt: str, response: str) -> None:
+        """Consume the selected current prompt, rather than a banner occurrence."""
+        raw = self._passive_buffer[self._passive_cursor:]
+        clean, positions = self._clean_terminal_indexed(raw)
+        keyword = prompt.strip()
+        start = clean.rfind(keyword)
+        if start < 0 or not keyword:
+            raise ValueError("observed Telnet login prompt is no longer available")
+        end = positions[start + len(keyword) - 1]
+        self._last_passive_raw = raw[:end]
+        self._passive_cursor += end
+        assert self._sock is not None
+        self._sock.sendall((response + "\r\n").encode("utf-8"))
+        self._prompt = None
+        self._active_shell_mode = None
+        self._passive_prompt_floor = len(self._passive_buffer)
+
     def login_passive(
         self, username: str, password: str, *, login_prompt: str = "login:",
         password_prompt: str = "Password:",
@@ -353,8 +370,47 @@ class TelnetClient:
                 raise ValueError(f"Telnet {label} must not contain line breaks")
         with self._lock:
             self.connect_passive()
-            self.wait_passive(login_prompt, send_data=(username + "\r\n").encode("utf-8"))
-            self.wait_passive(password_prompt, send_data=(password + "\r\n").encode("utf-8"))
+            # A serial gateway may attach to a shell that is already logged in.
+            # Observe the actual prompt before sending credentials as shell text.
+            deadline = self._clock() + self.info.timeout
+            while True:
+                text = self._clean_terminal_text(self._passive_buffer[self._passive_cursor:])
+                lines = [line.strip() for line in text.replace("\r", "\n").split("\n") if line.strip()]
+                # A historical "Last login: ..." banner is not an input prompt.
+                candidate = lines[-1] if lines else ""
+                if candidate.endswith(login_prompt.strip()) and not candidate.lower().startswith("last login:"):
+                    break
+                if self._prompt is not None:
+                    if self.info.shell_mode == "auto":
+                        self.prepare_passive_command()
+                    return
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise _ReadTimedOut(text)
+                self._passive_receive(min(remaining, 0.2))
+            self._respond_to_observed_login_prompt(login_prompt, username)
+            deadline = self._clock() + self.info.timeout
+            while True:
+                text = self._clean_terminal_text(self._passive_buffer[self._passive_cursor:])
+                lines = [line.strip() for line in text.replace("\r", "\n").split("\n") if line.strip()]
+                candidate = lines[-1] if lines else ""
+                if "login incorrect" in text.lower() or "authentication failed" in text.lower():
+                    raise PermissionError("Telnet authentication failed")
+                if candidate.endswith(password_prompt.strip()):
+                    self._respond_to_observed_login_prompt(password_prompt, password)
+                    break
+                # Some root consoles request a username without a password.
+                # A configured password must not become a command in that shell.
+                if self._prompt is not None:
+                    if self.info.shell_mode == "auto":
+                        self.prepare_passive_command()
+                    return
+                if candidate.endswith(login_prompt.strip()) and not candidate.lower().startswith("last login:"):
+                    raise PermissionError("Telnet username was not accepted")
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise _ReadTimedOut(text)
+                self._passive_receive(min(remaining, 0.2))
             deadline = self._clock() + self.info.timeout
             while self._prompt is None:
                 text = self._passive_buffer[self._passive_cursor:]
@@ -469,8 +525,18 @@ class TelnetClient:
             if self.info.shell_mode == "auto":
                 marker = f"__AUTOENV_PROBE_{uuid.uuid4().hex}__"
                 self._send_text(f"printf '\\n{marker}:%d\\n' $?\r\n")
-                output = self._read_to_prompt(self.info.timeout, marker=None, stream=False)
+                output = self._read_to_prompt(self.info.timeout, marker=marker, stream=False)
                 self._active_shell_mode = "posix" if self._extract_exit_code(output, marker) is not None else "prompt_only"
+
+    def prepare_command_session(self) -> None:
+        """Recognize a command prompt and shell capability without a business command."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError(f"Telnet client {self.name!r} is closed")
+            if self._sock is None:
+                self._open_session(self.info.timeout)
+            else:
+                self.prepare_passive_command()
 
     def execute(
         self,
@@ -883,7 +949,7 @@ class TelnetClient:
                 probe_marker = f"__AUTOENV_PROBE_{uuid.uuid4().hex}__"
                 probe = f"printf '\\n{probe_marker}:%d\\n' $?\r\n"
                 self._send_text(probe)
-                probe_output = self._read_to_prompt(timeout, marker=None, stream=False)
+                probe_output = self._read_to_prompt(timeout, marker=probe_marker, stream=False)
                 if self._extract_exit_code(probe_output, probe_marker) is not None:
                     self._active_shell_mode = "posix"
                 else:

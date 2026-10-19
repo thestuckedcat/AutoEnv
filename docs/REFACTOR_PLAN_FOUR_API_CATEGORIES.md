@@ -122,7 +122,7 @@ run 的交互模式允许有效历史作默认，rerun 或 --use-history 显式�
 
 ### 3.1 申请完成即有可用性结论
 
-SSH 验证握手认证、唯一安全命令回显和退出状态，并确认所选 SCP 所需能力或 SFTP subsystem。Telnet POSIX 验证发送/读取及退出码标记。prompt/bootloader 必须配置设备允许的 probe_command/probe_keyword，不擅自发送 printf、回车或假定提示符能证明命令成功。FTP 验证登录和控制通道，真实文件传输在上传/下载时校验。
+SSH 验证握手认证、唯一安全命令回显和退出状态，并确认所选 SCP 所需能力或 SFTP subsystem。Telnet POSIX 验证发送/读取及退出码标记。prompt/bootloader 可同时省略 probe_command/probe_keyword，仅确认有效提示符就绪，或成对配置设备允许的业务探针；不猜设备命令。自检结果以 check_scope=command/keyword/prompt 和 exit_status_available 说明验证范围，提示符就绪不能证明业务命令退出 0。FTP 验证登录和控制通道，真实文件传输在上传/下载时校验。
 
 返回前记录 available/unavailable、自检种类、目标与错误；失败保留不可用对象，允许显式 retry。普通命令和传输不能把不可用对象误当成功。串口的底层 TCP 接入可保持供被动读取与 Ctrl+B 使用，实际自检失败仍保留结论；最终未恢复自检的脚本不得成功结束。恢复成功清除待处理自检失败，不换目标。关键词命中和控制字发送不冒充自检成功。
 

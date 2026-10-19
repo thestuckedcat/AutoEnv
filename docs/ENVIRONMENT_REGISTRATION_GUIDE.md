@@ -36,9 +36,11 @@ python -X utf8 -m autoenv.cli run demo --non-interactive --topology "双机主�
 ]
 ```
 
-SSH 的 upload_type 是环境字段，决定同一对象 upload/download 使用的协议。FTP passive 控制主动/被动模式。Telnet shell_mode 为 posix/prompt_only/auto；非 POSIX 的 prompt/bootloader 配置 `probe_command` 与 `probe_keyword`，只发送设备明确允许的自检命令，不能假定 printf 可用。
+SSH 的 upload_type 是环境字段，决定同一对象 upload/download 使用的协议。FTP passive 控制主动/被动模式。Telnet shell_mode 为 `auto/posix/prompt_only`：一般推荐 `auto`，先探测 POSIX 返回码能力，未获得返回码但返回有效提示符时按 prompt_only 处理；`posix` 强制要求返回码标记；`prompt_only` 不发送 POSIX 探测。非 POSIX 的 prompt/bootloader 可以同时配置 `probe_command` 与 `probe_keyword`，只发送设备明确允许的业务自检命令；也可以同时留空，仅确认连接和有效提示符。只填其中一个会失败，不能假定未知设备支持 status、help 或 printf。
 
-需要 Telnet 登录时配置 username/password；提示不同于默认 login:/Password: 时设置 login_prompt/password_prompt。登录后再按原命令模式自检；不在未登录时发送业务命令，也不把未知提示猜作成功。
+需要 Telnet 登录时配置 username/password；提示不同于默认 login:/Password: 时设置 login_prompt/password_prompt。客户端先观察实际提示：需要登录才发送凭据，已显示 shell 提示符则直接使用当前会话，不重复发送账号密码。`Last login: ...` 横幅不是登录输入提示。未知提示或登录失败仍自检失败。
+
+Telnet 的 `self_check_result.check_scope` 为 `command`（唯一输出标记和退出码 0）、`keyword`（配置的业务探针匹配）或 `prompt`（仅会话就绪）。对应 `exit_status_available` 仅 POSIX 为 true，其余为 false；`available` 不能代替命令成功判据，prompt_only 的普通 execute 仍为 RESULT_UNKNOWN。具体返回与固件升级判据见 [UDK V100 工作流](UDK_V100_WORKFLOWS.md)。
 
 每个固定 get_remote_info 赋值点是独立角色。白名单是字面量 pair 数组，组网名称不能与连接名拼成冒号字符串。全部角色可用组网取交集，执行只选一次；各角色的二级候选只在本组网自己的白名单。回车继承上次有效选择；改类型、改配置、删目标或变白名单都会使历史失效。完整非交互命令必须 bind 所有角色。
 

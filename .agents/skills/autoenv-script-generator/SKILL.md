@@ -35,7 +35,7 @@ def main():
 ## 文件与命令规则
 
 - `get_file(path, filename)` 精确获取本地文件，不用 glob/正则。`create_file(path, filename, str|bytes)` 原样创建，保留完整 shell 文本与换行，不擅自加 `set -e`。
-- 本地搜索使用 `fuzz_search(path, pattern, recursive=False)`（关键词子串/glob）、`accurate_search(...)`（精确名/首个 glob）、`get_handler(path, recursive=False)`；结果按文件名字典序，handler 惰性缓存。`find_subdir(path, "diag/slot62")` 必须唯一。`handler.unzip(dest)` 安全自动识别 ZIP/TAR/GZ；每包独立空目录。`move_to(dest)` 是复制并返回新 handler，`rename(basename)` 真实重命名并返回新 handler；冲突报错。
+- 本地搜索使用 `fuzz_search(path, pattern, recursive=False)`（关键词子串/glob）、`accurate_search(...)`（精确名/首个 glob）、`get_handler(path, recursive=False)`；结果按文件名字典序，handler 惰性缓存。`find_subdir(path, "diag/slot62")` 必须唯一。`handler.unzip(dest)` 安全自动识别 ZIP/TAR/GZ/RAR，只展开当前一层，每包独立空目录；RAR 数据需要本机 bsdtar（Windows 系统 tar.exe），后端限制见产品日志 README。`move_to(dest)` 是复制并返回新 handler，`rename(basename)` 真实重命名并返回新 handler；冲突报错。产品日志的完整嵌套准备由独立 workflow 编排。
 - 特殊本地产品日志功能独立在 `product_log/`，通过 `python -m product_log` 或同一 Web 服务 `/product-logs/` 使用；规则见 `product_log/README.md`，不需要新增设备声明或复制解析器。
 - `hdfs_download(local_path, "配置名")` 独立读取项目 `config.json`，配置名必须字面量；不依赖 ctx，不把 HDFS 路径传成 local_path。远端 HDFS 选择由 CLI `--package 配置名=路径` 指定。增加包配置仅在任务需要时做。
 - 三种文件来源返回同一种本地 `FileHandle`，可直接 `ssh.upload(file, remote_dir)` 或 `ftp.upload(file, remote_dir)`。上传返回 None，失败抛分类异常。`ssh.download(remote_dir, filename)`、`ftp.download(...)` 返回本地 handler；不创建远端 handler。
@@ -45,7 +45,8 @@ def main():
 - 只有明确的 SUCCESS 才默认继续。RESULT_UNKNOWN 仅在用户提供设备业务关键词判据时按输出决定；保留协议未知记录，不伪造 exit_code=0。业务失败用 `result.with_failure("明确原因")`；返回失败结果结束脚本。
 - SSH 每条命令是独立通道，持久 cd/export 需要放同一命令；不要改变用户原命令、管道和重启语义。
 - Telnet 不传文件；FTP 不执行命令。TCP 串口网关不等于本地 COM 驱动。
-- Telnet 登录凭据集中登记，按设备真实 login_prompt/password_prompt 设置，不将登录流程写成普通业务 execute，也不猜未知提示。
+- Telnet 登录凭据集中登记，按设备真实 login_prompt/password_prompt 设置；已显示 shell 提示符时不重复发送凭据，用户名后直接进入 shell 也接受，只有实际出现密码提示才发送密码；Last login 横幅不触发认证。不要将登录写成普通业务 execute，也不猜未知提示。
+- Telnet 一般用 shell_mode=auto 探测能力；posix 强制返回码，prompt_only 不发 POSIX 探测。非 POSIX 的 probe_command/probe_keyword 可同时留空，仅确认有效提示符，或成对配置设备明确允许的业务探针；不猜 status/help 等命令。self_check_result 的 check_scope=command/keyword/prompt 区分退出码、业务响应与提示符检查，exit_status_available 仅 POSIX 为 true。prompt_only 的 available 只表示就绪，execute 仍 RESULT_UNKNOWN，不能伪造 exit_code=0；UDK_V100_Firmware 仍须已知退出 0 后再检查 success。
 - 串口被动监听用 `read()`、`wait_reboot(keyword)`，后者不发送 reboot；关键词动作 `telnet_wait_exec(keyword, b"\x02")` 精确发送 Ctrl+B 并保留连接，bytes 不自动补回车，str 是普通命令。
 - 在其他对象发 reboot 前先 `console.mark_output()`，防止历史关键词触发。网口 `retry(interval, max_try_times)` 只重连和自检，不能重放升级/重启/上传。
 - `print()`、结果与远端输出进入完整 run.log；每步结果另写简洁 output.log。CLI run/rerun 完成只输出绝对 log 路径，通过退出码 0/1/2 判断成功/运行失败/准备失败。

@@ -509,7 +509,9 @@ def test_web_has_one_launcher_fixed_endpoint_and_no_legacy_fallback(
     server_implementations = []
     for path in root.rglob("*.py"):
         relative = path.relative_to(root)
-        if relative.parts[0] in {".git", ".agents", "build", "tests"}:
+        # Runtime snapshots and build outputs may contain complete older source
+        # trees. They are evidence from previous runs, not active launchers.
+        if relative.parts[0] in {".git", ".agents", ".test-deps", "build", "dist", "logs", "runtime_path", "tests"}:
             continue
         if "serve_forever(" in path.read_text(encoding="utf-8", errors="ignore"):
             server_implementations.append(relative.as_posix())

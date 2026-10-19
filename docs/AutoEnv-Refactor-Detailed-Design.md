@@ -36,6 +36,10 @@ workflow-source.json保留当次脚本路径/revision/完整源码，保证脚�
 
 已处理的 execute 失败可以进入恢复分支，不永久污染脚本结果；返回失败结果、未处理异常或未恢复自检才使流程失败。Telnet prompt 业务关键词成功仍保留 RESULT_UNKNOWN，不伪造返回码。
 
+串口先观察实际登录提示或 shell 提示，已登录不再发送凭据；历史 Last login 横幅不触发认证。非 POSIX 自检可仅确认提示符或执行成对配置的业务探针，结果提供 check_scope 与 exit_status_available；简洁日志显示检查范围及失败原因。UDK 固件流程仍等待已知退出 0，再检查 success。
+
+产品日志准备阶段先展开全部支持的压缩包，再定位唯一 diag/varlog 目录；varlog 不存在时兼容旧 var。结构化来源组件区分压缩包边界和字面文件名，普通目录深度决定递归选择。离线 HTML 内嵌 ZIP-LZMA 和 RAR4/5 解码器；Python SDK 的 RAR 依赖本机 bsdtar，具体后端边界见 [产品日志说明](../product_log/README.md)。SDK unzip 仍只展开当前一层。
+
 ## 补充测试与边界
 
 本轮验证除 HDFS 外全部连接与调用，用真实 loopback SSH/SCP/SFTP、Telnet、FTP 服务，命令只确保送达，不执行远端 shell。文件实际通过协议传输、落盘并比较字节。命令/结果和搭建步骤见 [LOCAL_SIMULATION.md](LOCAL_SIMULATION.md)；UT 入口见 [tests/README.md](../tests/README.md)。

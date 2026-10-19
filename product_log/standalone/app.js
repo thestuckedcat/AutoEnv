@@ -127,7 +127,7 @@ $('importForm').addEventListener('submit', async event => {
     renameMap = $('renameMap').value.trim() ? JSON.parse($('renameMap').value) : {};
     if (!renameMap || typeof renameMap !== 'object' || Array.isArray(renameMap) || Object.values(renameMap).some(value => typeof value !== 'string')) throw new Error();
   } catch {error('taskError', '重命名映射需要有效的 JSON 对象，文件名与新名称都填写字符串。'); return;}
-  const rules = {collection_mode: 'product', diag_directory_pattern: $('directoryPattern').value.trim() || 'diag', var_directory_pattern: $('varDirectoryPattern').value.trim() || 'var', file_patterns: $('filePatterns').value, archive_patterns: $('archivePatterns').value, copy_patterns: $('copyPatterns').value, rename_map: renameMap, recursive: $('recursive').checked};
+  const rules = {collection_mode: 'product', diag_directory_pattern: $('directoryPattern').value.trim() || 'diag', var_directory_pattern: $('varDirectoryPattern').value.trim() || 'varlog', file_patterns: $('filePatterns').value, archive_patterns: $('archivePatterns').value, copy_patterns: $('copyPatterns').value, rename_map: renameMap, recursive: $('recursive').checked};
   const run = ++state.run;
   disposeWorker(); state.ready = false; state.manifest = null; state.navigation++;
   state.groups = []; $('groupSelect').replaceChildren(new Option('全部分块', '')); fieldOptions();

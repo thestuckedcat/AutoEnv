@@ -105,17 +105,17 @@ def test_var_recursively_expands_real_zip_tar_gzip_with_complete_provenance(tmp_
     assert archive.read_bytes() == before
 
 
-def test_diag_keeps_single_child_expansion_round(tmp_path):
+def test_diag_recursively_expands_all_child_archives(tmp_path):
     root = tmp_path / "input"
     (root / "diag").mkdir(parents=True)
     (root / "diag/payload.zip").write_bytes(zip_bytes({
         "diaglog_62_20000106043418.log": user_line("historical").encode(),
-        "inner.zip": zip_bytes({"diag.log": user_line("must stay nested").encode()}),
+        "inner.zip": zip_bytes({"diag.log": user_line("nested latest").encode()}),
     }))
     manifest = run_analysis(root, tmp_path / "batch", collection_mode="product")
-    assert file_names(manifest, "user") == ["diaglog_62_20000106043418.log"]
-    assert manifest["matched_archives"] == 1
-    assert manifest["counts"]["driver_records"] == 1
+    assert file_names(manifest, "user") == ["diaglog_62_20000106043418.log", "diag.log"]
+    assert manifest["matched_archives"] == 2
+    assert manifest["counts"]["driver_records"] == 2
 
 
 @pytest.mark.parametrize("domain", ["user", "kernel"])

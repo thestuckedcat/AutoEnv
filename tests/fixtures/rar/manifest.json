@@ -1,0 +1,44 @@
+{
+  "project": "rarfile",
+  "version": "4.2",
+  "license": "ISC",
+  "source_archive": "https://files.pythonhosted.org/packages/26/3f/3118a797444e7e30e784921c4bfafb6500fb288a0c84cb8c32ed15853c16/rarfile-4.2.tar.gz",
+  "files": [
+    {
+      "path": "rar5-solid.rar",
+      "upstream_path": "test/files/rar5-solid.rar",
+      "sha256": "d97d23b2edee9a7daa49e45015ea72aa3f162efeb0abaf559740ab797276203b",
+      "bytes": 169
+    },
+    {
+      "path": "rar3-symlink-unix.rar",
+      "upstream_path": "test/files/rar3-symlink-unix.rar",
+      "sha256": "146d979ca2a659e74712a8b259a47d198af8e94f95f94599ad7d31f0f0bb2a14",
+      "bytes": 191
+    },
+    {
+      "path": "rar5-hlink.rar",
+      "upstream_path": "test/files/rar5-hlink.rar",
+      "sha256": "c7c2db6fb021e89198da80d4b903d4a46b692c2f31fec64cb53c7e37af7a51f4",
+      "bytes": 230
+    },
+    {
+      "path": "rar5-psw.rar",
+      "upstream_path": "test/files/rar5-psw.rar",
+      "sha256": "b6840e95152a1c3b5acd736dc34f988509866f04158b67da1b5a29e166a31355",
+      "bytes": 2403
+    },
+    {
+      "path": "rar5-hpsw.rar",
+      "upstream_path": "test/files/rar5-hpsw.rar",
+      "sha256": "9aff93dfd85b1e44daeef233105831999a2076299997b7790e1cf1fd557a4457",
+      "bytes": 2590
+    },
+    {
+      "path": "rar5-dups.rar",
+      "upstream_path": "test/files/rar5-dups.rar",
+      "sha256": "60a752ef7f0373d881171dcb068810fe12a698b53f2bbce93ae4fb1b4e68cf8e",
+      "bytes": 594
+    }
+  ]
+}

@@ -279,7 +279,7 @@
       if (data.getUint32(offset, true) !== 0x02014b50) throw new Error("ZIP 中央目录记录错误");
       const flags = data.getUint16(offset + 8, true), method = data.getUint16(offset + 10, true);
       if (flags & 0x41) throw new Error("不支持加密 ZIP");
-      if (![0, 8, 12].includes(method)) throw new Error("不支持 ZIP 压缩算法 " + method);
+      if (![0, 8, 12, 14].includes(method)) throw new Error("不支持 ZIP 压缩算法 " + method);
       const expectedCrc = data.getUint32(offset + 16, true), nameLength = data.getUint16(offset + 28, true), extraLength = data.getUint16(offset + 30, true), commentLength = data.getUint16(offset + 32, true);
       need(bytes, offset + 46, nameLength + extraLength + commentLength, "ZIP member metadata");
       const rawName = bytes.subarray(offset + 46, offset + 46 + nameLength);
@@ -318,7 +318,7 @@
       need(bytes, start, compressed, name);
       if (start + compressed > (centralEnd - centralSize)) throw new Error("ZIP 成员与中央目录重叠");
       if (directory) directories.push(path);
-      else checked.push({path, start, compressed, size, method, expectedCrc});
+      else checked.push({path, start, compressed, size, method, flags, expectedCrc});
       offset += 46 + nameLength + extraLength + commentLength;
     }
     if (offset > centralEnd) throw new Error("ZIP 中央目录大小错误");
@@ -326,13 +326,35 @@
     for (const member of checked) {
       check();
       const compressed = bytes.subarray(member.start, member.start + member.compressed);
-      const output = member.method === 0 ? compressed : await codecs[member.method === 8 ? "inflateRaw" : "bunzip"](compressed);
+      const output = member.method === 0 ? compressed : member.method === 14 ? await codecs.unlzma(compressed, member.size, member.flags)
+        : await codecs[member.method === 8 ? "inflateRaw" : "bunzip"](compressed);
       const payload = asBytes(output);
       if (payload.length !== member.size || crc32(payload) !== member.expectedCrc) throw new Error("ZIP 文件长度或 CRC 校验失败: " + member.path);
       result.push({path: member.path, bytes: payload});
       if (result.length % 64 === 0) await tick();
     }
     return {files: result, directories};
+  }
+  async function extractRar(bytes, codecs, budget, check) {
+    if (typeof codecs.readRar !== "function") throw new Error("页面缺少内嵌 RAR 解压器");
+    const add = memberValidator(budget, check), paths = new Map();
+    // UnRAR's JS bridge does not expose RAR5 redirection records (hard links).
+    // Its native header pass validates the general metadata; libarchive adds
+    // link validation for RAR5 before any member is actually decoded.
+    const beforeExtract = bytes[6] === 1 ? () => codecs.readArchive(bytes, () => false, check) : null;
+    const entries = await codecs.readRar(bytes, entry => {
+      const path = add(entry.name, entry.directory, entry.size);
+      paths.set(entry.name, path);
+      return true;
+    }, check, beforeExtract);
+    return {files: entries.filter(entry => !entry.directory).map(entry => {
+      const payload = asBytes(entry.bytes);
+      // UnRAR validates the actual archive checksum (CRC32 or RAR5 BLAKE2).
+      // RAR5's optional CRC field is zero for BLAKE2 entries, so it cannot be
+      // compared to a newly computed CRC32 as if every archive stored one.
+      return {path: paths.get(entry.name), bytes: payload};
+    }),
+      directories: entries.filter(entry => entry.directory).map(entry => paths.get(entry.name)), format: "rar"};
   }
   function asBytes(value) {
     if (value instanceof Uint8Array) return value;
@@ -342,6 +364,8 @@
   }
   function archiveKind(file) {
     const bytes = file.bytes;
+    if (bytes[0] === 0x52 && bytes[1] === 0x61 && bytes[2] === 0x72 && bytes[3] === 0x21
+      && bytes[4] === 0x1a && bytes[5] === 0x07 && (bytes[6] === 0 || bytes[6] === 1 && bytes[7] === 0)) return "rar";
     if ((bytes[0] === 0x50 && bytes[1] === 0x4b && [[3, 4], [5, 6], [7, 8]].some(pair => bytes[2] === pair[0] && bytes[3] === pair[1])) || zipEnd(bytes) >= 0) return "zip";
     if (bytes[0] === 0x1f && bytes[1] === 0x8b) return "gz";
     if (bytes[0] === 0x42 && bytes[1] === 0x5a && bytes[2] === 0x68) return "bz2";
@@ -352,6 +376,7 @@
   async function extract(file, kind, codecs, budget, check) {
     check();
     if (kind === "zip") return {...await extractZip(file.bytes, codecs, budget, check), format: "zip"};
+    if (kind === "rar") return extractRar(file.bytes, codecs, budget, check);
     let bytes = file.bytes;
     if (kind !== "tar") {
       const fn = codecs[{gz: "ungzip", bz2: "bunzip", xz: "unxz"}[kind]];
@@ -380,14 +405,24 @@
     if (typeof pattern !== "string" || !pattern || /(^\/|[:\x00])/.test(pattern)) throw new Error("目录规则必须是安全的相对路径");
     const parts = pattern.replace(/\\/g, "/").split("/");
     if (parts.some(part => !part || part === "." || part === ".." || part.includes("**"))) throw new Error("目录规则包含无效路径组件");
-    const found = directories.filter(path => {
-      const pathParts = path.split("/");
+    const found = directories.filter(directory => {
+      const pathParts = directory.logical_path.split("/");
       if (!recursive && pathParts.length > 1) return false;
       if (parts.length === 1) return matches(pathParts.at(-1), parts[0], !exactDefault);
       return pathParts.length >= parts.length && parts.every((pattern, index) => matches(pathParts[pathParts.length - parts.length + index], pattern, false));
     });
-    if (found.length > 1) throw new Error("目录匹配不唯一: " + pattern + " → " + found.join(", "));
+    if (found.length > 1) throw new Error("目录匹配不唯一: " + pattern + " → " + found.map(directory => directory.path).join(", "));
     return found[0];
+  }
+  function relativeDirectoryDepth(file, directory) {
+    const ancestry = directory.provenance_parts, parts = file.provenance_parts;
+    if (parts.length < ancestry.length || ancestry.slice(0, -1).some((part, index) => parts[index] !== part)) return null;
+    const target = ancestry.at(-1), first = parts[ancestry.length - 1];
+    if (!below(first, target)) return null;
+    const relative = target ? first.slice(target.length + 1) : first;
+    // Count ordinary parent directories in every member component. The archive
+    // filename marks a packing boundary, and contributes no directory level.
+    return [relative, ...parts.slice(ancestry.length)].reduce((depth, part) => depth + part.split("/").length - 1, 0);
   }
   async function prepare(inputFiles, rules = {}, progress = null, cancelled = null) {
     const check = () => { if (cancelled && cancelled()) throw new Error("解析已取消"); };
@@ -400,7 +435,7 @@
     // Uploads are immutable inputs. Every collected path below is virtual.
     const inputPaths = new Set();
     for (const file of files) { if (inputPaths.has(file.path)) throw new Error("输入文件路径重复: " + file.path); inputPaths.add(file.path); }
-    const archives = [], sources = [], targets = {};
+    const archives = [], sources = [], targets = {}, targetDirectories = {};
     let directories = inferredDirectories(files), topArchive = "";
     emit("preparing", 0, "在浏览器内准备日志输入");
     if (files.length === 1 && rules.upload_kind !== "directory") {
@@ -414,27 +449,68 @@
         directories = inferredDirectories(files, expanded.directories);
       }
     }
+    files = files.map(file => ({...file, logical_path: file.path, relative_path: file.path, provenance_parts: [file.path],
+      origin_path: topArchive ? topArchive + "!/" + file.path : file.path,
+      archive_path: topArchive, member_path: topArchive ? file.path : "", container_path: "", level: 1}));
+    // Prepare the entire forest before choosing directories. Archive boundaries
+    // are separate provenance components, even if an input name contains "!/".
+    const allDirectories = new Map(directories.map(path => [JSON.stringify([path]), {path, logical_path: path, provenance_parts: [path]}])), queue = [];
+    function enqueue(file) {
+      file.kind = archiveKind(file);
+      if (file.kind) queue.push(file);
+    }
+    files.forEach(enqueue);
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const original = queue[cursor];
+      emit("extracting", archives.length, "解压: " + original.relative_path);
+      const expanded = await extract(original, original.kind, codecs, budget, check);
+      archives.push({path: original.relative_path, origin_path: original.origin_path,
+        format: expanded.format, level: original.level, provenance_parts: original.provenance_parts});
+      const prefix = original.relative_path + "!/";
+      const parentParts = original.logical_path.split("/").slice(0, -1);
+      const logicalMember = path => [...parentParts, path].join("/");
+      const children = expanded.files.map(file => ({...file, path: prefix + file.path,
+        logical_path: logicalMember(file.path),
+        relative_path: prefix + file.path, provenance_parts: [...original.provenance_parts, file.path],
+        origin_path: original.origin_path + "!/" + file.path, archive_path: original.relative_path,
+        member_path: file.path, container_path: prefix, level: original.level + 1}));
+      for (const directory of inferredDirectories(expanded.files, expanded.directories)) {
+        const parts = [...original.provenance_parts, directory];
+        allDirectories.set(JSON.stringify(parts), {path: prefix + directory, logical_path: logicalMember(directory), provenance_parts: parts});
+      }
+      files.push(...children);
+      children.forEach(enqueue);
+      await tick();
+    }
+    directories = [...allDirectories.values()].sort((a, b) => compare(a.path, b.path) || compare(JSON.stringify(a.provenance_parts), JSON.stringify(b.provenance_parts)));
     const requestedMode = rules.collection_mode || "product";
     if (!["auto", "product", "generic"].includes(requestedMode)) throw new Error("无效的日志收集模式");
     const recursive = rules.recursive !== false;
     let mode = requestedMode;
     if (mode !== "generic" && !(mode === "auto" && rules.directory_pattern)) {
-      for (const [domain, pattern] of [["user", rules.diag_directory_pattern || "diag"], ["kernel", rules.var_directory_pattern || "var"]]) {
-        const directory = findDirectory(directories, pattern, pattern === "diag" || pattern === "var");
-        if (directory !== undefined) targets[domain] = directory;
+      for (const [domain, pattern] of [["user", rules.diag_directory_pattern || "diag"], ["kernel", rules.var_directory_pattern || "varlog"]]) {
+        let directory = findDirectory(directories, pattern, ["diag", "varlog", "var"].includes(pattern), true);
+        if (directory === undefined && domain === "kernel" && pattern === "varlog") {
+          directory = findDirectory(directories, "var", true, true);
+        }
+        if (directory !== undefined) { targets[domain] = directory.path; targetDirectories[domain] = directory; }
       }
       if (!Object.keys(targets).length) {
-        if (mode === "product") throw new Error("找不到符合条件的 diag 或 var 文件夹");
+        if (mode === "product") throw new Error("找不到符合条件的 diag 或 varlog 文件夹");
         mode = "generic";
       } else mode = "product";
     } else mode = "generic";
     if (mode === "generic") {
-      const target = rules.directory_pattern ? findDirectory(directories, rules.directory_pattern, false, recursive) : "";
+      const target = rules.directory_pattern ? findDirectory(directories, rules.directory_pattern, false, recursive) : {path: "", logical_path: "", provenance_parts: [""]};
       if (target === undefined) throw new Error("找不到指定文件夹: " + rules.directory_pattern);
-      targets.user = target;
+      targets.user = target.path;
+      targetDirectories.user = target;
     }
-    if (targets.user !== undefined && targets.user === targets.kernel) throw new Error("diag 与 var 必须是不同文件夹");
-    const archivePatterns = patterns(rules.archive_patterns), filePatterns = patterns(rules.file_patterns), copyPatterns = patterns(rules.copy_patterns);
+    if (targetDirectories.user && targetDirectories.kernel && JSON.stringify(targetDirectories.user.provenance_parts) === JSON.stringify(targetDirectories.kernel.provenance_parts)) throw new Error("diag 与 varlog 必须是不同文件夹");
+    // Retain validation of old requests; archive filters no longer suppress
+    // preparation because target folders can be hidden in any archive layer.
+    patterns(rules.archive_patterns);
+    const filePatterns = patterns(rules.file_patterns), copyPatterns = patterns(rules.copy_patterns);
     const renameMap = rules.rename_map || {};
     if (!renameMap || typeof renameMap !== "object" || Array.isArray(renameMap)) throw new Error("重命名规则必须是对象");
     for (const value of Object.values(renameMap)) if (safePath(value) !== value || value.includes("/")) throw new Error("新文件名必须是安全的单一名称");
@@ -446,40 +522,22 @@
       const isKernel = mode === "product" && domain === "kernel";
       const walkRecursive = isKernel || recursive;
       const selectedPatterns = filePatterns.length ? filePatterns : mode === "product" ? ["diaglog_*.log", "diag.log"] : [];
-      const otherTargets = Object.entries(targets).filter(([otherDomain, other]) => otherDomain !== domain && below(other, target)).map(([, other]) => other);
-      const initial = files.filter(file => below(file.path, target) && !otherTargets.some(other => below(file.path, other)));
-      const queue = [];
-      function sourceFor(file, original) {
-        const member = original ? file.path : target ? file.path.slice(target.length + 1) : file.path;
-        const relative = original ? original.relative_path + "!/" + file.path : file.path;
-        return {path: relative, relative_path: relative, provenance_parts: original ? [...original.provenance_parts, file.path] : [relative],
-          origin_path: original ? original.origin_path + "!/" + file.path : topArchive ? topArchive + "!/" + relative : relative,
-          archive_path: original ? original.path : topArchive, member_path: original ? member : topArchive ? relative : "",
-          device_source: "target:" + target, log_domain: domain, original_name: basename(file.path), bytes: file.bytes};
-      }
-      function scan(entries, original, level, discover) {
-        const ordered = [...entries].sort((a, b) => compare(basename(a.path), basename(b.path)) || compare(a.path, b.path));
-        for (const file of ordered) {
-          check();
-          const relative = original ? file.path : target ? file.path.slice(target.length + 1) : file.path;
-          if (!walkRecursive && relative.includes("/")) continue;
-          const name = basename(file.path), kind = archiveKind(file), source = sourceFor(file, original);
-          if (discover && kind && (isKernel || selected(name, archivePatterns))) queue.push({file, source, kind, level});
-          if (kind) continue;
-          const isSelected = isKernel ? kernelName.test(name) : selected(name, selectedPatterns) && (mode !== "product" || filePatterns.length || name === "diag.log" || (name.startsWith("diaglog_") && name.endsWith(".log")));
-          if (isSelected) candidates.set(identity(source), source);
-          if (!isKernel && copyPatterns.length && selected(name, copyPatterns)) copies.set(identity(source), source);
-        }
-      }
-      scan(initial, null, 1, true);
-      for (let cursor = 0; cursor < queue.length; cursor++) {
-        const item = queue[cursor];
-        emit("extracting", archives.length, "解压: " + item.source.relative_path);
-        const expanded = await extract(item.file, item.kind, codecs, budget, check);
-        archives.push({path: item.source.path, origin_path: item.source.origin_path, format: expanded.format, level: item.level,
-          log_domain: domain, provenance_parts: item.source.provenance_parts});
-        scan(expanded.files, item.source, item.level + 1, isKernel);
-        await tick();
+      const directory = targetDirectories[domain];
+      const otherTargets = Object.entries(targetDirectories).filter(([otherDomain, other]) => otherDomain !== domain && relativeDirectoryDepth(other, directory) !== null).map(([, other]) => other);
+      const entries = files.filter(file => relativeDirectoryDepth(file, directory) !== null && !otherTargets.some(other => relativeDirectoryDepth(file, other) !== null));
+      for (const file of entries) {
+        check();
+        if (file.kind) continue;
+        if (!walkRecursive && relativeDirectoryDepth(file, directory) > 0) continue;
+        const name = basename(file.path);
+        const source = {path: file.relative_path, relative_path: file.relative_path,
+          provenance_parts: file.provenance_parts, origin_path: file.origin_path, archive_path: file.archive_path,
+          member_path: file.member_path, device_source: "target:" + target, log_domain: domain,
+          original_name: name, bytes: file.bytes};
+        const isSelected = isKernel ? kernelName.test(name) : selected(name, selectedPatterns) &&
+          (mode !== "product" || filePatterns.length || name === "diag.log" || (name.startsWith("diaglog_") && name.endsWith(".log")));
+        if (isSelected) candidates.set(identity(source), source);
+        if (!isKernel && copyPatterns.length && selected(name, copyPatterns)) copies.set(identity(source), source);
       }
     }
     const applied = new Set();

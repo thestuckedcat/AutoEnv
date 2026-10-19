@@ -8,7 +8,7 @@
 
 1. 用现代 Edge、Chrome 或 Firefox 打开 `product-log-offline.html`。
 2. 点击“选择压缩包”，选择 `product.tar.gz`；也可把压缩包拖入页面。已有解压目录时点击“选择文件夹”。
-3. 填写“diag 目录”和“var 目录”。常见情况使用 `diag`、`var`；本项目演示包使用 `diag/slot62`、`var`。
+3. 填写“diag 目录”和“varlog 目录”。常见情况使用 `diag`、`varlog`；本项目旧演示包使用 `diag/slot62`、`var`，新默认规则也能兼容旧 var。
 4. “diag 日志文件模式”留空，点击“解析日志”。
 5. 完成后选择“固件日志”“驱动日志”或“统一时间视图”，再选择分块或模块、输入搜索文字。
 6. 需要保留结果时点击“导出当前筛选”；需要保留模块表时点击“下载 JSON”。
@@ -28,7 +28,7 @@ product/
 │     ├─ diaglog_62_20000106043418.log
 │     ├─ history.tar.gz
 │     └─ diag.log
-└─ var/
+└─ varlog/
    └─ log/
       ├─ cpdt_dmesg_current.log.1
       ├─ cpdt_dmesg_current.log.2
@@ -36,31 +36,30 @@ product/
       └─ older.tar.xz
 ```
 
-“diag 目录”填写 `diag/slot62`，“var 目录”填写 `var`。这里的 `var` 是输入中的文件夹，不是本机操作系统根目录。
+“diag 目录”填写 `diag/slot62`，“varlog 目录”填写 `varlog`。它是所选输入中的文件夹，不是浏览器可直接访问的操作系统根目录。
 
-默认 `diag`、`var` 按目录名精确匹配；自定义部分路径按目标目录末尾的连续路径组件匹配，必须唯一。例如 `diag/slot62` 匹配 `product-A/diag/slot62`，不匹配 `product-A/diag/slot62/child`。如果有两个 `diag/slot62`，继续补充父目录，例如 `product-A/diag/slot62`。单词规则也支持目录名包含匹配及普通通配符，因此 `slot62` 可能同时命中 `slot62`、`slot620`；有歧义时使用更完整的部分路径。
+默认 `diag`、`varlog` 按目录名精确匹配；只有 varlog 不存在时才使用旧 var，varlog 有歧义时直接报错；自定义部分路径按目标目录末尾的连续路径组件匹配，必须唯一。例如 `diag/slot62` 匹配 `product-A/diag/slot62`，不匹配 `product-A/diag/slot62/child`。如果有两个 `diag/slot62`，继续补充父目录，例如 `product-A/diag/slot62`。单词规则也支持目录名包含匹配及普通通配符，因此 `slot62` 可能同时命中 `slot62`、`slot620`；有歧义时使用更完整的部分路径。
 
-只找到 diag 或 var 其中一类时，继续解析该类；两类都不存在或任意目标多命中时会报错。不能填写 `H:\...` 等绝对路径；本页只能读取通过按钮选中的文件内容。文件夹请使用“选择文件夹”按钮，目录选择依赖浏览器支持。
+只找到 diag 或 varlog 其中一类时，继续解析该类；两类都不存在或任意目标多命中时会报错。不能填写 `H:\...` 等绝对路径；本页只能读取通过按钮选中的文件内容。文件夹请使用“选择文件夹”按钮，目录选择依赖浏览器支持。
 
 ### 日志选择与解压
 
 | 项目 | 默认行为 | 可填写的示例 |
 | --- | --- | --- |
 | diag 日志文件模式 | 留空读取 `diag.log`、`diaglog_*.log` | `*.log, *.txt` |
-| diag 子压缩包模式 | 留空自动识别并展开支持的子包 | `target*.tar.gz, *.zip` |
-| 递归匹配 diag 文件 | 默认开启，匹配 diag 下各层文件和子包 | 取消勾选后限制 diag 搜索层级 |
+| 递归匹配 diag 文件 | 默认开启，匹配 diag 下各层普通文件；压缩包准备始终递归 | 取消勾选后限制 diag 搜索层级 |
 | 复制文件模式 | 默认不额外选择文件 | `debug*.txt` |
 | 重命名映射 | 默认不重命名 | `{"diag.log":"latest.log"}` |
 
-文件、子包、复制模式都只匹配文件名，不填写路径；多项以英文逗号分隔，区分大小写。支持 `*`、`?`、`[abc]`、`[!abc]`，例如 `target*`；没有通配符时按文件名包含匹配。
+文件、复制模式都只匹配文件名，不填写路径；多项以英文逗号分隔，区分大小写。支持 `*`、`?`、`[abc]`、`[!abc]`，例如 `target*`；没有通配符时按文件名包含匹配。
 
-顶层压缩包先展开，然后 diag 子包只展开一层；var 始终递归展开嵌套包，不受 diag 的文件模式、子包模式或递归复选框限制。var 只收集 `cpdt_dmesg_current.log` 和带数字后缀的轮转文件。
+首先递归展开所有支持的压缩包，再查找目录和选取日志，包括藏在多层包里的 diag/varlog。压缩包各层保留来源，部分目录路径匹配跳过包文件名，允许 `diag/slot62` 跨打包边界；同名目标仍必须唯一。旧 archive_patterns 请求字段不再限制准备阶段，网页已移除该展开过滤输入。内核只收集 `cpdt_dmesg_current.log` 和带数字后缀的轮转文件，不受 diag 文件模式或递归复选框限制。
 
 diag 历史文件按名字典序读取，最新 `diag.log` 最后；内核按 `.1`、`.2`、`.10` 的数字顺序读取，无后缀 current 最后。此顺序用于分段关联，最终时间视图仍按解析日期排序。
 
 复制与重命名只作用于内存副本，不修改磁盘原件；改名也不改变来源读取顺序。额外文件不在日志模式范围内时，先通过复制模式选择它；重命名规则未匹配文件会报错。新名字只能是单个文件名，不能包含目录。
 
-支持 ZIP（存储、Deflate、BZIP2）、ZIP64、TAR、TAR.GZ/TGZ、TAR.BZ2、TAR.XZ，以及单文件 GZ/BZ2/XZ，按内容识别。RAR、7Z、加密包及不支持的 ZIP 压缩方法会报错；损坏包、链接/特殊成员和名称冲突也会明确失败。
+支持 ZIP（存储、Deflate、BZIP2、LZMA/算法 14）、ZIP64、RAR4/RAR5（普通及固实压缩）、TAR、TAR.GZ/TGZ、TAR.BZ2、TAR.XZ，以及单文件 GZ/BZ2/XZ，按内容识别。全部解码器与 WASM 内嵌，不需要系统安装 WinRAR/7-Zip。7Z、加密或分卷包以及其他不支持的 ZIP 方法会报错；损坏包、链接/特殊成员和名称冲突也会明确失败。
 
 ## 3. 模块对应表怎么填
 
@@ -229,7 +228,7 @@ python -X utf8 tests/product_log_domain_sample.py logs/product-log-domain-demo/p
 | 改表后筛选没变化 | 点击“保存并应用”；只下载 JSON 不会应用修改 |
 | 刷新后数据不见了 | 这是内存版的预期行为，重新解析并导入保存的模块 JSON |
 | 提示文件尚未打包 | 打开生成的 `dist/product-log-offline.html`，不要直接打开源码模板 `standalone/index.html` |
-| 压缩包格式或校验报错 | 确认包完整且属于支持格式；加密 ZIP、RAR、7Z 不支持 |
+| 压缩包格式或校验报错 | 确认包完整且属于支持格式；加密/分卷包、7Z 或其他未支持的压缩方法仍不支持；算法 14 需使用本次重新生成的 HTML |
 
 页面需要 Web Worker、Blob、ReadableStream、TextDecoder 和 WebAssembly。若浏览器或企业策略禁止本地页面脚本/Blob Worker，需要该环境允许此类页面才能使用；本工具不会自动启动 HTTP 服务。处理规模受浏览器可用内存限制。
 
@@ -256,17 +255,20 @@ python -X utf8 tools/build_product_log_page.py --output "D:\工具\日志解析.
 业务规则依据[服务版说明](../README.md)，浏览器 JavaScript 独立实现以真实合成样本、查询和完整导出对照 Python。后续修改规则时应同时维护这些测试：
 
 ```powershell
-python -X utf8 -m pytest -q tests/test_product_log_standalone_build.py tests/test_product_log_standalone_archives.py tests/test_product_log_standalone_parser.py
+python -X utf8 -m pytest -q tests/test_product_log_standalone_build.py tests/test_product_log_standalone_archives.py tests/test_product_log_standalone_parser.py tests/test_product_log_standalone_preparation.py tests/test_product_log_offline_rar_integration.py
 ```
 
-开发测试需要 pytest、现有 Python 测试依赖以及 Node；它们不属于最终 HTML 的使用依赖。实际内嵌 Worker 在禁用网络 API 下完成真实多层包解压、解析、映射、查询、来源和导出。当前功能全量回归为 754 项通过、2 项因 Windows 符号链接权限跳过。内置浏览器安全策略拒绝 `file://`，因此尚未完成本地 HTML 双击打开与真实界面验收；Node 执行和静态检查不能替代该项验收。
+开发测试需要 pytest、现有 Python 测试依赖以及 Node；它们不属于最终 HTML 的使用依赖。实际内嵌 Worker 在禁用网络 API 下完成真实多层包解压、解析、映射、查询、来源和导出，并与 Python 逐字节对照。最新全量验证见 [测试说明](../../tests/README.md)。内置浏览器安全策略拒绝 `file://`，因此尚未完成本地 HTML 双击打开与真实界面验收；Node 执行和静态检查不能替代该项验收。
 
 | 文件 | 用途 |
 | --- | --- |
 | `index.html/styles.css/app.js` | 页面模板、样式与交互 |
 | `archive.js/parser.js/worker.js` | 虚拟文件收集、解析/查询与消息桥 |
+| `libarchive-codec.js/unrar-codec.js` | 内嵌 WASM 适配；RAR5 成员元数据检查及 RAR4/5 字节解码 |
 | `vendor/manifest.json` | 解压组件版本、来源、包完整性与逐文件 SHA256，构建前验证 |
 | `THIRD_PARTY_NOTICES.txt` | 第三方许可与署名，全文嵌入生成页面 |
 | `../../tools/build_product_log_page.py` | 标准库打包入口 |
 
-组件来源：[fflate 0.8.3](https://github.com/101arrowz/fflate)、[seek-bzip 2.0.0](https://github.com/cscott/seek-bzip)、[xz-decompress 0.2.3](https://github.com/httptoolkit/xz-decompress)。资源已随源码保存，构建和运行均不从这些地址加载文件。
+组件来源：[fflate 0.8.3](https://github.com/101arrowz/fflate)、[seek-bzip 2.0.0](https://github.com/cscott/seek-bzip)、[xz-decompress 0.2.3](https://github.com/httptoolkit/xz-decompress)、[LZMA-JS 2.3.2](https://github.com/LZMA-JS/LZMA-JS)、[node-unrar-js 2.0.2](https://github.com/YuJianrong/node-unrar.js)、[libarchive-wasm 1.2.0](https://github.com/ofk/libarchive-wasm)。ZIP14 直接使用 LZMA-JS 保留原始字节；RAR4/5 使用 UnRAR WASM，RAR5 额外执行 libarchive 元数据检查。资源已随源码保存，构建和运行均不从这些地址加载文件。
+
+当前展开与格式扩展的验证记录见 [2026-10-13 功能记录](../../newFeature/2026-10-13-archive-and-serial-compatibility.md)。

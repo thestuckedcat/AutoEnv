@@ -1,0 +1,50 @@
+{
+  "generator": "RAR 6.00 x64",
+  "contents": "Synthetic public logs only; no live-device input",
+  "archives": {
+    "blake2-rar5.rar": {
+      "bytes": 283,
+      "sha256": "9beb9dd6011db912d92e80dea859a1ed3e8b206b9a5f3442dad2a6af3a58af23"
+    },
+    "compressed-rar4.rar": {
+      "bytes": 271,
+      "sha256": "ac4dc287d68f576511e3665d8aeba667092fa20cd8d43d957a143319bd5b1526"
+    },
+    "compressed-rar5.rar": {
+      "bytes": 252,
+      "sha256": "23cff6a1418a59ee2f6a2dae268d734976bf40a9105c8a44716e3683f01b62ff"
+    },
+    "encrypted-file-rar4.rar": {
+      "bytes": 288,
+      "sha256": "e7a86eef8766592ec830a85b200feb4a6b4214db9a773f81af065b241bc57cdf"
+    },
+    "encrypted-file-rar5.rar": {
+      "bytes": 316,
+      "sha256": "4dc6d947200b64646786efaafd7024b69f377cdcdcfecb966ce12062d0c4b50a"
+    },
+    "encrypted-header-rar4.rar": {
+      "bytes": 324,
+      "sha256": "956c2294f801c0737480d3bcfac264a791191bd58a0519a2dda160440483421d"
+    },
+    "encrypted-header-rar5.rar": {
+      "bytes": 414,
+      "sha256": "96db2f182586cadc27bbaf9aec9d1c73ccf10d754bdf81b050f02fc5f1152c07"
+    },
+    "hardlink-rar5.rar": {
+      "bytes": 314,
+      "sha256": "b490d3a2d45348153c4dbe2f167a3af01075cc9210094fd99b62af8ce6e9bc55"
+    },
+    "solid-rar4.rar": {
+      "bytes": 381,
+      "sha256": "ed82610cad95c847c8caa137a8aca4af1737a912643e5269e98280f1c8466cc3"
+    },
+    "solid-rar5.rar": {
+      "bytes": 345,
+      "sha256": "3fac9220f5840206b7c829ec28fe7603a80cd4337e965ee3d67db7d0d8bf9615"
+    },
+    "unicode-rar4.rar": {
+      "bytes": 111,
+      "sha256": "b8ea9ae55bee58f5a9eaeba8ac3cf7925e32349c30538aa8ccfbe00fabd6b057"
+    }
+  }
+}

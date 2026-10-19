@@ -15,7 +15,7 @@
 
 - `1260网口`：SSH，填写 1260 的实际地址、端口、账号、密码和 `upload_type`。
 - `BMC网口`：SSH，填写 BMC 的实际地址、端口、账号、密码和 `upload_type`。
-- `BMC串口`：Telnet TCP 串口网关，填写实际地址、端口及需要的登录信息，设置 `shell_mode: "posix"`。
+- `BMC串口`：Telnet TCP 串口网关，填写实际地址、端口及需要的登录信息。一般推荐 `shell_mode: "auto"` 自动识别命令能力；连接模板保留 `"posix"`，用于明确要求普通 POSIX shell 的当前固件流程。
 
 模板的 `127.0.0.1`、22/23 端口、空密码和 `enabled: false` 都是占位。填写真实环境后启用连接；模板本身不能代表一个已可用的设备。这里的串口通过 TCP 网关访问，不能把本机 COM 名称填作 host。完整字段见 [环境登记说明](ENVIRONMENT_REGISTRATION_GUIDE.md)。本机连接文件被 Git 忽略，版本库只保存禁用模板。
 
@@ -89,9 +89,23 @@ python -X utf8 -m autoenv.cli run UDK_V100_Firmware --non-interactive --topology
 
 唯一业务入参 `command_timeout` 默认 `600.0` 秒，必须为有限正数。可追加 `--arg command_timeout=1200` 延长等待。升级命令不会因超时或断连自动重试，避免重复升级。
 
+## 串口怎样自检
+
+`get_remote_info("telnet", ...)` 创建对象时自动连接和自检，结果位于 `console.self_check_result`。若登记了账号密码，会先观察实际提示：需要登录时按 `login_prompt`、`password_prompt` 发送凭据；已经显示 shell 提示符时直接使用当前会话，不把账号密码再发送成 shell 命令。输入用户名后若直接进入 shell，也接受该会话；仅出现实际密码提示才发送密码，已配置但设备未要求的密码不会作为命令发出。`Last login: ...` 横幅不算登录输入提示。默认登录提示为 `login:` 和 `Password:`，设备不同则按实际文本配置。
+
+| 模式或识别结果 | 自检方法 | `check_scope` | `exit_status_available` |
+| --- | --- | --- | --- |
+| `posix`，或 `auto` 识别为 POSIX | 执行输出随机唯一标记的 `printf`，要求收到标记且退出码为 0 | `command` | `true` |
+| `prompt_only`，配置完整业务探针 | 发送明确配置的 `probe_command`，要求响应包含 `probe_keyword`；命令回显不算响应 | `keyword` | `false` |
+| `prompt_only`，未配置业务探针 | 确认 TCP 已连接并识别到命令提示符，不发送猜测的业务命令 | `prompt` | `false` |
+
+`auto` 会先用一次 POSIX 返回码探测识别能力；探测没有返回码但返回有效提示符时，按 `prompt_only` 处理。明确选择 `prompt_only` 时，不进行这个 POSIX 探测。`probe_command` 和 `probe_keyword` 可同时留空；只填写其中一个会自检失败。设备确有安全的状态命令时，可例如设置 `"shell_mode": "prompt_only", "probe_command": "status", "probe_keyword": "READY"`，前提是该设备实际支持这个命令及响应，不能照抄猜测。
+
+提示符自检通过的 `available` 表示会话已就绪，不能证明后续业务命令成功或取得退出码；普通 `execute()` 仍返回 `RESULT_UNKNOWN`、`exit_code=None`。当前固件脚本必须取得 POSIX 退出码，因此 `auto` 最终识别为 `prompt_only` 时仍会失败。连接失败、登录失败、没有可识别提示符或业务探针不匹配也继续失败，不自动更换设备。
+
 ## 串口怎样判断执行完毕
 
-这里调用现有 `console.execute()`，按 POSIX shell 的命令结果判断完成。客户端向串口发送业务命令及一个随机、每次不同的返回码标记命令，后者读取 `$?`；正常读取到有效标记及其后的返回提示符才结束。业务命令与标记之间的中间提示符不算完成。结果包含 `status`、`exit_code` 和去掉协议标记的输出。
+这里调用现有 `console.execute()`，按 POSIX shell 的命令结果判断完成。客户端先发送业务命令，再发送 `printf '\n__AUTOENV_RC_<本次随机值>__:%d\n' $?` 读取上一条命令的返回值；正常读取到本次有效标记及其后的返回提示符才结束。业务命令与标记之间的中间提示符不算完成，历史标记也不算本次结果。结果包含 `status`、`exit_code` 和去掉协议标记的输出。
 
 固件脚本的成功条件同时要求：
 
@@ -108,6 +122,8 @@ python -X utf8 -m autoenv.cli run UDK_V100_Firmware --non-interactive --topology
 
 CLI 完成时 stdout 给出 `run.log` 绝对路径；退出码 `0` 为成功、`1` 为运行失败、`2` 为准备失败。同目录 `output.log` 是网页展示的简洁动作结果。每轮包文件、生成的 shell 和固件解压目录均位于自己的 runtime，不会借用上一轮下载结果。
 
+`SingleUnions_S3/BMC串口.self_check unavailable` 只是自检未通过的总括状态，不能据此判断一定是密码错误或串口断线。查看同轮 `output.log` 的 `error`，或 `result.json` 中对应自检操作的 `error_type`、`error_message`、`transport_ready`、`check_scope`、`exit_status_available`；完整接收内容和执行阶段见 `run.log`。缺少这些证据时只能说明自检失败，不能确定实际设备的根因。
+
 ## 本地模拟与实际验收边界
 
 本地验证使用可配合这三个角色的 loopback SSH/SCP/SFTP 与 Telnet 模拟设备，并启动本地 WebHDFS 服务，通过真实 CLI 和生产客户端执行。只替换环境配置和 HDFS endpoint；HDFS 选择/下载、包上传、连接、自检、命令发送、结果解析、固件解压和重启后的 10 秒等待不替换成假成功。
@@ -117,10 +133,10 @@ CLI 完成时 stdout 给出 `run.log` 绝对路径；退出码 `0` 为成功、`
 可在项目根目录运行相应本地 UT：
 
 ```powershell
-python -X utf8 -m pytest tests/test_udk_v100_workflows.py tests/test_telnet_client.py tests/test_generated_script_contract.py -q
+python -X utf8 -m pytest tests/test_udk_v100_workflows.py tests/test_telnet_client.py tests/test_remote_environment.py tests/test_serial_compatibility.py tests/test_generated_script_contract.py -q
 ```
 
-这些测试启动临时 loopback 服务，动态填写隔离组网，不会使用本机 `SingleUnions_S3` 的真实地址；每个测试的输出和临时设备目录相互隔离。
+这些测试启动临时 loopback 服务，动态填写隔离组网，不会使用本机 `SingleUnions_S3` 的真实地址；每个测试的输出和临时设备目录相互隔离。串口兼容测试覆盖已有登录会话、登录横幅、三种命令模式、可选业务探针、错误密码、无有效提示符，以及能力探测中的中间提示符。它们不能证明所有真实 BMC、终端提示和网关行为均已兼容。
 
 本轮没有访问真实 HDFS、1260 或 BMC。真实包名/版本路径、设备账号及端口、驱动拉起 shell、`unions.sh` 的刷写逻辑、串口提示符时序和硬件重启耗时仍需针对实际环境确认。
 
