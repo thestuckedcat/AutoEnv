@@ -443,6 +443,11 @@ class TaskManager:
 
 def _rules(data: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
+    if "analysis_config" in data:
+        from .configuration import normalize_config
+        if not isinstance(data["analysis_config"], dict):
+            raise ValueError("analysis_config must be a configuration object")
+        result["analysis_config"] = normalize_config(data["analysis_config"])
     for name in ("archive_patterns", "file_patterns", "copy_patterns"):
         value = data.get(name)
         if value is None or value == "":
@@ -528,12 +533,12 @@ def handle_get(handler: Any, parsed: Any, root_dir: Path) -> bool:
         handler.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         return True
     if parsed.path.startswith("/product-logs"):
-        resources = {"/product-logs/": "index.html", "/product-logs": "index.html", "/product-logs/index.html": "index.html", "/product-logs/app.js": "app.js", "/product-logs/styles.css": "styles.css"}
+        resources = {"/product-logs/": "index.html", "/product-logs": "index.html", "/product-logs/index.html": "index.html", "/product-logs/app.js": "app.js", "/product-logs/styles.css": "styles.css", "/product-logs/configuration.js": "configuration.js"}
         filename = resources.get(parsed.path)
         if filename is None:
             handler.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return True
-        payload = (STATIC_DIR / filename).read_bytes()
+        payload = ((STATIC_DIR.parent / "standalone" / filename) if filename == "configuration.js" else (STATIC_DIR / filename)).read_bytes()
         handler.send_response(HTTPStatus.OK)
         handler.send_header("Content-Type", (mimetypes.guess_type(filename)[0] or "application/octet-stream") + "; charset=utf-8")
         handler.send_header("Content-Length", str(len(payload)))
@@ -547,7 +552,10 @@ def handle_get(handler: Any, parsed: Any, root_dir: Path) -> bool:
         current = manager(root_dir)
         query = _query(parsed)
         route = parsed.path[len(prefix):]
-        if route == "batches":
+        if route == "configuration":
+            from .configuration import default_config
+            handler.json({"analysis_config": default_config()})
+        elif route == "batches":
             storage = current.storage()
             handler.json({"batches": current.batches(), "active": current.active, "storage": storage})
         elif route == "storage":

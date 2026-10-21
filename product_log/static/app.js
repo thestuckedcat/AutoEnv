@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 const API = '/api/product-logs/';
 const ROW_HEIGHT = 34;
 const PAGE_SIZE = 200;
-const TYPE_NAMES = {0: 'bios', 1: 'IMP', 2: 'IMU', 3: 'HSM'};
+let TYPE_NAMES = {};
 const state = {files: [], uploadKind: 'archive', active: null, batch: '', kind: 'firmware', groups: [], modules: [], moduleDirty: false, moduleSaving: false, moduleGeneration: 0, rows: new Map(), pages: new Set(), total: 0, generation: 0, queryController: null, uploadController: null, uploadId: null, cursor: 0, polling: false, timer: null, baseQuery: {}, contextMode: false, contextOffset: 0, matchTotal: 0, navigation: 0, storageGeneration: 0};
 
 async function request(path, options = {}) {
@@ -15,6 +15,121 @@ async function request(path, options = {}) {
 }
 function post(path, value, signal) {return request(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value), signal});}
 function error(id, value) {$(id).textContent = value ? String(value.message || value) : '';}
+
+// Configuration editor is the single source of truth for the next import.
+let initialAnalysisConfig = null;
+const CONFIG_STORAGE_KEY = 'autoenv.product-log.analysis-config.v1.static';
+function readAnalysisConfig() {
+  if (!globalThis.ProductLogConfig) throw new Error('解析配置组件尚未加载。');
+  const value = JSON.parse($('analysisConfig').value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('解析配置必须是 JSON 对象，空规则请保留 rules: []。');
+  return globalThis.ProductLogConfig.normalize(value);
+}
+function writeAnalysisConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('解析配置必须是 JSON 对象。');
+  const config = globalThis.ProductLogConfig.normalize(value);
+  $('analysisConfig').value = JSON.stringify(config, null, 2);
+  if (!state.batch && !state.active) TYPE_NAMES = {...config.firmware_types};
+  renderSourceOptions(config);
+  error('configurationError', '');
+  return config;
+}
+function renderSourceOptions(config) {
+  const root = $('sourceOptions'); root.replaceChildren();
+  const labels = {user_driver: '用户态驱动', kernel_driver: '内核态驱动', firmware: '固件'};
+  for (const rule of config.rules) {
+    const group = document.createElement('fieldset'); group.className = 'source-rule'; group.dataset.ruleId = rule.id;
+    const legend = document.createElement('legend');
+    legend.textContent = `${labels[rule.category] || rule.category} · ${rule.component === '*' ? '全部已识别组件' : rule.component || rule.id}`;
+    group.append(legend);
+    const sources = config.sources.filter(source => {
+      const parser = config.parsers.find(item => item.id === source.parser_id);
+      return rule.category === 'kernel_driver' ? parser?.engine === 'kernel' : parser?.engine === 'diag';
+    });
+    for (const source of sources) {
+      const label = document.createElement('label'); label.className = 'source-option';
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = source.id;
+      input.checked = rule.source_ids.includes(source.id);
+      input.setAttribute('aria-label', `${rule.id} 的来源 ${source.name || source.id}`);
+      const detail = document.createElement('span'), name = document.createElement('strong'), parser = document.createElement('small');
+      name.textContent = source.name || source.id;
+      parser.textContent = `${source.directory_patterns.join(' / ')} · ${source.parser_id}`;
+      detail.append(name, parser); label.append(input, detail); group.append(label);
+      input.addEventListener('change', () => {
+        try {
+          const latest = readAnalysisConfig(), target = latest.rules.find(item => item.id === rule.id);
+          target.source_ids = [...group.querySelectorAll('input:checked')].map(item => item.value);
+          const validated = globalThis.ProductLogConfig.normalize(latest);
+          $('analysisConfig').value = JSON.stringify(validated, null, 2);
+          error('configurationError', '');
+          $('configurationMessage').textContent = '来源选项已更新，下一次解析使用当前配置。';
+        } catch (exception) {input.checked = !input.checked; error('configurationError', exception);}
+      });
+    }
+    if (!sources.length) {const note = document.createElement('p'); note.className = 'hint'; note.textContent = '未配置兼容来源。'; group.append(note);}
+    root.append(group);
+  }
+  if (!config.rules.length) {const note = document.createElement('p'); note.className = 'hint'; note.textContent = '当前没有组件规则，不解析任何日志。可导入配置或展开编辑器添加规则。'; root.append(note);}
+}
+function saveAnalysisConfig() {
+  const config = writeAnalysisConfig(readAnalysisConfig());
+  let persisted = true;
+  try {localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));} catch {persisted = false;}
+  $('configurationMessage').textContent = persisted ? '设置已保存，下一次解析使用此配置。' : '当前页面已应用设置；可下载 JSON 保存配置。';
+  return config;
+}
+function syncConfiguredModules(modules) {
+  try {
+    const config = readAnalysisConfig();
+    config.modules = modules.map(({module, user_module_name, kernel_keyword}) => ({module, user_module_name, kernel_keyword}));
+    writeAnalysisConfig(config);
+    saveAnalysisConfig();
+  } catch (exception) {error('configurationError', exception);}
+}
+$('openSettings').addEventListener('click', () => {
+  if (!$('settingsDialog').open) $('settingsDialog').showModal();
+});
+$('closeSettings').addEventListener('click', () => $('settingsDialog').close());
+$('settingsDialog').addEventListener('close', () => $('openSettings').focus());
+$('saveConfiguration').addEventListener('click', () => {
+  try {saveAnalysisConfig(); $('settingsDialog').close();}
+  catch (exception) {error('configurationError', exception); $('configurationDetails').open = true; $('analysisConfig').focus();}
+});
+$('analysisConfig').addEventListener('change', () => {
+  try {renderSourceOptions(readAnalysisConfig()); error('configurationError', ''); $('configurationMessage').textContent = '配置已修改，下一次解析使用当前配置。';}
+  catch (exception) {error('configurationError', exception);}
+});
+$('resetConfiguration').addEventListener('click', () => {
+  if (!initialAnalysisConfig) return;
+  writeAnalysisConfig(initialAnalysisConfig);
+  $('configurationMessage').textContent = '已载入初始配置，下一次解析使用；保存可供下次打开页面复用。';
+});
+$('importConfiguration').addEventListener('click', () => $('configurationInput').click());
+$('configurationInput').addEventListener('change', async event => {
+  const file = event.target.files[0]; event.target.value = '';
+  if (!file) return;
+  try {writeAnalysisConfig(JSON.parse(await file.text())); $('configurationMessage').textContent = '已载入配置，下一次解析使用此配置。保存或下载可供下次使用。';}
+  catch (exception) {error('configurationError', exception);}
+});
+$('downloadConfiguration').addEventListener('click', () => {
+  try {
+    const config = readAnalysisConfig(), url = URL.createObjectURL(new Blob([JSON.stringify(config, null, 2) + '\n'], {type: 'application/json;charset=utf-8'}));
+    const link = document.createElement('a'); link.href = url; link.download = 'product-log-configuration.json';
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    error('configurationError', ''); $('configurationMessage').textContent = '完整配置已下载，包含来源选项与解析器绑定。';
+  } catch (exception) {error('configurationError', exception);}
+});
+async function initializeConfiguration() {
+  initialAnalysisConfig = globalThis.ProductLogConfig.normalize((await request('configuration')).analysis_config);
+  let saved = null;
+  try {saved = localStorage.getItem(CONFIG_STORAGE_KEY);} catch { /* Downloads remain available without browser storage. */ }
+  if (saved !== null) {
+    $('analysisConfig').value = saved;
+    writeAnalysisConfig(JSON.parse(saved));
+  } else writeAnalysisConfig(initialAnalysisConfig);
+}
+// End configuration editor.
+
 function status(value, text) { $('taskStatus').textContent = text || value; $('taskStatus').className = `badge ${value}`; }
 function bytesText(value) {
   const bytes = Math.max(0, Number(value) || 0);
@@ -80,6 +195,8 @@ async function uploadFiles(signal) {
 $('importForm').addEventListener('submit', async event => {
   event.preventDefault(); error('taskError', '');
   if (state.active || state.uploadController) return;
+  let analysisConfig;
+  try {await configurationReady; analysisConfig = readAnalysisConfig();} catch (exception) {error('taskError', '请在设置中修正解析配置：' + exception.message); return;}
   let renames;
   try {renames = $('renameMap').value.trim() ? JSON.parse($('renameMap').value) : null;} catch {error('taskError', '重命名映射需要有效的 JSON 对象。'); return;}
   if (!state.files.length && !$('inputPath').value.trim()) {error('taskError', '请选择压缩包、上传文件夹，或输入本机绝对路径。'); return;}
@@ -92,7 +209,7 @@ $('importForm').addEventListener('submit', async event => {
     // Once submitted, the task must be cancelled by its server ID. Do not abort
     // the start response and lose the identity of a running server-side task.
     state.uploadController = null; $('stopTask').disabled = true;
-    const result = await post('start', {input_path: $('inputPath').value.trim(), upload_id: uploadId, collection_mode: 'product', diag_directory_pattern: $('directoryPattern').value.trim() || 'diag', var_directory_pattern: $('varDirectoryPattern').value.trim() || 'varlog', archive_patterns: $('archivePatterns').value, file_patterns: $('filePatterns').value, copy_patterns: $('copyPatterns').value, rename_map: renames, recursive: $('recursive').checked, workers: Number($('workers').value)});
+    const result = await post('start', {input_path: $('inputPath').value.trim(), upload_id: uploadId, collection_mode: 'product', analysis_config: analysisConfig, copy_patterns: $('copyPatterns').value, rename_map: renames, workers: Number($('workers').value)});
     state.active = result.batch_id; state.uploadId = null;
     $('workingPath').textContent = result.batch_dir + (result.batch_dir.includes('\\') ? '\\product_log' : '/product_log');
     $('stopTask').disabled = false; poll();
@@ -110,6 +227,7 @@ $('stopTask').addEventListener('click', async () => {
 });
 function updateManifest(manifest) {
   if (!manifest) return;
+  if (manifest.analysis_config) TYPE_NAMES = {...manifest.analysis_config.firmware_types};
   $('inputRoot').textContent = manifest.input_root || '—'; $('workingPath').textContent = manifest.product_log_path || manifest.batch_dir || '—';
   const counts = manifest.counts || {};
   for (const [id, key] of [['fileCount','files'],['driverCount','driver_records'],['firmwareCount','firmware_records'],['diagnosticCount','diagnostics']]) $(id).textContent = counts[key] ?? '—';
@@ -247,7 +365,7 @@ $('saveModules').addEventListener('click', async () => {
   try {
     const result = await post('modules', {batch_id: batch, modules});
     if (batch !== state.batch || generation !== state.moduleGeneration) return;
-    renderModules(result.modules || []); $('moduleMessage').textContent = '对应表已保存并应用，无需重新解压。';
+    renderModules(result.modules || []); syncConfiguredModules(result.modules || []); $('moduleMessage').textContent = '对应表已保存并应用，无需重新解压。';
     await loadGroups(); if (batch === state.batch) await query();
   } catch (exception) {if (batch === state.batch && generation === state.moduleGeneration) error('moduleError', exception);}
   finally {if (batch === state.batch && generation === state.moduleGeneration) {state.moduleSaving = false; moduleControls();}}
@@ -410,3 +528,6 @@ async function showSource(record) {
 $('closeSource').addEventListener('click', () => $('sourceDialog').close());
 applyViewControls();
 refreshBatches().then(async result => {const ready = result.batches.find(batch => batch.status === 'ready'); if (ready && !state.active) await selectBatch(ready.batch_id);}).catch(exception => error('taskError', exception));
+
+$('startTask').disabled = true; $('openSettings').disabled = true;
+const configurationReady = initializeConfiguration().catch(exception => {error('configurationError', exception); error('taskError', '请在设置中检查解析配置：' + exception.message);}).finally(() => {$('startTask').disabled = Boolean(state.active || state.uploadController); $('openSettings').disabled = false;});

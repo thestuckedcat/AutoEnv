@@ -8,15 +8,19 @@ import sqlite3
 from pathlib import Path
 
 from .parser import normalize_module_name
+from .configuration import normalize_config, default_config
 
 
-DEFAULT_MODULE_MAPPINGS = (
-    {"module": "udk", "user_module_name": "udk", "kernel_keyword": "udk"},
-    {"module": "UBE", "user_module_name": "UBE", "kernel_keyword": "mami"},
-)
+def batch_configuration(batch_dir: str | Path) -> dict:
+    path = Path(batch_dir).resolve() / "manifest.json"
+    if path.exists():
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        if "analysis_config" in manifest:
+            return normalize_config(manifest["analysis_config"])
+    return default_config()
 
 
-def _validate_rows(rows: list[dict]) -> list[dict]:
+def _validate_rows(rows: list[dict], config: dict | None = None) -> list[dict]:
     if not isinstance(rows, list):
         raise ValueError("Module mappings must be a list")
     result, names = [], set()
@@ -31,34 +35,17 @@ def _validate_rows(rows: list[dict]) -> list[dict]:
             values[field] = value.strip()
         if not values["module"] or values["module"] in names:
             raise ValueError("Module names must be nonempty and unique")
-        values["user_module_name"] = normalize_module_name(values["user_module_name"])
+        values["user_module_name"] = normalize_module_name(values["user_module_name"], config)
         names.add(values["module"])
         result.append(values)
     return result
 
 
 def load_module_mappings(batch_dir: str | Path, database: sqlite3.Connection) -> list[dict]:
-    """Load the table and include newly discovered, otherwise unmapped names."""
+    """Use only explicit mappings; discovery must never re-enable deleted rows."""
     path = Path(batch_dir).resolve() / "module-map.json"
-    rows = _validate_rows(json.loads(path.read_text(encoding="utf-8"))) if path.exists() else [
-        dict(row) for row in DEFAULT_MODULE_MAPPINGS]
-    mapped = {row["user_module_name"] for row in rows}
-    names = {row["module"] for row in rows}
-    for row in database.execute(
-        "SELECT DISTINCT module_name FROM records WHERE kind='driver' AND driver_domain='user' ORDER BY module_name"
-    ):
-        name = row[0]
-        if not name or name in mapped:
-            continue
-        label = name
-        suffix = 2
-        while label in names:
-            label = f"{name} ({suffix})"
-            suffix += 1
-        rows.append({"module": label, "user_module_name": name, "kernel_keyword": ""})
-        mapped.add(name)
-        names.add(label)
-    return rows
+    config = batch_configuration(batch_dir)
+    return _validate_rows(json.loads(path.read_text(encoding="utf-8")) if path.exists() else config["modules"], config)
 
 
 def _counts(database: sqlite3.Connection, rows: list[dict]) -> list[dict]:
@@ -92,7 +79,7 @@ def list_module_mappings(batch_dir: str | Path) -> list[dict]:
 def save_module_mappings(batch_dir: str | Path, rows: list[dict]) -> list[dict]:
     from .index import _open_ready
 
-    validated = _validate_rows(rows)
+    validated = _validate_rows(rows, batch_configuration(batch_dir))
     database = _open_ready(batch_dir)
     try:
         path = Path(batch_dir).resolve() / "module-map.json"

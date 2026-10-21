@@ -323,9 +323,9 @@ def test_product_domains_nested_archives_mapping_and_unified_time_over_http(prod
     by_name = {row["module"]: row for row in modules}
     assert by_name["udk"]["user_count"] == 500 and by_name["udk"]["kernel_count"] == 104
     assert by_name["UBE"]["kernel_count"] == 100
-    assert not by_name["MEME"]["kernel_configured"]
+    assert "MEME" not in by_name  # Unconfigured modules are no longer auto-inserted.
     rows = [{name: row[name] for name in ("module", "user_module_name", "kernel_keyword")} for row in modules]
-    next(row for row in rows if row["module"] == "MEME")["kernel_keyword"] = "meme"
+    rows.append({"module": "MEME", "user_module_name": "MEME", "kernel_keyword": "meme"})
     rows.append({"module": "missing user", "user_module_name": "NO_USER", "kernel_keyword": "MAMI"})
     event_count = len(manager.task(batch).events)
     changed = request("/api/product-logs/modules", {"batch_id": batch, "modules": rows})["modules"]

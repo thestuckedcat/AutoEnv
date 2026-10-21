@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 
 
 SCHEMA = """
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 CREATE TABLE IF NOT EXISTS segments (
  segment_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, line_number INTEGER NOT NULL,
- time TEXT NOT NULL, time_value INTEGER NOT NULL,
+ time TEXT NOT NULL, time_value INTEGER,
  slot_id TEXT NOT NULL, cpu_id TEXT NOT NULL, module_name TEXT NOT NULL,
  device_id TEXT NOT NULL, log_type TEXT NOT NULL, seg INTEGER NOT NULL,
  host TEXT NOT NULL, service TEXT NOT NULL, device_source TEXT NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS segments (
 );
 CREATE TABLE IF NOT EXISTS dumps (
  dump_id TEXT PRIMARY KEY, stream_key TEXT NOT NULL, anchor_time TEXT NOT NULL,
- anchor_value INTEGER NOT NULL, first_value INTEGER NOT NULL,
+ anchor_value INTEGER, first_value INTEGER,
  source_rank INTEGER NOT NULL, line_number INTEGER NOT NULL,
  missing_start INTEGER NOT NULL DEFAULT 0
 );

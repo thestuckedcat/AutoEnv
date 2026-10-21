@@ -4,11 +4,11 @@
   const MAX_FILES = 10000;
   const MAX_BYTES = 5 * 1024 * 1024 * 1024;
   const textDecoder = new TextDecoder("utf-8");
-  const kernelName = /^cpdt_dmesg_current\.log(?:\.(\d+))?$/;
   const decoder = (encoding, bytes, fatal = true) => new TextDecoder(encoding, {fatal}).decode(bytes);
   const basename = path => path.split("/").at(-1);
   const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-  const below = (path, folder) => folder === "" || path.startsWith(folder + "/");
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  const below = (path, folder) => folder === "" || path === folder || path.startsWith(folder + "/");
   const tick = () => new Promise(resolve => setTimeout(resolve, 0));
   function safePath(name, allowEmpty = false) {
     if (typeof name !== "string" || /\x00/.test(name)) throw new Error("无效文件路径");
@@ -65,6 +65,7 @@
     });
   }
   function selected(name, values) { return !values.length || values.some(pattern => matches(name, pattern)); }
+  const legacyFilePatterns = values => patterns(values).map(pattern => /[*?[]/.test(pattern) ? pattern : "*" + pattern + "*");
   function decodeText(bytes) {
     if (bytes[0] === 0xff && bytes[1] === 0xfe) return decoder("utf-16le", bytes.subarray(2), false);
     if (bytes[0] === 0xfe && bytes[1] === 0xff) return decoder("utf-16be", bytes.subarray(2), false);
@@ -411,8 +412,14 @@
       if (parts.length === 1) return matches(pathParts.at(-1), parts[0], !exactDefault);
       return pathParts.length >= parts.length && parts.every((pattern, index) => matches(pathParts[pathParts.length - parts.length + index], pattern, false));
     });
-    if (found.length > 1) throw new Error("目录匹配不唯一: " + pattern + " → " + found.map(directory => directory.path).join(", "));
-    return found[0];
+    // A top-level uploaded archive is already the input baseline. Nested
+    // archive directories compete only when no baseline directory matches.
+    const baseline = found.filter(directory => directory.provenance_parts.length === 1);
+    const candidates = baseline.length ? baseline : found;
+    const ancestors = candidates.filter(candidate => candidates.every(other => relativeDirectoryDepth(other, candidate) !== null));
+    if (ancestors.length === 1) return ancestors[0];
+    if (candidates.length > 1) throw new Error("目录匹配不唯一: " + pattern + " → " + candidates.map(directory => directory.path).join(", "));
+    return candidates[0];
   }
   function relativeDirectoryDepth(file, directory) {
     const ancestry = directory.provenance_parts, parts = file.provenance_parts;
@@ -425,6 +432,9 @@
     return [relative, ...parts.slice(ancestry.length)].reduce((depth, part) => depth + part.split("/").length - 1, 0);
   }
   async function prepare(inputFiles, rules = {}, progress = null, cancelled = null) {
+    const explicitConfig = Object.prototype.hasOwnProperty.call(rules, "analysis_config");
+    if (explicitConfig && rules.analysis_config == null) throw new Error("analysis_config must be an object");
+    let analysisConfig = global.ProductLogConfig.normalize(rules.analysis_config);
     const check = () => { if (cancelled && cancelled()) throw new Error("解析已取消"); };
     const emit = (stage, count, message) => { check(); if (progress) progress({stage, count, message}); };
     const codecs = global.OfflineCompression || {};
@@ -435,7 +445,7 @@
     // Uploads are immutable inputs. Every collected path below is virtual.
     const inputPaths = new Set();
     for (const file of files) { if (inputPaths.has(file.path)) throw new Error("输入文件路径重复: " + file.path); inputPaths.add(file.path); }
-    const archives = [], sources = [], targets = {}, targetDirectories = {};
+    const archives = [], sources = [], targets = Object.create(null), sourceTargets = Object.create(null), targetDirectories = Object.create(null);
     let directories = inferredDirectories(files), topArchive = "";
     emit("preparing", 0, "在浏览器内准备日志输入");
     if (files.length === 1 && rules.upload_kind !== "directory") {
@@ -486,58 +496,99 @@
     const requestedMode = rules.collection_mode || "product";
     if (!["auto", "product", "generic"].includes(requestedMode)) throw new Error("无效的日志收集模式");
     const recursive = rules.recursive !== false;
-    let mode = requestedMode;
-    if (mode !== "generic" && !(mode === "auto" && rules.directory_pattern)) {
-      for (const [domain, pattern] of [["user", rules.diag_directory_pattern || "diag"], ["kernel", rules.var_directory_pattern || "varlog"]]) {
-        let directory = findDirectory(directories, pattern, ["diag", "varlog", "var"].includes(pattern), true);
-        if (directory === undefined && domain === "kernel" && pattern === "varlog") {
-          directory = findDirectory(directories, "var", true, true);
+    const profiles = new Map(analysisConfig.parsers.map(profile => [profile.id, profile]));
+    if (!explicitConfig) {
+      // Old SDK arguments edit the explicit initial template; they never
+      // override a user-supplied configuration or revive removed rules.
+      for (const source of analysisConfig.sources) {
+        const engine = profiles.get(source.parser_id).engine;
+        const directory = engine === "diag" ? rules.diag_directory_pattern : rules.var_directory_pattern;
+        if (directory) {
+          const pattern = !directory.includes("/") && !directory.includes("\\") && !/[*?[]/.test(directory) && !["diag", "varlog", "var"].includes(directory) ? "*" + directory + "*" : directory;
+          source.directory_patterns = engine === "kernel" && directory === "varlog" ? [directory, "var"] : [pattern];
         }
-        if (directory !== undefined) { targets[domain] = directory.path; targetDirectories[domain] = directory; }
+        if (engine === "diag") {
+          if (patterns(rules.file_patterns).length) { source.file_patterns = legacyFilePatterns(rules.file_patterns); source.file_regex = ""; }
+          source.recursive = recursive;
+        }
       }
-      if (!Object.keys(targets).length) {
-        if (mode === "product") throw new Error("找不到符合条件的 diag 或 varlog 文件夹");
+    }
+    let configuredSources = global.ProductLogConfig.activeSources(analysisConfig);
+    let mode = requestedMode;
+    const bind = (source, directory) => {
+      targetDirectories[source.id] = directory;
+      sourceTargets[source.id] = directory.path;
+      const domain = profiles.get(source.parser_id).engine === "kernel" ? "kernel" : "user";
+      if (targets[domain] === undefined) targets[domain] = directory.path;
+    };
+    if (explicitConfig || mode !== "generic" && !(mode === "auto" && rules.directory_pattern)) {
+      for (const source of configuredSources) {
+        for (const pattern of source.directory_patterns) {
+          const directory = findDirectory(directories, pattern, true, true);
+          if (directory !== undefined) { bind(source, directory); break; }
+        }
+      }
+      if (!Object.keys(targetDirectories).length && configuredSources.length && !explicitConfig) {
+        if (mode === "product") throw new Error("找不到符合条件的日志来源文件夹");
         mode = "generic";
       } else mode = "product";
     } else mode = "generic";
     if (mode === "generic") {
-      const target = rules.directory_pattern ? findDirectory(directories, rules.directory_pattern, false, recursive) : {path: "", logical_path: "", provenance_parts: [""]};
-      if (target === undefined) throw new Error("找不到指定文件夹: " + rules.directory_pattern);
-      targets.user = target.path;
-      targetDirectories.user = target;
+      const template = configuredSources.find(source => profiles.get(source.parser_id).engine === "diag");
+      if (template) {
+        const source = {...template, id: "generic", directory_patterns: [rules.directory_pattern || "input"], file_patterns: legacyFilePatterns(rules.file_patterns).length ? legacyFilePatterns(rules.file_patterns) : ["*"], file_regex: "", recursive,
+          order: {type: "name", current: "", pattern: ""}};
+        analysisConfig.sources = [source];
+        analysisConfig.rules = analysisConfig.rules.filter(rule => rule.source_ids.includes(template.id)).map(rule => ({...rule, source_ids: [source.id]}));
+        const target = rules.directory_pattern ? findDirectory(directories, rules.directory_pattern, false, recursive) : {path: "", logical_path: "", provenance_parts: [""]};
+        if (target === undefined) throw new Error("找不到指定文件夹: " + rules.directory_pattern);
+        configuredSources = [source]; bind(source, target);
+      }
     }
-    if (targetDirectories.user && targetDirectories.kernel && JSON.stringify(targetDirectories.user.provenance_parts) === JSON.stringify(targetDirectories.kernel.provenance_parts)) throw new Error("diag 与 varlog 必须是不同文件夹");
+    if (!explicitConfig && targets.user !== undefined && targets.user === targets.kernel) throw new Error("diag 与 varlog 必须是不同文件夹");
     // Retain validation of old requests; archive filters no longer suppress
     // preparation because target folders can be hidden in any archive layer.
     patterns(rules.archive_patterns);
-    const filePatterns = patterns(rules.file_patterns), copyPatterns = patterns(rules.copy_patterns);
+    const copyPatterns = patterns(rules.copy_patterns);
     const renameMap = rules.rename_map || {};
     if (!renameMap || typeof renameMap !== "object" || Array.isArray(renameMap)) throw new Error("重命名规则必须是对象");
     for (const value of Object.values(renameMap)) if (safePath(value) !== value || value.includes("/")) throw new Error("新文件名必须是安全的单一名称");
     const candidates = new Map(), copies = new Map();
     const identity = source => JSON.stringify(source.provenance_parts);
     let sequence = 0;
-    for (const [domain, target] of Object.entries(targets)) {
+    const profileKey = profile => JSON.stringify(canonical(Object.fromEntries(Object.entries(profile).filter(([key]) => key !== "id"))));
+    for (const selectedSource of configuredSources) {
       check();
-      const isKernel = mode === "product" && domain === "kernel";
-      const walkRecursive = isKernel || recursive;
-      const selectedPatterns = filePatterns.length ? filePatterns : mode === "product" ? ["diaglog_*.log", "diag.log"] : [];
-      const directory = targetDirectories[domain];
-      const otherTargets = Object.entries(targetDirectories).filter(([otherDomain, other]) => otherDomain !== domain && relativeDirectoryDepth(other, directory) !== null).map(([, other]) => other);
+      const directory = targetDirectories[selectedSource.id];
+      if (!directory) continue;
+      const profile = profiles.get(selectedSource.parser_id), domain = profile.engine === "kernel" ? "kernel" : "user";
+      const otherTargets = explicitConfig ? [] : configuredSources.filter(other => other.id !== selectedSource.id && targetDirectories[other.id] && profiles.get(other.parser_id).engine !== profile.engine &&
+        JSON.stringify(targetDirectories[other.id].provenance_parts) !== JSON.stringify(directory.provenance_parts) && relativeDirectoryDepth(targetDirectories[other.id], directory) !== null).map(other => targetDirectories[other.id]);
       const entries = files.filter(file => relativeDirectoryDepth(file, directory) !== null && !otherTargets.some(other => relativeDirectoryDepth(file, other) !== null));
       for (const file of entries) {
         check();
         if (file.kind) continue;
-        if (!walkRecursive && relativeDirectoryDepth(file, directory) > 0) continue;
+        if (!selectedSource.recursive && relativeDirectoryDepth(file, directory) > 0) continue;
         const name = basename(file.path);
         const source = {path: file.relative_path, relative_path: file.relative_path,
           provenance_parts: file.provenance_parts, origin_path: file.origin_path, archive_path: file.archive_path,
-          member_path: file.member_path, device_source: "target:" + target, log_domain: domain,
+          member_path: file.member_path, device_source: "target:" + directory.path, log_domain: domain,
+          configured_source_ids: [selectedSource.id], parser_profile: profile, analysis_config: analysisConfig,
+          source_order: selectedSource.order, configured_source_rank: analysisConfig.sources.findIndex(item => item.id === selectedSource.id),
           original_name: name, bytes: file.bytes};
-        const isSelected = isKernel ? kernelName.test(name) : selected(name, selectedPatterns) &&
-          (mode !== "product" || filePatterns.length || name === "diag.log" || (name.startsWith("diaglog_") && name.endsWith(".log")));
-        if (isSelected) candidates.set(identity(source), source);
-        if (!isKernel && copyPatterns.length && selected(name, copyPatterns)) copies.set(identity(source), source);
+        const isSelected = selectedSource.file_patterns.some(pattern => matches(name, pattern, false)) && (!selectedSource.file_regex || global.ProductLogConfig.compileRegex("^(?:" + selectedSource.file_regex + ")$").test(name));
+        const copy = (!explicitConfig || isSelected) && domain !== "kernel" && copyPatterns.length && selected(name, copyPatterns);
+        if (isSelected || copy) {
+          const existing = candidates.get(identity(source)) || copies.get(identity(source));
+          if (existing) {
+            if (profileKey(existing.parser_profile) !== profileKey(profile)) throw new Error("同一文件绑定了不兼容的解析器: " + source.relative_path);
+            source.configured_source_ids = [...new Set([...existing.configured_source_ids, selectedSource.id])];
+            source.source_order = existing.source_order; source.configured_source_rank = existing.configured_source_rank;
+            source.device_source = existing.device_source;
+          }
+          if (isSelected) candidates.set(identity(source), source);
+          if (copy) copies.set(identity(source), source);
+        }
       }
     }
     const applied = new Set();
@@ -557,15 +608,22 @@
     }
     const unmatched = Object.keys(renameMap).filter(key => !applied.has(key));
     if (unmatched.length) throw new Error("重命名规则未匹配文件: " + unmatched.join(", "));
-    const ordered = [...candidates.values()].sort((a, b) => {
-      if (mode === "generic") return compare(basename(a.path), basename(b.path)) || compare(a.relative_path, b.relative_path) || compare(identity(a), identity(b));
-      if (a.log_domain !== b.log_domain) return a.log_domain === "user" ? -1 : 1;
-      if (a.log_domain === "kernel") {
-        const aa = kernelName.exec(a.original_name)[1], bb = kernelName.exec(b.original_name)[1];
+    const ordered = [...candidates.values()];
+    for (const source of ordered) {
+      if (source.source_order.type !== "numeric_rotation") continue;
+      const match = global.ProductLogConfig.compileRegex("^(?:" + source.source_order.pattern + ")$").exec(source.original_name);
+      if (!match || match[1] !== undefined && !/^\d+$/.test(match[1])) throw new Error("numeric_rotation requires a numeric capture for " + source.original_name);
+      source.rotation_number = match[1];
+    }
+    ordered.sort((a, b) => {
+      if (a.configured_source_rank !== b.configured_source_rank) return a.configured_source_rank - b.configured_source_rank;
+      const order = a.source_order;
+      if (order.type === "numeric_rotation") {
+        const aa = a.rotation_number, bb = b.rotation_number;
         if ((aa === undefined) !== (bb === undefined)) return aa === undefined ? 1 : -1;
         if (aa !== undefined && BigInt(aa) !== BigInt(bb)) return BigInt(aa) < BigInt(bb) ? -1 : 1;
       } else {
-        if ((a.original_name === "diag.log") !== (b.original_name === "diag.log")) return a.original_name === "diag.log" ? 1 : -1;
+        if (order.type === "current_last" && (a.original_name === order.current) !== (b.original_name === order.current)) return a.original_name === order.current ? 1 : -1;
         const nameOrder = compare(a.original_name, b.original_name);
         if (nameOrder) return nameOrder;
       }
@@ -578,7 +636,7 @@
       sources.push(source);
       if (rank % 32 === 31) await tick();
     }
-    return {sources, archives, targets, collection_mode: mode,
+    return {sources, archives, targets, source_targets: sourceTargets, analysis_config: analysisConfig, collection_mode: mode,
       counts: {files: sources.length, archives: archives.length, expanded_files: budget.files, expanded_bytes: budget.bytes},
       input_type: topArchive ? "archive" : "directory", input_path: topArchive || "浏览器选择的文件夹"};
   }

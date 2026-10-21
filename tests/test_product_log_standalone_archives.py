@@ -34,7 +34,10 @@ def _javascript() -> str:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     archive = (ROOT / "product_log" / "standalone" / "archive.js").read_text(encoding="utf-8")
-    return module.compression_source() + "\n" + archive
+    defaults = (ROOT / "product_log" / "default_config.json").read_text(encoding="utf-8")
+    configuration = (ROOT / "product_log" / "standalone" / "configuration.js").read_text(encoding="utf-8")
+    return (module.compression_source() + "\nglobalThis.ProductLogDefaultConfig=" + defaults + ";\n"
+            + configuration + "\n" + archive)
 
 
 def _prepare(files: dict[str, bytes], rules: dict | None = None, *, cancel_at: str = "", code: str | None = None) -> dict:

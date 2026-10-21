@@ -12,7 +12,8 @@ from typing import Callable, Iterator
 
 from ._storage import INDEX_SCHEMA_VERSION, RECORD_COLUMNS, add_diagnostic, connect, create_schema, register_functions
 from .parser import check_cancelled, normalize_module_name, time_value
-from .module_map import kernel_group_id, kernel_groups, load_module_mappings
+from .configuration import firmware_type_name as configured_firmware_type_name
+from .module_map import kernel_group_id, kernel_groups, load_module_mappings, batch_configuration
 
 
 GROUP_FIELDS = {
@@ -124,7 +125,7 @@ def build_index(batch_dir: Path, shards: list[Path], *,
             "CREATE INDEX segment_dump ON segments(dump_id,seg);"
             "CREATE INDEX record_segment ON records(segment_id);"
         )
-        active: dict[str, tuple[str, int]] = {}
+        active: dict[str, tuple[str, int | None]] = {}
         segments = database.execute("SELECT * FROM segments ORDER BY source_rank,line_number")
         for segment in segments:
             check_cancelled(cancelled)
@@ -148,13 +149,15 @@ def build_index(batch_dir: Path, shards: list[Path], *,
                                     (dump_id, segment["seg"])).fetchone():
                     add_diagnostic(database, segment["source_id"], segment["line_number"], "duplicate_segment",
                                    f"Repeated seg[{segment['seg']}] retained", dump_id)
-                if segment["time_value"] < previous_time:
+                if segment["time_value"] is not None and previous_time is not None and segment["time_value"] < previous_time:
                     add_diagnostic(database, segment["source_id"], segment["line_number"], "segment_time_reversed",
                                    "Segment read time goes backwards in source order; real times retained", dump_id)
             active[stream] = (dump_id, segment["time_value"])
             database.execute("UPDATE segments SET dump_id=? WHERE segment_id=?", (dump_id, segment["segment_id"]))
             database.execute("UPDATE records SET dump_id=? WHERE segment_id=?", (dump_id, segment["segment_id"]))
-            database.execute("UPDATE dumps SET first_value=MIN(first_value,?) WHERE dump_id=?", (segment["time_value"], dump_id))
+            database.execute("UPDATE dumps SET first_value=CASE WHEN first_value IS NULL THEN ? "
+                             "WHEN ? IS NULL THEN first_value ELSE MIN(first_value,?) END WHERE dump_id=?",
+                             (segment["time_value"], segment["time_value"], segment["time_value"], dump_id))
         # Missing ranges are represented as ranges, never expanded into huge lists.
         previous_dump = None
         previous_seg = -1
@@ -262,8 +265,8 @@ def _page(offset: int, limit: int) -> tuple[int, int]:
     return offset, limit
 
 
-def firmware_type_name(value: str) -> str:
-    return {"0": "bios", "1": "IMP", "2": "IMU", "3": "HSM"}.get(str(value), str(value))
+def firmware_type_name(value: str, config: dict | None = None) -> str:
+    return configured_firmware_type_name(value, config)
 
 
 def list_groups(batch_dir: str | Path, kind: str, driver_domain: str = "") -> list[dict]:
@@ -274,6 +277,7 @@ def list_groups(batch_dir: str | Path, kind: str, driver_domain: str = "") -> li
     database = _open_ready(batch_dir)
     try:
         result = []
+        config = batch_configuration(batch_dir)
         where, values = ("kind IN ('driver','firmware')", []) if kind == "all" else ("kind=?", [kind])
         if driver_domain:
             where += " AND (kind<>'driver' OR driver_domain=?)"
@@ -282,7 +286,7 @@ def list_groups(batch_dir: str | Path, kind: str, driver_domain: str = "") -> li
             item = dict(row)
             item["module_names"] = json.loads(item["module_names"])
             if item["kind"] == "firmware":
-                item["log_type_name"] = firmware_type_name(item["log_type"])
+                item["log_type_name"] = firmware_type_name(item["log_type"], config)
             result.append(item)
         if kind in ("driver", "all") and driver_domain != "user":
             result.extend(kernel_groups(database, load_module_mappings(batch_dir, database)))
@@ -330,7 +334,7 @@ def _filters(database: sqlite3.Connection, *, batch_dir: str | Path, kind: str, 
             elif field == "module_name":
                 clauses.append("(r.driver_domain='kernel' OR (r.kind='firmware' AND r.module_name=?) "
                                "OR (r.kind<>'firmware' AND r.module_name=?))")
-                parameters.extend([str(value), normalize_module_name(str(value))])
+                parameters.extend([str(value), normalize_module_name(str(value), batch_configuration(batch_dir))])
                 continue
             else:
                 clauses.append(f"(r.driver_domain='kernel' OR r.{field}=?)")
@@ -368,12 +372,12 @@ def _order(view: str) -> str:
     raise ValueError("view must be time or stitched")
 
 
-def _record(row: sqlite3.Row | dict, mode: str, is_context: bool = False, *, preserve_firmware_time: bool = False) -> dict:
+def _record(row: sqlite3.Row | dict, mode: str, is_context: bool = False, *, preserve_firmware_time: bool = False, config: dict | None = None) -> dict:
     if mode not in ("concise", "original", "raw"):
         raise ValueError("mode must be concise or original")
     result = dict(row)
     if result["kind"] == "firmware":
-        result["log_type_name"] = firmware_type_name(result["log_type"])
+        result["log_type_name"] = firmware_type_name(result["log_type"], config)
     if (mode == "raw" and not (preserve_firmware_time and result["kind"] == "firmware")) or (mode == "original" and result["kind"] != "firmware"):
         result["text"] = result["raw_text"]
     result["is_context"] = is_context
@@ -430,7 +434,8 @@ def query_records(batch_dir: str | Path, *, kind: str, group_id: str | None = No
                 key = lambda row: (row["dump_anchor"] is None, row["dump_anchor"] or 0, row["dump_rank"], row["dump_line"],
                                    row["seg"] or 0, row["source_rank"], row["line_number"], row["id"])
             records = sorted(contextual.values(), key=key)
-        return {"records": [_record(row, mode, row["id"] not in hit_ids, preserve_firmware_time=kind == "all") for row in records],
+        config = batch_configuration(batch_dir)
+        return {"records": [_record(row, mode, row["id"] not in hit_ids, preserve_firmware_time=kind == "all", config=config) for row in records],
                 "total": total, "has_more": offset + len(matches) < total, "offset": offset, "limit": limit}
     finally:
         database.close()
@@ -496,9 +501,10 @@ def iter_export(batch_dir: str | Path, **query) -> Iterator[str]:
     database = _open_ready(batch_dir)
     try:
         where, parameters = _filters(database, batch_dir=batch_dir, **query)
+        config = batch_configuration(batch_dir)
         cursor = database.execute(SELECT_RECORDS + " WHERE " + where + _order(view), parameters)
         while rows := cursor.fetchmany(256):
             for row in rows:
-                yield _record(row, mode, preserve_firmware_time=query.get("kind") == "all")["text"] + "\n"
+                yield _record(row, mode, preserve_firmware_time=query.get("kind") == "all", config=config)["text"] + "\n"
     finally:
         database.close()

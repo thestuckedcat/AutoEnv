@@ -43,9 +43,19 @@ python -X utf8 -m pytest tests/test_generated_script_contract.py -q
 
 ## 补充：组件测试范围
 
+2026-10-20 的产品日志来源配置扩展增加 `test_product_log_configuration.py`、`test_product_log_source_python.py`、`test_product_log_source_offline.py`、`test_product_log_config_entrypoints.py` 和 `test_product_log_settings_ui.py`。覆盖显式初始 JSON 与 Python/Node 校验一致性、空规则和空来源选择不回退、来源绑定 ISO/dmesg/未知时间解析器、规则只引用所选来源、同文件解析器冲突、固件完整段筛选，以及 HTTP/CLI/离线构建的配置快照。设置测试验证配置控件只在关闭的设置对话框内、按规则选择来源、编辑/保存/导入/下载及错误配置反馈。
+
+目录回归区分祖孙同名与不同分支：外层目录覆盖普通和包内后代时选择外层；不同分支即使深度不同仍报歧义；输入基准层优先，仅包内存在目标时仍可发现。顶层包、跨打包边界部分路径、字面 `!/` 与压缩包来源身份继续保留测试。
+
+本轮于 2026-10-21 完成：配置合同专项 **58 passed**，最终全量离线回归 **978 passed、2 skipped**（238.14s），两项跳过均为 Windows 符号链接权限；既有 Paramiko 弃用警告和重复 ZIP fixture 提示保留。两版设置真实浏览器交互 **6 passed**，标准服务及生成 HTML 也验证同一混合日志样本。完整环境、构建和审查证据见 [来源配置功能记录](../newFeature/2026-10-20-product-log-source-configuration.md)。下面列出的 2026-10-13 等结果是相应历史版本的证据。
+
+```powershell
+python -X utf8 -m pytest -q tests/test_product_log_configuration.py tests/test_product_log_source_python.py tests/test_product_log_source_offline.py tests/test_product_log_config_entrypoints.py tests/test_product_log_settings_ui.py
+```
+
 2026-10-13 的压缩与串口兼容扩展新增 `test_product_log_preparation.py`、`test_product_log_standalone_preparation.py`、`test_local_rar_archives.py`、`test_product_log_offline_rar_integration.py`、`test_serial_compatibility.py`、`test_serial_readiness_logging.py`。准备测试覆盖全森林展开后才定位 diag/varlog、旧 var 回退、跨包部分路径、字面 `!/` 与包内路径的不同身份、非递归的普通目录深度；真实 RAR4/5、固实、ZIP14、损坏与不支持成员均有实际解码回归。
 
-最终全量离线回归：**873 passed、2 skipped、1 warning，195.22s**。两项跳过为 Windows 符号链接权限，warning 为既有重复 ZIP fixture。单入口静态检查排除 logs/runtime_path 等运行产物，避免历史完整源码快照被误当作当前服务实现；当前固定端点及唯一启动方式检查继续通过。离线解码/构建 88 项、新增完整 RAR Worker 集成 2 项、串口/Telnet/Remote/CLI 专项 124 项均通过。
+2026-10-13 历史全量离线回归：**873 passed、2 skipped、1 warning，195.22s**。两项跳过为 Windows 符号链接权限，warning 为既有重复 ZIP fixture。单入口静态检查排除 logs/runtime_path 等运行产物，避免历史完整源码快照被误当作当前服务实现；当轮固定端点及唯一启动方式检查通过。离线解码/构建 88 项、新增完整 RAR Worker 集成 2 项、串口/Telnet/Remote/CLI 专项 124 项均通过。
 
 实际生成 HTML 的 Worker 在禁止网络 API 的 Node 环境处理 ZIP→ZIP-LZMA→RAR4/5，分别验证 64 条用户态和 1 条内核态、排序、模块表与 Python 全量导出摘要一致。串口使用真实 loopback TCP，覆盖登录/已登录/用户名后直接进入 shell、历史登录与密码横幅、POSIX/auto/prompt_only、失败业务探针和未知退出状态；自检摘要验证范围、原因且不复制原始设备输出。RAR 样本来源见 [合成夹具](fixtures/product_log_archives/README.md)，SDK 系统 bsdtar 的能力边界见 [产品说明](../product_log/README.md)。本轮验证结果见 [功能记录](../newFeature/2026-10-13-archive-and-serial-compatibility.md)。
 
@@ -61,13 +71,13 @@ python -X utf8 -m pytest tests/test_generated_script_contract.py -q
 
 新增本地产品日志测试直接构造真实 ZIP/TAR/GZ 与多文件用户态/内核态/固件日志，不访问设备。运行 `python -X utf8 -m pytest -q tests/test_local_file_operations.py tests/test_product_logs.py tests/test_product_log_collection.py tests/test_product_log_domains.py tests/test_product_log_web.py tests/test_product_log_integration.py tests/test_product_log_retention.py`，验证搜索/解压/复制、跨文件 seg、重复段、编码、时间顺序、分组与查询、独立 CLI、真实 loopback HTTP 分块上传及任务回收。
 
-`test_product_log_collection.py` 验证 auto/product/generic 分流、默认精确 diag/var 目录及多候选消歧、仅一类存在、diag 历史字典序/current 最后、dmesg 数字轮转/current 最后、多层 var 及不受 diag 模式限制的内核选择。`test_product_log_domains.py` 使用真实文件与索引验证用户态 UDK 后缀归一和 udk2 排除、12 个英文月份、无日期绝不继承、来源保留、动态模块映射/不存在/重叠匹配、固件类型名称、统一时间与未知上下文、索引版本 2 及旧批次重导。
+`test_product_log_collection.py` 验证 auto/product/generic 分流、初始显式 diag/dmesg 目录及分支消歧、仅一类存在、diag 历史字典序/current 最后、dmesg 数字轮转/current 最后、多层 var 及两来源的独立选择。`test_product_log_domains.py` 使用真实文件与索引验证初始配置的 UDK 后缀归一和 udk2 排除、12 个英文月份、无日期绝不继承、来源保留、显式模块表/不存在/重叠匹配、固件类型名称、统一时间与未知上下文及旧批次重导。当前索引 schema 为 3，固件段及读取批次允许未知时间并继续拼接；schema 2 批次需重新导入。删除模块行不再自动补回；采集规则改变需重导入，模块查询表改变无需重新解析。
 
 3 GiB 自动清理以 `test_product_log_retention.py` 的小阈值真实目录测试覆盖，不创建数 GiB 的测试文件；验证精确触发边界、旧数据优先、活动/浏览/最新结果保护、上传及受管路径输入引用、重启恢复、外部原件不变、部分删除后的真实统计及 Windows junction 跳过。`test_product_log_web.py` 另验证真实 HTTP 占用接口、解除浏览保护后的回收、历史列表同步和仅保护数据超阈值时仍可查询。
 
 可运行 `python -X utf8 tests/product_log_sample.py logs/product-log-demo/product.tar.gz --source-dir logs/product-log-demo/source` 重建网页混排样本：Type 0–4 × Dev 0–5 共 30 组固件、每组 120 条；`udk log/UBE/MEME/HBOOT` 四种驱动、各 500 条。`test_product_log_integration.py` 通过真实 CLI 核对所有分组的精确数量、跨 7 文件的 14 段组装和时间排序；名称含空格的 ModuleName 另有解析回归。
 
-diag/var 演示样本使用 `python -X utf8 tests/product_log_domain_sample.py logs/product-log-domain-demo/product.tar.gz --source-dir logs/product-log-domain-demo/source` 生成。网页填 diag=`diag/slot62`、var=`var`，日志模式留空，或运行 `python -X utf8 -m product_log logs/product-log-domain-demo/product.tar.gz --collection-mode product --diag-directory diag/slot62 --var-directory var`。预期 11 文件、2,003 用户态、408 内核态（8 条时间未知）、3,600 固件、统一时间 6,011 条；udk 用户态 500 条、内核匹配 104 条，UBE 的 mami 内核匹配 100 条。样本覆盖六种压缩格式和两条多层 var 链，包含 `.1/.2/.10/current`、UDK 两种后缀、udk2 与多 Slot/Cpu；原始文件及概要在 `logs/product-log-domain-demo/source/`。
+diag/var 演示样本使用 `python -X utf8 tests/product_log_domain_sample.py logs/product-log-domain-demo/product.tar.gz --source-dir logs/product-log-domain-demo/source` 生成。网页使用初始配置，或在设置中限定 diag 来源 `directory_patterns: ["diag/slot62"]`、dmesg 来源 `["var"]`；旧 CLI `--collection-mode product --diag-directory diag/slot62 --var-directory var` 仍可用。保留初始三条 `any` 规则时预期 11 文件、2,003 用户态、408 内核态（8 条时间未知）、3,600 固件、统一时间 6,011 条；udk 用户态 500 条、内核匹配 104 条，UBE 的 mami 内核匹配 100 条。样本覆盖六种压缩格式和两条多层 var 链，包含 `.1/.2/.10/current`、UDK 两种后缀、udk2 与多 Slot/Cpu；原始文件及概要在 `logs/product-log-domain-demo/source/`。
 
 | 文件 | 覆盖目标 | 失败优先检查 |
 | --- | --- | --- |
@@ -79,6 +89,9 @@ diag/var 演示样本使用 `python -X utf8 tests/product_log_domain_sample.py l
 | `test_local_protocol_workflow.py` | WebHDFS → ZIP → SCP/SFTP → shell → SSH/Telnet → SCP/SFTP → FTP → 日志 → func → rerun | 每步结果、双方字节、最终记录及命令 |
 | `test_log_collection.py` | 所有日志经真实 SCP 获取；归档、来源隔离、strict/legacy/metadata、SQLite/查询/export/Find、workflow | 真实 SSHHost、SDK 请求、logs/log_query |
 | `test_product_logs.py` / `test_product_log_collection.py` | 独立本地整理、模式分流、diag/var 来源与嵌套压缩、跨文件固件组装、稳定业务排序 | product_log/workflow、manifest、来源路径 |
+| `test_product_log_configuration.py` | Python/JavaScript 配置合同、可移植字段正则、来源/解析器引用、空选择、别名与类型名称 | default_config.json、configuration.py、standalone/configuration.js |
+| `test_product_log_source_python.py` / `test_product_log_source_offline.py` | 目录祖先覆盖与分支歧义、基准层/包内回退、来源选择、时间解析、同文件冲突及固件完整段 | workflow/parser、standalone/archive/parser、结构化来源 |
+| `test_product_log_config_entrypoints.py` / `test_product_log_settings_ui.py` | HTTP/CLI 配置快照、空规则、离线同源内嵌、设置内来源多选与配置操作 | web/__main__/builder、两端设置对话框 |
 | `test_product_log_domains.py` | 两态驱动、UDK 归一、dmesg 日期与未知、模块表动态查询、统一时间和固件类型 | parser/index/module_map、原始来源和记录字段 |
 | `test_product_log_web.py` / `test_product_log_integration.py` / `test_product_log_retention.py` | 真实 HTTP/CLI、样本精确计数、模块表恢复、任务隔离与受管目录回收 | product_log/web、batch manifest、storage 状态 |
 | `test_command_files.py` | 上传映射、Host 隔离、占位符及原样 shell 文本 | command_files |

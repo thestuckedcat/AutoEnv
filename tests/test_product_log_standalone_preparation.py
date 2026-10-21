@@ -75,8 +75,10 @@ def test_partial_directory_components_span_archive_packing_boundaries():
 def test_literal_archive_boundary_directory_is_distinct_from_packed_directory():
     files = {"outer.zip": _zip({"diag/diag.log": b"packed"}),
              "outer.zip!/diag/diag.log": b"literal"}
-    ambiguous = _prepare(files, {"upload_kind": "directory"})
-    assert "error" in ambiguous and "不唯一" in ambiguous["error"]
+    preferred = _prepare(files, {"upload_kind": "directory"})
+    assert "error" not in preferred, preferred
+    assert [source["text"] for source in preferred["result"]["sources"]] == ["literal"]
+    assert preferred["result"]["sources"][0]["provenance_parts"] == ["outer.zip!/diag/diag.log"]
     selected = _prepare(files, {"upload_kind": "directory", "diag_directory_pattern": "outer.zip!/diag"})
     assert "error" not in selected, selected
     assert [source["text"] for source in selected["result"]["sources"]] == ["literal"]

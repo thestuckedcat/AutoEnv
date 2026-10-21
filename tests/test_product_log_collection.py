@@ -135,7 +135,7 @@ def test_product_reports_both_directories_missing(tmp_path):
     root = tmp_path / "input"
     write(root / "a.log", user_line("generic"))
     batch = tmp_path / "batch"
-    with pytest.raises(FileNotFoundError, match="No diag or var"):
+    with pytest.raises(FileNotFoundError, match="No configured source directory"):
         run_analysis(root, batch, collection_mode="product")
     assert json.loads((batch / "manifest.json").read_text())["status"] == "failed"
 
@@ -181,7 +181,7 @@ def test_product_does_not_accept_only_substring_directory_names(tmp_path):
     root = tmp_path / "input"
     write(root / "diagnostics/diag.log", user_line("lookalike user"))
     write(root / "variant/cpdt_dmesg_current.log", kernel_line("lookalike kernel"))
-    with pytest.raises(FileNotFoundError, match="No diag or var"):
+    with pytest.raises(FileNotFoundError, match="No configured source directory"):
         run_analysis(root, tmp_path / "batch", collection_mode="product")
     custom = run_analysis(root, tmp_path / "custom", collection_mode="product",
                           diag_directory_pattern="diagnost", var_directory_pattern="variant")

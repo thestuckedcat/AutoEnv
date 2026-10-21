@@ -12,7 +12,7 @@
 | 拉起 UDK V100 环境、替换固件 | [UDK V100 两个工作流](docs/UDK_V100_WORKFLOWS.md)，共用 SingleUnions_S3 |
 | 通过网页登记环境、运行脚本 | [网页用法](docs/web_usage.md)；实现接手读 [Web 架构](docs/WEB_ARCHITECTURE_AND_HANDOFF.md) |
 | 在本地 CLI 或服务网页解析产品日志 | [产品日志使用说明](product_log/README.md) |
-| 用一个 HTML 离线解析日志 | [独立离线日志网页使用文档](product_log/standalone/README.md)，含模块表、搜索、导出和样本 |
+| 用一个 HTML 离线解析日志 | [独立离线日志网页使用文档](product_log/standalone/README.md)，含设置、来源/解析器配置、模块表、搜索、导出和样本 |
 | 运行测试或复现协议问题 | [测试与排查](tests/README.md) → [本地模拟与实测结果](docs/LOCAL_SIMULATION.md) |
 | 查看项目评审与设计决定 | [全项目评审](docs/PROJECT_REVIEW_2026-10-11.md)、[重构设计](docs/AutoEnv-Refactor-Detailed-Design.md)、[产品日志设计](docs/LOCAL_PRODUCT_LOG_DESIGN.md) |
 | 让 Agent 生成脚本或扩展 Web Tool | 下方“项目 Agent 技能与合同” |

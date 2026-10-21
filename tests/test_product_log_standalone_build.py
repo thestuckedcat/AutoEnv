@@ -121,6 +121,7 @@ def test_builder_rejects_changed_vendor_asset(tmp_path, monkeypatch):
     module = builder_module()
     source = tmp_path / "source"
     shutil.copytree(module.SOURCE, source)
+    shutil.copyfile(module.SOURCE.parent / "default_config.json", source.parent / "default_config.json")
     monkeypatch.setattr(module, "SOURCE", source)
     asset = source / "vendor" / "fflate-0.8.3.js"
     asset.write_bytes(asset.read_bytes() + b"\nchanged")

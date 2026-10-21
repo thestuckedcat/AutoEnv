@@ -10,15 +10,19 @@
 
 产品日志按用户要求独立实现于 `product_log/`：`/product-logs/` 的专属任务管理器调用 `workflow.run_analysis()`，与 `python -m product_log` 共用整理/解析逻辑。它只处理本地文件，单独管理取消事件、上传和历史批次，不复用会终止上一任务的远端脚本 ProcessSession。
 
-核心及 CLI 收集分 `auto/product/generic`，网页固定使用 product。三种模式都先用队列准备整个压缩包森林，递归展开 diag、通用目录及未选中目录中的全部支持包，准备完成后才查找目录和选择日志。旧 archive_patterns/--archive-pattern 请求继续接收和校验，但不限制准备阶段，网页已移除展开过滤输入；文件模式与递归选项控制后续普通日志选择。包文件名不算目录组件，`diag/slot62` 等部分路径可跨打包边界匹配，完整来源链仍保留 `!/`。
+核心及 CLI 保留 `auto/product/generic`，网页固定使用 product。来源、文件、解析器、组件匹配和显示映射迁移到 `product_log/default_config.json`；Python 随包读取，离线构建把同一份 JSON 内嵌到应用和 Worker。`configuration.py` 与 `standalone/configuration.js` 校验相同合同。`POST /api/product-logs/start` 接收 `analysis_config`，CLI 支持 `--config FILE`，批次 manifest 保存实际配置快照；`GET /api/product-logs/configuration` 提供初始配置。未提供显式配置的旧参数调用转换为本次配置覆盖；旧 generic 流程生成目录/文件/diag 解析器及规则明确的临时来源并进入快照。显式配置始终只按所选来源处理，空规则或无命中不触发通用规则及旧硬编码回退。
 
-auto 检出精确的 diag/varlog 目录后采用产品规则，仅当 varlog 不存在时查找旧 var；varlog 多候选直接报错，显式选择 var 仍有效。显式旧 directory 选择和没有产品目录时继续通用规则。产品模式分别收集 diag 用户态/固件及内核目录中的 dmesg，历史 diag 文件字典序后追加 diag.log，内核轮转数字升序后追加 current；内核递归收集不受 diag 文件通配符和递归选项限制。多候选报错，允许部分路径消歧；嵌套的已选目标子树由其日志域独立收集。通用 SDK handler 排序合同不变，`detect_archive()` 增加 rar，Python 本机后端边界统一见 [产品日志说明](../product_log/README.md#输出与读取规则)。
+规则通过 `source_ids` 选择命名来源，来源通过 `parser_id` 绑定解析器；来源选项可多选，未引用的来源不解析，不自动切换到未选来源。初始 `diag_v1` 从同文件识别用户态/固件，`dmesg_v1` 解析内核；类别固定三类。初始 `any` 规则显式保留旧识别范围，删除或取消来源后不恢复；模块表不自动发现或补回条目。同一实际文件在相同解析配置下共享读取，配置冲突明确报错。固件先识别完整段与续行再筛选，避免提前按关键词丢失正文。
+
+页面将配置、来源选择、可选整理和模块表集中在默认关闭的“设置”对话框，主界面保留导入、状态和浏览。设置可保存到浏览器存储及导入/下载完整 JSON；日志正文不进浏览器设置存储。解析设置只作用于下一次导入，既有批次保留原配置；模块表仍可直接查询当前索引。
+
+准备阶段仍先用队列递归展开整个压缩包森林，包括未选中目录中的包；旧 `archive_patterns/--archive-pattern` 只校验、不限制准备。目录定位优先输入文件夹或顶层包内容中的候选，无命中再搜索嵌套包；唯一祖先可覆盖所有后代候选时自动选祖先，不同分支保持歧义而不按字符串长度任取。`directory_patterns` 的顺序表示显式不存在回退，初始 dmesg 因而优先 varlog、再试 var。包文件名不算目录组件，部分路径可跨打包边界；结构化来源信息区分包边界与字面 `!/`。选定收集根后仍按来源配置递归读取其普通目录及包内日志。通用 SDK `find_subdir()` 的严格唯一及 handler 排序合同不变；Python 本机归档后端边界见 [产品日志说明](../product_log/README.md#输出与读取规则)。
 
 Web 管理根内的产品日志上传和批次达到 3 GiB（`3 * 1024**3` 字节）后按最旧顺序清理已结束任务与可回收上传，保护活动或仍被引用的内容。仅删除管理根内的任务产物；外部输入、独立 CLI 输出及普通脚本运行日志不纳入该策略。它是触发阈值，不是硬配额，具体保护和清理时机见 [产品日志说明](../product_log/README.md)。
 
 单文件离线日志页由 `python -X utf8 tools/build_product_log_page.py` 生成 `dist/product-log-offline.html`，构建只使用 Python 标准库，支持 `-I -S`。它将 `product_log/standalone/` 的页面、Worker、独立 JavaScript 收集/解析/查询和本地解码器全内嵌。ZIP LZMA（算法 14）使用纯 JavaScript LZMA；RAR4/RAR5 普通及固实压缩由 node-unrar 的内嵌 WASM 解码，libarchive-WASM 在 RAR5 提取前补充链接/特殊成员元数据检查。Worker 中全部资源离线运行，无网络加载或系统解压工具依赖。vendor 保存第三方原始字节与许可，[资源清单](../product_log/standalone/vendor/manifest.json) 记录固定版本、来源与 SHA256，构建先校验摘要；[总许可说明](../product_log/standalone/THIRD_PARTY_NOTICES.txt) 随 HTML 保留。
 
-使用者仅需现代浏览器。浏览器业务规则通过 Python 结果对照验证，构建时不导入 SDK 或启动服务，不调整已有 HTTP、CLI 和 wheel 入口。输入经文件/目录选择进入页面内存，来源显示相对路径；模块表可导入/下载 JSON，可选复制/重命名操作内存副本。磁盘工作区、任意绝对路径导入、历史和 3 GiB 清理只在原服务端版本提供，详见 [独立离线页说明](../product_log/standalone/README.md)。
+使用者仅需现代浏览器。浏览器业务规则通过 Python 结果对照验证，构建时不导入 SDK 或启动服务；既有入口继续可用。输入经文件/目录选择进入页面内存，来源显示相对路径；解析配置和模块表均在设置中编辑，完整规则可导入/下载 JSON，可选复制/重命名操作内存副本。磁盘工作区、任意绝对路径导入、历史和 3 GiB 清理只在服务端版本提供，详见 [独立离线页说明](../product_log/standalone/README.md)。
 
 ```mermaid
 flowchart LR
@@ -92,7 +96,7 @@ CLI 启动时接收内部 `--event-file <临时JSON>`，在 bootstrap 创建会�
 
 产品日志新增 `/api/product-logs/` 命名空间，覆盖上传 create/chunk/finish、start/events/stop/batches、groups/query/source/export、`GET/POST modules` 对应表及 `GET storage` 的占用检查和自动清理。start 接收收集模式和分别指定的 diag/varlog 目录规则，既有 var_directory_pattern 字段名保留；archive_patterns 只保留请求兼容与校验；groups/query/export 支持 `driver_domain`，query/export 支持 `kind=all` 和业务表 `module`。modules 返回用户存在状态、两态数量及内核是否配置，POST 保存至批次 `module-map.json` 后即时生效。storage 可带 `batch_id` 登记当前查看批次；空值解除查看保护，返回占用、阈值、最近清理和错误。
 
-当前产品索引 schema 为 2，manifest 同时声明 microseconds 时间单位；旧批次在恢复或查询时要求重新导入。records 保存 driver_domain 与原始 ModuleName；仅用户态 udk 空格后缀名称归一。无日期内核行 time_value 为 NULL，不继承日期；统一时间未知行排在有效日期之后。Slot/Cpu 条件仅筛用户态/固件，业务模块表仅筛两态驱动，固件仍按自身 Dev/logType 维度管理。
+当前产品索引 schema 为 **3**，配置合同 `version` 为 `1`，manifest 同时声明 microseconds 时间单位。segments/dumps 的 time_value 可为 NULL，支持 diag `time_format: "none"`；未知读取时间仍依据来源、流及 seg 结构拼接。索引按完全相同版本恢复和查询，schema 2 等旧批次要求重新导入。records 保存 driver_domain 与原始 ModuleName；名称归一使用批次配置的 module_aliases。无日期内核行 time_value 为 NULL，不继承日期；统一时间未知行排在有效日期之后。Slot/Cpu 条件仅筛用户态/固件，业务模块表仅筛两态驱动，固件仍按自身 Dev/logType 维度管理。
 
 二进制上传必须在旧 JSON body 读取前分发。静态资源只映射 `product_log/static/` 中的固定文件，批次/来源通过服务端登记 ID 查找。完成的 manifest 才发布索引，部分结果不作为成功任务查询。CLI 参数和导入/分组语义见 [product_log/README.md](../product_log/README.md)。
 
