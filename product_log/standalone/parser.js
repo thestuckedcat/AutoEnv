@@ -1,22 +1,17 @@
 /* Browser-only equivalent of the product-log parser and its query semantics. */
 (function (global) {
   "use strict";
-  const DATE = "\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?";
-  const HEADER = new RegExp("^(" + DATE + ")\\s+(\\S+)\\s+%%[^\\r\\n]+");
-  const OUTER_SHAPE = /^\S+\s+\S+\s+\S+\s+%%/;
-  const FIRMWARE = /Unit\s*\[\s*(\d+)\s*\]\s+firmware\s+logType\s*\[\s*(\d+)\s*\]\s+seg\s*\[\s*(\d+)\s*\]\s*:\s*(.*)/i;
-  const KERNEL_DATE = /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?\s+(\d{4})\]\s*/;
-  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
   const FIELDS = {driver: ["slot_id", "cpu_id", "module_name"], firmware: ["slot_id", "cpu_id", "device_id", "log_type"], unclassified: []};
-  const DEFAULT_MAPPINGS = [{module: "udk", user_module_name: "udk", kernel_keyword: "udk"}, {module: "UBE", user_module_name: "UBE", kernel_keyword: "mami"}];
-  const normalizeModuleName = value => /^udk(?:\s|$)/i.test(String(value).trim()) ? "udk" : String(value).trim();
-  const firmwareTypeName = value => ({"0": "bios", "1": "IMP", "2": "IMU", "3": "HSM"}[String(value)] || String(value));
-  const field = (pattern, text) => (text.match(pattern) || ["", ""])[1];
+  const normalizeModuleName = (value, config) => global.ProductLogConfig.normalizeModule(value, config);
+  const firmwareTypeName = (value, config) => global.ProductLogConfig.firmwareTypeName(value, config);
+  const field = (pattern, text) => (text.match(pattern) || ["", ""])[1] ?? "";
   const compareText = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  const compactWhitespace = value => String(value).split(global.ProductLogConfig.compileRegex("\\s+")).filter(Boolean).join(" ");
   // Number suffices for normal device dates; decimal strings preserve exact
   // microseconds outside JavaScript's safe-integer range without JSON BigInts.
   function timeValue(value) {
-    const match = String(value).trim().replace(/\s+/g, " ").replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?$/);
+    const match = compactWhitespace(value).replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?$/);
     if (!match) throw new Error("日期格式无效: " + value);
     const [year, month, day, hour, minute, second] = match.slice(1, 7).map(value => Number(value || 0));
     const date = new Date(0);
@@ -26,26 +21,37 @@
     const result = BigInt(date.getTime()) * 1000n + BigInt((match[7] || "").padEnd(6, "0"));
     return result <= BigInt(Number.MAX_SAFE_INTEGER) && result >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(result) : result.toString();
   }
-  function kernelTimestamp(line) {
-    const match = line.match(KERNEL_DATE);
+  function kernelTimestamp(line, profile) {
+    if (profile.time_format === "none") return ["", null, line];
+    const match = line.match(global.ProductLogConfig.compileRegex("^(?:" + profile.patterns.date + ")"));
     if (!match) return ["", null, line];
-    const month = MONTHS.indexOf(match[1].toLowerCase()) + 1;
-    const stamp = `${match[5]}-${String(month).padStart(2, "0")}-${match[2].padStart(2, "0")} ${match[3]}${match[4] ? "." + match[4] : ""}`;
-    try { return [stamp, timeValue(stamp), line.slice(match[0].length)]; }
+    try {
+      const month = profile.months.map(value => value.toLowerCase()).indexOf(match[1].toLowerCase()) + 1;
+      const stamp = profile.time_format === "iso" ? compactWhitespace(match[1]) : `${match[5]}-${String(month).padStart(2, "0")}-${match[2].padStart(2, "0")} ${match[3]}${match[4] ? "." + match[4] : ""}`;
+      return [stamp, timeValue(stamp), line.slice(match[0].length)];
+    }
     catch (_) { return ["", null, line]; }
   }
   function identity(prefix, values) { return prefix + "-" + encodeURIComponent(JSON.stringify(values)); }
-  function parseSources(input) {
+  function parseSources(input, analysisConfig) {
     if (!Array.isArray(input)) throw new Error("日志来源必须是数组");
-    const batch = {sources: [], records: [], segments: [], dumps: [], diagnostics: [], mappings: DEFAULT_MAPPINGS.map(row => ({...row}))};
+    const explicitConfig = analysisConfig != null || input.some(source => source?.analysis_config != null);
+    const config = global.ProductLogConfig.normalize(analysisConfig ?? input.find(source => source?.analysis_config != null)?.analysis_config);
+    const activeSources = global.ProductLogConfig.activeSources(config), activeById = new Map(activeSources.map(source => [source.id, source]));
+    const profiles = new Map(config.parsers.map(profile => [profile.id, profile]));
+    const profileKey = profile => JSON.stringify(canonical(Object.fromEntries(Object.entries(profile).filter(([key]) => key !== "id"))));
+    const batch = {sources: [], records: [], segments: [], dumps: [], diagnostics: [], mappings: config.modules.map(row => ({...row})), analysis_config: config};
     const diagnostic = (source, line, code, message, dump_id = null) => batch.diagnostics.push({id: batch.diagnostics.length + 1, source_id: source.source_id, source_path: source.path, line_number: line, code, message, dump_id});
-    const addRecord = (source, kind, raw, line_number, metadata = {}, body = raw) => {
+    const addRecord = (source, kind, raw, line_number, metadata = {}, body = raw, matchedSegment = false) => {
+      if (kind === "unclassified" && explicitConfig) return;
+      const category = kind === "firmware" ? "firmware" : metadata.driver_domain === "kernel" ? "kernel_driver" : "user_driver";
+      if (kind !== "unclassified" && !matchedSegment && !global.ProductLogConfig.recordEnabled(config, source.configured_source_ids, category, metadata, raw, body)) return;
       const record = {id: batch.records.length + 1, kind, source_id: source.source_id, source_rank: source.source_rank, line_number,
         time: "", time_value: null, slot_id: "", cpu_id: "", module_name: "", raw_module_name: "", driver_domain: "", device_id: "", log_type: "", dump_id: null, segment_id: null, seg: null, firmware_time: "", ...metadata,
         source_path: source.path, relative_path: source.relative_path, origin_path: source.origin_path, archive_path: source.archive_path, member_path: source.member_path,
         raw_text: raw, search_text: body};
       record.text = kind === "firmware" ? `[${record.time}]${body}` : kind === "driver" ? record.driver_domain === "kernel" ? `${record.time || "[时间未知]"} ${body}` : `${record.time} Info=${body}` : raw;
-      if (kind === "firmware") record.firmware_time = field(/^\[(\d+(?:\.\d+)?)\]/, body);
+      if (kind === "firmware") record.firmware_time = field(global.ProductLogConfig.compileRegex("^(?:" + source.parser_profile.patterns.uptime + ")"), body);
       batch.records.push(record);
     };
     const sourceIds = new Set();
@@ -53,10 +59,18 @@
       if (!item || typeof item.text !== "string") throw new Error("每个来源必须包含 text 字符串");
       const domain = item.log_domain || "user";
       if (!["user", "kernel"].includes(domain)) throw new Error("log_domain 必须是 user 或 kernel");
+      const selectedIds = item.configured_source_ids || activeSources.filter(source => profiles.get(source.parser_id).engine === (domain === "kernel" ? "kernel" : "diag")).map(source => source.id);
+      const definitions = selectedIds.map(id => activeById.get(id)).filter(Boolean);
+      if (!definitions.length) return;
+      const profile = profiles.get(definitions[0].parser_id);
+      if (definitions.some(definition => profileKey(profiles.get(definition.parser_id)) !== profileKey(profile)) || item.parser_profile && profileKey(item.parser_profile) !== profileKey(profile)) throw new Error("同一文件绑定了不兼容的解析器");
+      const framing = ["header", "outer_shape", "date", "uptime"];
+      const patterns = Object.fromEntries(Object.entries(profile.patterns).map(([name, pattern]) => [name, global.ProductLogConfig.compileRegex(framing.includes(name) ? "^(?:" + pattern + ")" : pattern, !framing.includes(name))]));
       const source = {...item, source_id: item.source_id || "source-" + source_rank, source_rank, log_domain: domain,
         path: item.path || item.relative_path || item.original_name || "source-" + source_rank,
         relative_path: item.relative_path || item.path || item.original_name || "source-" + source_rank,
-        origin_path: item.origin_path || item.path || item.relative_path || "", archive_path: item.archive_path || "", member_path: item.member_path || "", device_source: item.device_source || "", encoding: item.encoding || "utf-8"};
+        origin_path: item.origin_path || item.path || item.relative_path || "", archive_path: item.archive_path || "", member_path: item.member_path || "", device_source: item.device_source || "", encoding: item.encoding || "utf-8",
+        configured_source_ids: definitions.map(definition => definition.id), parser_profile: profile};
       if (sourceIds.has(source.source_id)) throw new Error("来源 source_id 重复");
       sourceIds.add(source.source_id);
       const lines = source.text ? source.text.split("\n") : [];
@@ -71,52 +85,64 @@
         diagnostic(source, 0, "binary_file", "NUL bytes: source is not a supported text log");
         return;
       }
-      let current = null;
+      let current = null, pending = null;
+      const flushFirmware = () => {
+        if (!pending) return;
+        const raw = [pending.segment.raw_header, ...pending.records.filter(record => record.line !== pending.segment.line_number).map(record => record.raw)].join("\n");
+        const body = pending.records.map(record => record.body).join("\n");
+        if (global.ProductLogConfig.recordEnabled(config, source.configured_source_ids, "firmware", pending.segment, raw, body)) {
+          batch.segments.push(pending.segment);
+          for (const record of pending.records) addRecord(source, "firmware", record.raw, record.line, pending.metadata, record.body, true);
+        }
+        pending = null;
+      };
       source.lines.forEach(({line_number, text: line}) => {
-        if (domain === "kernel") {
+        if (profile.engine === "kernel") {
           if (line.trim()) {
-            const [time, time_value, body] = kernelTimestamp(line);
+            const [time, time_value, body] = kernelTimestamp(line, profile);
             addRecord(source, "driver", line, line_number, {time, time_value, driver_domain: "kernel"}, body);
           }
           return;
         }
-        const header = line.match(HEADER);
-        if (header || OUTER_SHAPE.test(line)) {
+        const header = line.match(patterns.header);
+        if (header || patterns.outer_shape.test(line)) {
+          flushFirmware();
           current = null;
-          const time = header ? header[1].replace(/\s+/g, " ") : "";
+          const time = header && profile.time_format !== "none" ? compactWhitespace(header[1] ?? "") : "";
           let time_value;
-          try { if (!header) throw new Error(); time_value = timeValue(time); }
+          try { if (!header) throw new Error(); time_value = profile.time_format === "none" ? null : timeValue(time); }
           catch (_) { diagnostic(source, line_number, "invalid_time", "Invalid outer record date/time"); addRecord(source, "unclassified", line, line_number); return; }
-          const raw_module_name = field(/\bModuleName\s*=\s*([^,\r\n)]+)/i, line).trim();
-          const metadata = {time, time_value, slot_id: field(/\bSlotId\s*=\s*(\d+)/i, line), cpu_id: field(/\bCpuId\s*=\s*(\d+)/i, line), module_name: raw_module_name, raw_module_name};
+          const raw_module_name = field(patterns.module, line).trim();
+          const metadata = {time, time_value, slot_id: field(patterns.slot, line), cpu_id: field(patterns.cpu, line), module_name: raw_module_name, raw_module_name};
           if (!metadata.slot_id || !metadata.cpu_id || !raw_module_name) {
             diagnostic(source, line_number, "missing_fields", "Outer record missing SlotId/CpuId/ModuleName");
             addRecord(source, "unclassified", line, line_number, metadata); return;
           }
-          const firmware = line.match(FIRMWARE);
+          const firmware = line.match(patterns.firmware);
           if (firmware) {
-            if (firmware[3].length > 10 || Number(firmware[3]) > 2147483647) {
+            if (!/^\d+$/.test(firmware[3] ?? "") || firmware[3].length > 10 || Number(firmware[3]) > 2147483647 || !firmware[1] || !firmware[2]) {
               diagnostic(source, line_number, "invalid_segment", "Firmware seg number is outside supported integer range");
               addRecord(source, "unclassified", line, line_number, metadata); return;
             }
             current = {...metadata, device_id: firmware[1], log_type: firmware[2], seg: Number(firmware[3]), segment_id: source.source_id + ":" + line_number};
-            batch.segments.push({...current, source_id: source.source_id, source_rank, line_number, host: header[2], service: field(/\bService\s*=\s*([^;\s,]+)/i, line), device_source: source.device_source, raw_header: line, dump_id: null});
-            let inline = firmware[4];
+            pending = {segment: {...current, source_id: source.source_id, source_rank, line_number, host: header[2], service: field(patterns.service, line), device_source: source.device_source, raw_header: line, dump_id: null}, metadata: current, records: []};
+            let inline = firmware[4] ?? "";
             if (line.slice(0, firmware.index).includes("(") && inline.endsWith(")")) inline = inline.slice(0, -1);
-            if (inline) addRecord(source, "firmware", line, line_number, current, inline);
-          } else if (/\bfirmware\s+logType/i.test(line)) {
+            if (inline) pending.records.push({raw: line, line: line_number, body: inline});
+          } else if (patterns.firmware_marker.test(line)) {
             diagnostic(source, line_number, "invalid_segment", "Malformed firmware Unit/logType/seg metadata");
             addRecord(source, "unclassified", line, line_number, metadata);
           } else {
-            const info = line.match(/\bInfo\s*=\s*(.*)/i);
-            let body = info ? info[1] : line;
+            const info = line.match(patterns.info);
+            let body = info ? info[1] ?? "" : line;
             if (info && line.slice(0, info.index).includes("(") && body.endsWith(")")) body = body.slice(0, -1);
             if (!info) diagnostic(source, line_number, "missing_info", "Driver record missing Info; full source retained");
-            addRecord(source, "driver", line, line_number, {...metadata, driver_domain: "user", module_name: normalizeModuleName(raw_module_name)}, body);
+            addRecord(source, "driver", line, line_number, {...metadata, driver_domain: "user", module_name: normalizeModuleName(raw_module_name, config)}, body);
           }
-        } else if (current) addRecord(source, "firmware", line, line_number, current);
+        } else if (current) pending.records.push({raw: line, line: line_number, body: line});
         else if (line.trim()) { diagnostic(source, line_number, "orphan_line", "Line outside a recognized driver/firmware record"); addRecord(source, "unclassified", line, line_number); }
       });
+      flushFirmware();
     });
     const sourceById = new Map(batch.sources.map(source => [source.source_id, source]));
     const active = new Map();
@@ -138,11 +164,11 @@
       } else {
         dump = previous.dump;
         if (dump.segments.some(item => item.seg === segment.seg)) diagnostic(source, segment.line_number, "duplicate_segment", `Repeated seg[${segment.seg}] retained`, dump.dump_id);
-        if (BigInt(segment.time_value) < BigInt(previous.time_value)) diagnostic(source, segment.line_number, "segment_time_reversed", "Segment read time goes backwards in source order; real times retained", dump.dump_id);
+        if (segment.time_value !== null && previous.time_value !== null && BigInt(segment.time_value) < BigInt(previous.time_value)) diagnostic(source, segment.line_number, "segment_time_reversed", "Segment read time goes backwards in source order; real times retained", dump.dump_id);
       }
       active.set(stream, {dump, time_value: segment.time_value});
       dump.segments.push(segment); segment.dump_id = dump.dump_id;
-      if (BigInt(segment.time_value) < BigInt(dump.first_value)) dump.first_value = segment.time_value;
+      if (segment.time_value !== null && (dump.first_value === null || BigInt(segment.time_value) < BigInt(dump.first_value))) dump.first_value = segment.time_value;
       for (const row of recordsBySegment.get(segment.segment_id) || []) row.dump_id = dump.dump_id;
     });
     for (const dump of batch.dumps) {
@@ -168,7 +194,7 @@
     batch.counts = {files: batch.sources.length, driver_records: count(row => row.kind === "driver"), firmware_records: count(row => row.kind === "firmware"), unclassified_records: count(row => row.kind === "unclassified"), user_records: count(row => row.driver_domain === "user"), kernel_records: count(row => row.driver_domain === "kernel"), dumps: batch.dumps.length, diagnostics: batch.diagnostics.length};
     return batch;
   }
-  function validateMappings(rows) {
+  function validateMappings(rows, config) {
     if (!Array.isArray(rows)) throw new Error("模块对应表必须是数组");
     const seen = new Set();
     return rows.map(row => {
@@ -180,20 +206,12 @@
         result[key] = value.trim();
       }
       if (!result.module || seen.has(result.module)) throw new Error("模块名称必须非空且不能重复");
-      seen.add(result.module); result.user_module_name = normalizeModuleName(result.user_module_name);
+      seen.add(result.module); result.user_module_name = normalizeModuleName(result.user_module_name, config);
       return result;
     });
   }
   function mappingRows(batch) {
-    const rows = validateMappings(batch.mappings || DEFAULT_MAPPINGS), mapped = new Set(rows.map(row => row.user_module_name)), names = new Set(rows.map(row => row.module));
-    const modules = [...new Set(batch.records.filter(row => row.kind === "driver" && row.driver_domain === "user").map(row => row.module_name))].sort(compareText);
-    for (const module of modules) {
-      if (!module || mapped.has(module)) continue;
-      let label = module, suffix = 2;
-      while (names.has(label)) label = module + " (" + suffix++ + ")";
-      rows.push({module: label, user_module_name: module, kernel_keyword: ""}); mapped.add(module); names.add(label);
-    }
-    return rows;
+    return validateMappings(batch.mappings, batch.analysis_config);
   }
   // Full-fold differences after toLowerCase (Unicode 14, Python's reference
   // table) keep keyword matching deterministic and independent of locale.
@@ -206,7 +224,7 @@
       return {...row, user_count, user_exists: !!user_count, kernel_configured: !!row.kernel_keyword, kernel_count: batch.records.filter(record => kernelMatches(record, row.kernel_keyword)).length};
     });
   }
-  function saveMappings(batch, rows) { batch.mappings = validateMappings(rows); return listMappings(batch); }
+  function saveMappings(batch, rows) { batch.mappings = validateMappings(rows, batch.analysis_config); return listMappings(batch); }
   function listGroups(batch, kind = "all", driver_domain = "") {
     if (!["driver", "firmware", "unclassified", "all"].includes(kind)) throw new Error("日志类型无效");
     if (!["", "user", "kernel"].includes(driver_domain)) throw new Error("驱动来源无效");
@@ -231,7 +249,7 @@
       const {sources, dumps, modules, ...item} = group;
       item.module_names = [...modules].sort(compareText); item.source_count = sources.size; item.dump_count = dumps.size;
       if (item.module_names.length === 1) item.module_name = item.module_names[0];
-      if (item.kind === "firmware") item.log_type_name = firmwareTypeName(item.log_type);
+      if (item.kind === "firmware") item.log_type_name = firmwareTypeName(item.log_type, batch.analysis_config);
       return item;
     }).sort((a, b) => { for (const key of ["slot_id", "cpu_id", "device_id", "log_type", "module_name"]) { const value = compareText(a[key], b[key]); if (value) return value; } return 0; });
     if (["driver", "all"].includes(kind) && driver_domain !== "user") for (const mapping of mappingRows(batch)) {
@@ -274,7 +292,7 @@
         const value = options[key];
         if (value === undefined || value === null || value === "") continue;
         if (["device_id", "log_type"].includes(key)) { if (row.kind === "firmware" && row[key] !== String(value)) return false; }
-        else if (row.driver_domain !== "kernel" && row[key] !== (key === "module_name" && row.kind !== "firmware" ? normalizeModuleName(value) : String(value))) return false;
+        else if (row.driver_domain !== "kernel" && row[key] !== (key === "module_name" && row.kind !== "firmware" ? normalizeModuleName(value, batch.analysis_config) : String(value))) return false;
       }
       if (mapping && row.kind !== "firmware" && !(row.driver_domain === "user" && row.module_name === mapping.user_module_name || kernelMatches(row, mapping.kernel_keyword))) return false;
       if (options.keyword && !(options.raw_search ? containsKeyword(row.raw_text) || containsKeyword(headers.get(row.segment_id) || "") : containsKeyword(row.search_text))) return false;
@@ -296,10 +314,10 @@
       return 0;
     };
   }
-  function displayRecord(row, mode, is_context = false, preserveFirmwareTime = false) {
+  function displayRecord(row, mode, is_context = false, preserveFirmwareTime = false, config) {
     const {search_text, dump_anchor, dump_rank, dump_line, ...result} = row;
     result.is_context = is_context;
-    if (result.kind === "firmware") result.log_type_name = firmwareTypeName(result.log_type);
+    if (result.kind === "firmware") result.log_type_name = firmwareTypeName(result.log_type, config);
     if (mode === "raw" && !(preserveFirmwareTime && result.kind === "firmware") || mode === "original" && result.kind !== "firmware") result.text = result.raw_text;
     return result;
   }
@@ -320,13 +338,13 @@
       const structural = predicateFor(batch, {...options, keyword: "", start_time: "", end_time: ""});
       records = batch.records.filter(row => structural(row) && matches.some(match => row.source_id === match.source_id && Math.abs(row.line_number - match.line_number) <= context)).sort(sort);
     }
-    return {records: records.map(row => displayRecord(row, mode, !hitIds.has(row.id), kind === "all")), total: all.length, has_more: offset + matches.length < all.length, offset, limit};
+    return {records: records.map(row => displayRecord(row, mode, !hitIds.has(row.id), kind === "all", batch.analysis_config)), total: all.length, has_more: offset + matches.length < all.length, offset, limit};
   }
   function exportText(batch, options = {}) {
     const kind = options.kind || "all", mode = options.mode || "concise", view = kind === "all" && options.view === "stitched" ? "time" : options.view || "time";
     if (!["concise", "original", "raw"].includes(mode)) throw new Error("显示模式无效");
     if (kind === "diagnostic") return batch.diagnostics.map(row => `[${row.code}] ${row.message}\n`).join("");
-    return batch.records.filter(predicateFor(batch, options)).sort(orderFor(view)).map(row => displayRecord(row, mode, false, kind === "all").text + "\n").join("");
+    return batch.records.filter(predicateFor(batch, options)).sort(orderFor(view)).map(row => displayRecord(row, mode, false, kind === "all", batch.analysis_config).text + "\n").join("");
   }
   function sourceContext(batch, source_id, options = {}) {
     const [offset, limit] = pageValues(options.offset, options.limit);

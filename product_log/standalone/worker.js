@@ -27,9 +27,10 @@
         progress => postMessage({progress})
       );
       postMessage({progress:{stage:'parsing',count:0,message:'解析用户态、内核态与固件日志'}});
-      batch = parser.parseSources(prepared.sources);
+      batch = parser.parseSources(prepared.sources, prepared.analysis_config);
       return {status:'ready',counts:batch.counts,archives:prepared.archives,
               input_root:'浏览器所选输入（保留相对来源路径）',target_paths:prepared.targets,
+              source_paths:prepared.source_targets,analysis_config:prepared.analysis_config,
               duration_seconds:((performance.now()-started)/1000).toFixed(2)};
     }
     requireReady();

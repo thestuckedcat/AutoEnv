@@ -189,15 +189,20 @@ def compression_source() -> str:
     return "\n".join(pieces)
 
 
+def configuration_source() -> str:
+    defaults = json.loads((SOURCE.parent / "default_config.json").read_text(encoding="utf-8"))
+    return "globalThis.ProductLogDefaultConfig=" + json.dumps(defaults, ensure_ascii=True) + ";\n" + (SOURCE / "configuration.js").read_text(encoding="utf-8")
+
+
 def worker_source() -> str:
-    return "\n".join([compression_source(), *(SOURCE.joinpath(name).read_text(encoding="utf-8")
+    return "\n".join([configuration_source(), compression_source(), *(SOURCE.joinpath(name).read_text(encoding="utf-8")
                                              for name in ("archive.js", "parser.js", "worker.js"))])
 
 
 def build_page(output: str | Path) -> dict:
     template = (SOURCE / "index.html").read_text(encoding="utf-8")
     stylesheet = (SOURCE / "styles.css").read_text(encoding="utf-8")
-    application = (SOURCE / "app.js").read_text(encoding="utf-8")
+    application = configuration_source() + "\n" + (SOURCE / "app.js").read_text(encoding="utf-8")
     worker = base64.b64encode(worker_source().encode("utf-8")).decode("ascii")
     replacements = {
         "<!--OFFLINE_STYLE-->": "<style>" + stylesheet.replace("</style", "<\\/style") + "</style>",

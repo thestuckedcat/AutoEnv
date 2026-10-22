@@ -112,7 +112,7 @@ def test_unified_timeline_sorts_domains_and_excludes_unknown_from_date_ranges(tm
     assert any(text.startswith("[2000-01-06 04:36:49.100000][1.000]") for text in iter_export(batch, kind="all", mode="raw"))
 
 
-def test_default_module_mappings_discovery_counts_and_kernel_matching(tmp_path):
+def test_explicit_module_mappings_counts_and_kernel_matching_without_discovery(tmp_path):
     batch = batch_from_files(tmp_path, [
         ("diag.log", "user", "\n".join([user_line("one", "udk log"), user_line("two", "udk upgrade"),
                                             user_line("three", "UBE"), user_line("four", "HBOOT")])),
@@ -121,10 +121,11 @@ def test_default_module_mappings_discovery_counts_and_kernel_matching(tmp_path):
     mappings = {row["module"]: row for row in list_module_mappings(batch)}
     assert (mappings["udk"]["user_count"], mappings["udk"]["kernel_count"]) == (2, 2)
     assert mappings["UBE"]["kernel_keyword"] == "mami"
-    assert mappings["HBOOT"]["user_exists"] is True and mappings["HBOOT"]["kernel_configured"] is False
+    assert "HBOOT" not in mappings
     assert query_records(batch, kind="driver", module="udk")["total"] == 4
     assert query_records(batch, kind="driver", module="UBE", driver_domain="kernel")["total"] == 1
-    assert query_records(batch, kind="driver", module="HBOOT", driver_domain="kernel")["total"] == 0
+    with pytest.raises(ValueError, match="Module does not belong"):
+        query_records(batch, kind="driver", module="HBOOT", driver_domain="kernel")
 
 
 def test_unknown_kernel_context_is_marked_and_stably_sorted_after_dated_hits(tmp_path):
@@ -219,7 +220,7 @@ def test_invalid_module_table_cannot_replace_valid_mapping(tmp_path, rows):
 def test_old_schema_cannot_be_queried_as_new_driver_domains(tmp_path):
     batch = batch_from_files(tmp_path, [("diag.log", "user", user_line("one"))])
     manifest = json.loads((batch / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["index_schema_version"] == 2
+    assert manifest["index_schema_version"] == INDEX_SCHEMA_VERSION
     manifest["index_schema_version"] = 1
     write_manifest(batch / "manifest.json", manifest)
     with pytest.raises(ValueError, match="import the source again"):

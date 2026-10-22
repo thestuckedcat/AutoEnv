@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "diag",
+      "name": "diag 用户态与固件",
+      "directory_patterns": ["diag"],
+      "file_patterns": ["diaglog_*.log", "diag.log"],
+      "file_regex": "",
+      "parser_id": "diag_v1",
+      "recursive": true,
+      "order": {"type": "current_last", "current": "diag.log", "pattern": ""}
+    },
+    {
+      "id": "dmesg",
+      "name": "dmesg 内核态",
+      "directory_patterns": ["varlog", "var"],
+      "file_patterns": ["cpdt_dmesg_current.log*"],
+      "file_regex": "^cpdt_dmesg_current\\.log(?:\\.(\\d+))?$",
+      "parser_id": "dmesg_v1",
+      "recursive": true,
+      "order": {"type": "numeric_rotation", "current": "cpdt_dmesg_current.log", "pattern": "^cpdt_dmesg_current\\.log(?:\\.(\\d+))?$"}
+    }
+  ],
+  "parsers": [
+    {
+      "id": "diag_v1",
+      "engine": "diag",
+      "time_format": "iso",
+      "patterns": {
+        "header": "^(\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?)\\s+(\\S+)\\s+%%[^\\r\\n]+",
+        "outer_shape": "^\\S+\\s+\\S+\\s+\\S+\\s+%%",
+        "slot": "\\bSlotId\\s*=\\s*(\\d+)",
+        "cpu": "\\bCpuId\\s*=\\s*(\\d+)",
+        "module": "\\bModuleName\\s*=\\s*([^,\\r\\n)]+)",
+        "service": "\\bService\\s*=\\s*([^;\\s,]+)",
+        "info": "\\bInfo\\s*=\\s*(.*)",
+        "firmware": "Unit\\s*\\[\\s*(\\d+)\\s*\\]\\s+firmware\\s+logType\\s*\\[\\s*(\\d+)\\s*\\]\\s+seg\\s*\\[\\s*(\\d+)\\s*\\]\\s*:\\s*(.*)",
+        "firmware_marker": "\\bfirmware\\s+logType",
+        "uptime": "^\\[(\\d+(?:\\.\\d+)?)\\]"
+      },
+      "months": []
+    },
+    {
+      "id": "dmesg_v1",
+      "engine": "kernel",
+      "time_format": "dmesg",
+      "patterns": {
+        "date": "^\\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s+([A-Za-z]{3})\\s+(\\d{1,2})\\s+(\\d{2}:\\d{2}:\\d{2})(?:\\.(\\d{1,6}))?\\s+(\\d{4})\\]\\s*"
+      },
+      "months": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    }
+  ],
+  "rules": [
+    {"id": "user_driver", "category": "user_driver", "component": "*", "source_ids": ["diag"], "match": {"field": "module_name", "operator": "any"}},
+    {"id": "kernel_driver", "category": "kernel_driver", "component": "*", "source_ids": ["dmesg"], "match": {"field": "raw_text", "operator": "any"}},
+    {"id": "firmware", "category": "firmware", "component": "*", "source_ids": ["diag"], "match": {"field": "log_type", "operator": "any"}}
+  ],
+  "module_aliases": [{"pattern": "^udk(?:\\s|$)", "replacement": "udk", "ignore_case": true}],
+  "firmware_types": {"0": "bios", "1": "IMP", "2": "IMU", "3": "HSM"},
+  "modules": [
+    {"module": "udk", "user_module_name": "udk", "kernel_keyword": "udk"},
+    {"module": "UBE", "user_module_name": "UBE", "kernel_keyword": "mami"}
+  ]
+}

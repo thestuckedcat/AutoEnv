@@ -23,9 +23,12 @@ NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node is needed to verify shipped browser JavaScript")
 RUNNER = r"""
 const fs = require('fs'), vm = require('vm');
+const path = require('path'), root = path.resolve(path.dirname(process.argv[1]), '..');
+globalThis.ProductLogDefaultConfig = JSON.parse(fs.readFileSync(path.join(root, 'default_config.json'), 'utf8'));
+vm.runInThisContext(fs.readFileSync(path.join(root, 'standalone', 'configuration.js'), 'utf8'));
 vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'));
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const api = ProductLogOfflineParser, batch = api.parseSources(input.sources || []);
+const api = ProductLogOfflineParser, batch = api.parseSources(input.sources || [], input.analysis_config);
 const output = {counts: batch.counts, results: []};
 for (const action of input.actions || []) {
   try {

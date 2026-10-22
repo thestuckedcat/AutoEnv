@@ -19,6 +19,7 @@ from autoenv.local_archives import MAX_EXPANDED_BYTES, MAX_EXPANDED_FILES, detec
 from ._storage import INDEX_SCHEMA_VERSION, write_manifest
 from .index import build_index
 from .parser import AnalysisCancelled, check_cancelled, parse_file
+from .configuration import normalize_config, active_sources, compile_regex
 
 
 def _patterns(values: Iterable[str] | None) -> list[str]:
@@ -47,6 +48,7 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
                  file_patterns: Iterable[str] | None = None, recursive: bool = True,
                  collection_mode: str = "auto", diag_directory_pattern: str = "diag",
                  var_directory_pattern: str = "varlog",
+                 analysis_config: dict | None = None,
                  copy_patterns: Iterable[str] | None = None, rename_map: dict[str, str] | None = None,
                  workers: int = 4, progress: Callable[[dict], None] | None = None,
                  cancelled: Callable[[], bool] | None = None) -> dict:
@@ -66,6 +68,25 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
         raise ValueError("Symbolic link inputs/output roots are not supported")
     input_path, batch_dir = input_path.resolve(), batch_dir.resolve()
     archive_patterns, file_patterns, copy_patterns = map(_patterns, (archive_patterns, file_patterns, copy_patterns))
+    config = normalize_config(analysis_config)
+    explicit_config = analysis_config is not None
+    if not explicit_config:
+        def legacy_directory(value: str) -> str:
+            return ("*" + value + "*" if "/" not in value and "\\" not in value
+                    and not any(char in value for char in "*?[") and value not in {"diag", "varlog", "var"} else value)
+        def legacy_files(values: list[str]) -> list[str]:
+            return [value if any(char in value for char in "*?[") else ("*" + value + "*" if value else "*")
+                    for value in values]
+        engines = {profile["id"]: profile["engine"] for profile in config["parsers"]}
+        for source in config["sources"]:
+            if engines[source["parser_id"]] == "diag":
+                if diag_directory_pattern != "diag":
+                    source["directory_patterns"] = [legacy_directory(diag_directory_pattern)]
+                if file_patterns:
+                    source["file_patterns"], source["file_regex"] = legacy_files(file_patterns), ""
+                source["recursive"] = bool(recursive)
+            elif var_directory_pattern != "varlog":
+                source["directory_patterns"] = [legacy_directory(var_directory_pattern)]
     rename_map = dict(rename_map or {})
     workers = int(workers)
     if collection_mode not in {"auto", "product", "generic"}:
@@ -90,6 +111,7 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
         "input_root": "", "product_log_path": str(work), "status": "preparing",
         "counts": {"files": 0, "driver_records": 0, "firmware_records": 0, "dumps": 0, "diagnostics": 0},
         "duration_seconds": 0.0, "archives": [], "sources": [],
+        "analysis_config": config,
         "rules": {"directory_pattern": directory_pattern, "archive_patterns": archive_patterns,
                   "file_patterns": file_patterns, "copy_patterns": copy_patterns,
                   "rename_map": rename_map, "recursive": bool(recursive),
@@ -202,7 +224,16 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
 
         emit("collecting", 0, "Locating unique target directories after all archive layers are expanded")
 
-        def find_prepared_directory(pattern: str, recurse: bool = True) -> tuple[Path, dict]:
+        def contains(candidate: tuple[Path, dict], other: tuple[Path, dict]) -> bool:
+            target, owner = candidate
+            path, node = other
+            while node is not owner:
+                if node["parent"] is None:
+                    return False
+                path, node = Path(node["archive"]["path"]), node["parent"]
+            return path.is_relative_to(target)
+
+        def find_prepared_directory(pattern: str, recurse: bool = True, exact: bool = False) -> tuple[Path, dict]:
             if not isinstance(pattern, str):
                 raise TypeError("partial_path must be a string")
             normalized = pattern.replace("\\", "/")
@@ -222,7 +253,7 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
                     logical = (*node["prefix"], *candidate.relative_to(node["root"]).parts)
                     if not recurse and len(logical) > 2:
                         continue
-                    found = (_matches(logical[-1], components[0], fuzzy=True) if len(components) == 1 else
+                    found = (_matches(logical[-1], components[0], fuzzy=not exact) if len(components) == 1 else
                              len(logical) >= len(components) and all(
                                  _matches(name, rule, fuzzy=False)
                                  for name, rule in zip(logical[-len(components):], components)))
@@ -230,95 +261,129 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
                         matches.append((candidate, node))
             if not matches:
                 raise FileNotFoundError(f"no directory matches {pattern!r} in prepared input")
+            base_matches = [match for match in matches if match[1]["parent"] is None]
+            matches = base_matches or matches
+            ancestors = [candidate for candidate in matches if all(contains(candidate, other) for other in matches)]
+            if len(ancestors) == 1:
+                return ancestors[0]
             if len(matches) > 1:
                 raise ValueError(f"ambiguous directory {pattern!r}: " + ", ".join(
                     source_for(path, node)["origin_path"] for path, node in matches))
             return matches[0]
 
-        targets: dict[str, Path] = {}
-        target_nodes: dict[str, dict] = {}
+        profiles = {profile["id"]: profile for profile in config["parsers"]}
+        selected_sources = active_sources(config)
+        source_targets: dict[str, tuple[Path, dict]] = {}
         effective_mode = collection_mode
-        if collection_mode != "generic" and not (collection_mode == "auto" and directory_pattern):
-            for domain, pattern in (("user", diag_directory_pattern), ("kernel", var_directory_pattern)):
-                directory_rule = {"diag": "[d]iag", "varlog": "[v]arlog", "var": "[v]ar"}.get(pattern, pattern)
-                try:
-                    targets[domain], target_nodes[domain] = find_prepared_directory(directory_rule)
-                except FileNotFoundError:
-                    if domain == "kernel" and pattern == "varlog":
-                        # Compatibility is only an absence fallback. An ambiguous
-                        # varlog tree must still fail instead of selecting var.
-                        try:
-                            targets[domain], target_nodes[domain] = find_prepared_directory("[v]ar")
-                        except FileNotFoundError:
-                            pass
-            if not targets and collection_mode == "product":
-                raise FileNotFoundError("No diag or varlog directory matches the product collection rules")
-            effective_mode = "product" if targets else "generic"
+        if explicit_config or not (collection_mode == "generic" or (collection_mode == "auto" and directory_pattern)):
+            for configured in selected_sources:
+                for pattern in configured["directory_patterns"]:
+                    try:
+                        source_targets[configured["id"]] = find_prepared_directory(pattern, exact=True)
+                        break
+                    except FileNotFoundError:
+                        continue
+            if not source_targets and selected_sources and collection_mode == "product" and not explicit_config:
+                raise FileNotFoundError("No configured source directory matches the product collection rules")
+            effective_mode = "product" if source_targets or explicit_config or not selected_sources else "generic"
         else:
             effective_mode = "generic"
-        if effective_mode == "generic":
-            targets["user"], target_nodes["user"] = (find_prepared_directory(directory_pattern, bool(recursive))
-                                                      if directory_pattern else (input_root, forest[0]))
-        elif targets.get("user") == targets.get("kernel"):
-            raise ValueError("diag and varlog directory rules must select different directories")
+        if effective_mode == "generic" and not explicit_config:
+            # Legacy generic calls are represented by an explicit transient source.
+            configured = next((item for item in selected_sources if profiles[item["parser_id"]]["engine"] == "diag"), None)
+            if configured is None:
+                selected_sources = []
+            else:
+                configured = dict(configured, file_patterns=legacy_files(file_patterns) or ["*"], file_regex="", recursive=bool(recursive),
+                                  order={"type": "name", "current": "", "pattern": ""})
+                config["sources"] = [configured]
+                config["rules"] = [rule for rule in config["rules"] if configured["id"] in rule["source_ids"]]
+                for rule in config["rules"]:
+                    rule["source_ids"] = [configured["id"]]
+                selected_sources = [configured]
+                source_targets[configured["id"]] = (find_prepared_directory(directory_pattern, bool(recursive))
+                    if directory_pattern else (input_root, forest[0]))
+        configured_by_id = {source["id"]: source for source in selected_sources}
+        targets: dict[str, Path] = {}
+        for source_id, (path, node) in source_targets.items():
+            domain = "kernel" if profiles[configured_by_id[source_id]["parser_id"]]["engine"] == "kernel" else "user"
+            targets.setdefault(domain, path)
+        if targets.get("user") is not None and targets.get("user") == targets.get("kernel"):
+            # Overlapping files are validated below; sharing a directory is legitimate
+            # when explicit file patterns select disjoint sources.
+            if not explicit_config:
+                raise ValueError("diag and varlog directory rules must select different directories")
         manifest["collection_mode"] = effective_mode
         manifest["target_paths"] = {domain: str(target) for domain, target in targets.items()}
-        manifest["target_path"] = str(targets.get("user", next(iter(targets.values()))))
+        manifest["source_paths"] = {source_id: str(target[0]) for source_id, target in source_targets.items()}
+        manifest["target_path"] = str(targets.get("user", next(iter(targets.values()), input_root)))
         candidates: dict[Path, dict] = {}
         copy_candidates: dict[Path, dict] = {}
-        kernel_name = re.compile(r"^cpdt_dmesg_current\.log(?:\.(\d+))?$")
 
-        def belongs(path: Path, node: dict, domain: str, recurse: bool = True) -> bool:
+        def belongs(path: Path, node: dict, source_id: str, recurse: bool = True) -> bool:
+            target, owner = source_targets[source_id]
             directory_depth = 0
             while True:
-                if node is target_nodes[domain]:
-                    if not path.is_relative_to(targets[domain]):
+                if node is owner:
+                    if not path.is_relative_to(target):
                         return False
-                    return recurse or directory_depth + len(path.relative_to(targets[domain]).parent.parts) == 0
+                    return recurse or directory_depth + len(path.relative_to(target).parent.parts) == 0
                 directory_depth += len(path.relative_to(node["root"]).parent.parts)
                 if node["parent"] is None:
                     return False
                 path, node = Path(node["archive"]["path"]), node["parent"]
 
-        def owning_domain(path: Path, node: dict) -> str | None:
-            matches = [domain for domain in targets if belongs(path, node, domain)]
-            if not matches:
-                return None
-            # A selected child domain owns its full subtree across packing
-            # boundaries. Each source is collected once, even for nested domains.
-            return max(matches, key=lambda domain: (
-                target_nodes[domain]["level"], len(targets[domain].relative_to(target_nodes[domain]["root"]).parts)))
-
         for node in forest:
             for path, kind in node["files"]:
                 check_cancelled(cancelled)
-                domain = owning_domain(path, node)
-                if domain is None:
-                    continue
-                if kind:
-                    archive_entries[path]["log_domain"] = domain
-                    continue
-                is_kernel = effective_mode == "product" and domain == "kernel"
-                if not belongs(path, node, domain, True if is_kernel else bool(recursive)):
-                    continue
-                selected_patterns = file_patterns or (["diaglog_*.log", "diag.log"] if effective_mode == "product" else [])
-                if is_kernel:
-                    selected = bool(kernel_name.fullmatch(path.name))
-                elif effective_mode == "product" and not file_patterns:
-                    selected = path.name == "diag.log" or (path.name.startswith("diaglog_") and path.name.endswith(".log"))
-                else:
-                    selected = not selected_patterns or any(_matches(path.name, pattern or "*", fuzzy=True)
-                                                             for pattern in selected_patterns)
-                copy = not is_kernel and any(_matches(path.name, pattern or "*", fuzzy=True) for pattern in copy_patterns)
-                if not selected and not copy:
-                    continue
-                source = source_for(path, node)
-                source.update(log_domain=domain,
-                              device_source="target:" + source_for(targets[domain], target_nodes[domain])["relative_path"])
-                if selected:
-                    candidates[path] = source
-                if copy:
-                    copy_candidates[path] = source
+                for configured in selected_sources:
+                    source_id = configured["id"]
+                    if source_id not in source_targets or not belongs(path, node, source_id, configured["recursive"]):
+                        continue
+                    profile = profiles[configured["parser_id"]]
+                    domain = "kernel" if profile["engine"] == "kernel" else "user"
+                    # A child source in the other domain owns its complete subtree.
+                    if not explicit_config and any(other_id != source_id
+                           and profiles[configured_by_id[other_id]["parser_id"]]["engine"] != profile["engine"]
+                           and source_targets[other_id] != source_targets[source_id]
+                           and contains(source_targets[source_id], source_targets[other_id])
+                           and belongs(path, node, other_id)
+                           for other_id in source_targets):
+                        continue
+                    if kind:
+                        archive_entries[path]["log_domain"] = domain
+                        continue
+                    selected = (not configured["file_patterns"] or any(
+                        _matches(path.name, pattern, fuzzy=False) for pattern in configured["file_patterns"]))
+                    selected = selected and (not configured["file_regex"] or bool(compile_regex(configured["file_regex"]).fullmatch(path.name)))
+                    if selected and configured["order"]["type"] == "numeric_rotation":
+                        rotation = compile_regex(configured["order"]["pattern"]).fullmatch(path.name)
+                        number = rotation.group(1) if rotation else None
+                        if rotation is None or (number is not None and not re.fullmatch(r"[0-9]+", number)):
+                            raise ValueError(f"numeric_rotation requires a numeric capture for {path.name}")
+                    copy = (domain != "kernel" and (selected or not explicit_config)
+                            and any(_matches(path.name, pattern or "*", fuzzy=True) for pattern in copy_patterns))
+                    if not selected and not copy:
+                        continue
+                    previous = candidates.get(path) or copy_candidates.get(path)
+                    if previous is not None:
+                        signature = lambda value: {key: item for key, item in value.items() if key != "id"}
+                        if signature(previous["parser_profile"]) != signature(profile):
+                            raise ValueError(f"Parser conflict for source file: {source_for(path, node)['relative_path']}")
+                        if source_id not in previous["configured_source_ids"]:
+                            previous["configured_source_ids"].append(source_id)
+                        if selected:
+                            candidates[path] = previous
+                        continue
+                    source = source_for(path, node)
+                    source.update(log_domain=domain, configured_source_ids=[source_id], parser_profile=profile,
+                                  analysis_config=config, collection_order=configured["order"],
+                                  collection_rank=list(configured_by_id).index(source_id),
+                                  device_source="target:" + source_for(*source_targets[source_id])["relative_path"])
+                    if selected:
+                        candidates[path] = source
+                    if copy:
+                        copy_candidates[path] = source
         emit("collecting", len(candidates), "Collecting prepared log sources")
         for key in rename_map:
             if "/" in key:
@@ -347,21 +412,21 @@ def run_analysis(input_path: str | Path, batch_dir: str | Path, *,
         def order_key(pair: tuple[Path, dict]) -> tuple:
             path, source = pair
             stable = (source["relative_path"], _source_key(source))
-            if effective_mode == "generic":
-                return (path.name, *stable)
-            name = source["original_name"]
-            if source["log_domain"] == "kernel":
-                match = kernel_name.fullmatch(name)
-                return (1, 1 if match.group(1) is None else 0,
-                        0 if match.group(1) is None else int(match.group(1)), *stable)
-            return (0, 1 if name == "diag.log" else 0, name, *stable)
+            name, order = source["original_name"], source["collection_order"]
+            prefix = source["collection_rank"]
+            if order["type"] == "numeric_rotation":
+                match = compile_regex(order["pattern"]).fullmatch(name)
+                number = match.group(1) if match and match.lastindex else None
+                return (prefix, 1 if number is None else 0, int(number) if number else 0, *stable)
+            return (prefix, 1 if order["type"] == "current_last" and name == order["current"] else 0, name, *stable)
 
         ordered = sorted(candidates.items(), key=order_key)
         sources = []
         for rank, (path, source) in enumerate(ordered):
             source = dict(source, source_rank=rank, source_id="source-" + _identity(_source_key(source)))
             sources.append(source)
-        manifest["sources"] = sources
+        manifest["sources"] = [dict({key: value for key, value in source.items() if key not in {"analysis_config", "parser_profile"}},
+                                    parser_id=source["parser_profile"]["id"]) for source in sources]
         manifest["matched_files"] = len(sources)
         manifest["matched_archives"] = len(archives)
         manifest["expanded_files"] = budget_files

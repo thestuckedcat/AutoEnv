@@ -183,7 +183,7 @@ def test_mixed_driver_boundary_missing_fields_and_continuations(tmp_path):
     assert fw[1]["raw_text"] == "continued (keep)"
     assert fw[2]["raw_text"] == "2000-01-06 standalone"
     assert fw[3]["raw_text"] == ""
-    assert query_records(batch, kind="unclassified")["total"] == 3
+    assert query_records(batch, kind="unclassified")["total"] == 0
     row = query_records(batch, kind="driver")["records"][0]
     assert row["text"] == "2000-01-06 03:51:36.383 Info=<28028:28041> 正文(inner)"
     assert query_records(batch, kind="driver", mode="original")["records"][0]["text"] == driver("正文(inner)", module="DIAG")
@@ -433,7 +433,7 @@ def test_corrupt_log_metadata_is_preserved_without_merging_unknown_streams(tmp_p
     _, batch = analyze(tmp_path, {"log.txt": invalid_date + "\n" + malformed + "\n" + driver("good")})
     assert query_records(batch, kind="driver")["total"] == 1
     assert query_records(batch, kind="firmware")["total"] == 0
-    assert query_records(batch, kind="unclassified")["total"] == 3
+    assert query_records(batch, kind="unclassified")["total"] == 0
     codes = {row["code"] for row in list_diagnostics(batch)["records"]}
     assert {"invalid_time", "invalid_segment", "orphan_line"} <= codes
 
